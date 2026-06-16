@@ -1314,11 +1314,14 @@ internal class WorkflowAppState(context: Context) {
         if (withMesh.isEmpty()) return null
         fun volumeOf(mesh: StlMesh) =
             (mesh.maxX - mesh.minX).toDouble() * (mesh.maxY - mesh.minY) * (mesh.maxZ - mesh.minZ)
-        // Tank-master: het GROOTSTE deel met rol Tank (voorkomt dat een verkeerd gedetecteerde
-        // deksel de referentie kaapt), anders op naam, anders het grootste deel.
+        // Box-master: grootste deel met rol Tank (voorkomt dat een verkeerd gedetecteerde deksel
+        // de referentie kaapt), anders op naam, anders de DEKSEL als fallback (geen tank aanwezig),
+        // anders het grootste deel.
         val (tankModel, tankMesh) = withMesh.filter { (m, _) -> m.role == StlPartRole.Tank }
             .maxByOrNull { (_, mesh) -> volumeOf(mesh) }
             ?: withMesh.firstOrNull { (m, _) -> m.name.contains("tank", ignoreCase = true) }
+            ?: withMesh.filter { (m, _) -> m.role == StlPartRole.Cover }
+                .maxByOrNull { (_, mesh) -> volumeOf(mesh) }
             ?: withMesh.maxBy { (_, mesh) -> volumeOf(mesh) }
 
         // Tank: WANDBOX bepaalt afmetingen én nulpunt, zodat de wanden exact op 0..dims liggen
@@ -1435,7 +1438,9 @@ internal class WorkflowAppState(context: Context) {
             offY = (frame.dims.y / 2f - (wall[1] + wall[4]) / 2f * s).roundToInt()
         }
         val offZ = when {
-            // Deksel: onderkant van de HOOFDPLAAT (wandbox-Z-min) op de ECHTE tankrand.
+            // Deksel: dominante vlakke onderkant (wandbox-Z-min = montageflens, robuust tegen
+            // kleine uitstulpsels die onder de oppervlakte-drempel wegvallen) op de tankrand
+            // (tank-wandbox-Z-max). Alleen Z-offset; niets aan het model.
             model.role == StlPartRole.Cover -> (frame.tankTopZ - wall[2] * s).roundToInt()
             // Binnenwerk-groep: gedeelde Z-offset, laagste deel op de vloer (+ vloeroffset).
             model.id in frame.sharedZGroup -> (-frame.groupMinZ * s).roundToInt() + frame.floorOffset

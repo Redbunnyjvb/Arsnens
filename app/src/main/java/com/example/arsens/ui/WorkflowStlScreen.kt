@@ -260,6 +260,20 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 .fillMaxWidth()
         )
 
+        // Meet-overlay (doorzichtig, bovenin): wandafstanden van het gekozen punt of de afstand
+        // tussen twee punten — houdt de meet-sheet klein.
+        if (openTool == "measure") {
+            WorkflowStlMeasureOverlay(
+                measureA = measureA,
+                measureB = measureB,
+                box = state.project.dimensionsMm,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 96.dp, start = 16.dp, end = 16.dp)
+                    .widthIn(max = 360.dp)
+            )
+        }
+
         // Statuschip linksonder (zoals de 2D-kaart): actieve tool, weergave en meetresultaat.
         if (openTool == null) {
             WorkflowStlStatusChip(
@@ -289,7 +303,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                     "kader" -> WorkflowStlKaderPanel(
                         state = state,
                         selectedModelId = selectedModelId,
-                        onSelectModel = { selectedModelId = it },
+                        onSelectModel = { selectedModelId = if (selectedModelId == it) null else it },
                         onLoadStl = { picker.launch(arrayOf("*/*")) },
                         onAutoAlign = { state.requestAutoAlignAssembly(scope) },
                         showFrame = showFrame,
@@ -313,7 +327,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                     )
                     "measure" -> WorkflowStlMeasurePanel(
                         measureA = measureA,
-                        measureB = measureB,
                         onClear = {
                             measureA = null
                             measureB = null
@@ -625,22 +638,74 @@ internal fun WorkflowStlStatusChip(
 @Composable
 internal fun WorkflowStlMeasurePanel(
     measureA: StlScenePoint?,
-    measureB: StlScenePoint?,
     onClear: () -> Unit
 ) {
     Text(
-        "Tik in het 3D-beeld twee punten aan — een sensor, tag of boxhoek — om de afstand te " +
-            "meten. Via de tool \"Sensoren & tags\" kun je ook een rij aantikken als meetpunt.",
+        "Tik een sensor, tag of boxhoek aan. Eén punt toont de afstand tot de wanden, " +
+            "twee punten de onderlinge afstand.",
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontSize = 13.sp
-    )
-    Text(
-        stlMeasureStatusText(measureA, measureB) ?: "Nog geen meetpunt gekozen.",
-        fontWeight = if (measureB != null) FontWeight.Bold else FontWeight.Normal
     )
     if (measureA != null) {
         OutlinedButton(onClick = onClear, modifier = Modifier.height(44.dp)) {
             Text("Wis meting")
+        }
+    }
+}
+
+/** Loodrechte afstand van een meetpunt tot elke boxwand (mm): de box-coördinaten zijn de offsets. */
+internal fun wallOffsetsMm(p: StlScenePoint, box: MmPosition): List<Pair<String, Int>> = listOf(
+    "Links" to p.x.roundToInt(),
+    "Rechts" to (box.x - p.x).roundToInt(),
+    "Voor" to p.y.roundToInt(),
+    "Achter" to (box.y - p.y).roundToInt(),
+    "Vloer" to p.z.roundToInt(),
+    "Top" to (box.z - p.z).roundToInt()
+)
+
+/** Doorzichtige meet-overlay bovenin: één punt → afstand tot de 6 wanden; twee punten → 3D-afstand.
+ *  Houdt de meet-sheet klein en geeft direct overzicht over de positie t.o.v. de box. */
+@Composable
+internal fun WorkflowStlMeasureOverlay(
+    measureA: StlScenePoint?,
+    measureB: StlScenePoint?,
+    box: MmPosition,
+    modifier: Modifier = Modifier
+) {
+    if (measureA == null) return
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = WorkflowCameraPanel.copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+        shadowElevation = 8.dp
+    ) {
+        Column(
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (measureB != null) {
+                Text(
+                    stlMeasureStatusText(measureA, measureB) ?: "",
+                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
+                )
+            } else {
+                Text(
+                    measureA.label.ifEmpty { "Meetpunt" },
+                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
+                )
+                wallOffsetsMm(measureA, box).chunked(3).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxWidth()) {
+                        row.forEach { (label, mm) ->
+                            Column(Modifier.weight(1f)) {
+                                Text(label, color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+                                Text("$mm", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                    }
+                }
+                Text("afstand tot wand (mm)", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+            }
         }
     }
 }
@@ -781,13 +846,13 @@ internal fun WorkflowStlKaderPanel(
     }
     if (models.isEmpty()) {
         Text(
-            "Nog geen STL geladen. Laad losse delen zoals tank, deksel of busbars.",
+            "Nog geen STL geladen.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 13.sp
         )
     } else {
         Text(
-            "Tik op een onderdeel voor rol, schaal, offset, rotatie en \"Lijn uit op tank\".",
+            "Tik om te openen of te sluiten.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp
         )
@@ -840,13 +905,13 @@ internal fun StlModelListRow(
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)
             }
         ),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect)
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect)
             ) {
                 Box(Modifier.size(14.dp).background(Color(colorArgb), RoundedCornerShape(4.dp)))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -1057,15 +1122,13 @@ internal fun WorkflowStlBoxPanel(
     onShowWallBoxChange: (Boolean) -> Unit
 ) {
     Text(
-        "Box-randen = het trafokader (0..afmetingen). Berekende box (oranje, gestippeld) = de " +
-            "tankwanden waar \"Lijn uit op tank\" de afmetingen uit haalt — handig om te zien waar de " +
-            "rand zit en precies te plaatsen.",
+        "Wandbox (oranje stippel) = berekend uit de tankwanden.",
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 13.sp
+        fontSize = 12.sp
     )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StlLayerToggle("Box-randen", showFrame) { onShowFrameChange(!showFrame) }
-        StlLayerToggle("Berekende box", showWallBox) { onShowWallBoxChange(!showWallBox) }
+        StlLayerToggle("Trafokader", showFrame) { onShowFrameChange(!showFrame) }
+        StlLayerToggle("Wandbox", showWallBox) { onShowWallBoxChange(!showWallBox) }
     }
 }
 

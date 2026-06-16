@@ -1435,8 +1435,9 @@ internal class WorkflowAppState(context: Context) {
             offY = (frame.dims.y / 2f - (wall[1] + wall[4]) / 2f * s).roundToInt()
         }
         val offZ = when {
-            // Deksel: onderkant van de HOOFDPLAAT (wandbox-Z-min) op de ECHTE tankrand.
-            model.role == StlPartRole.Cover -> (frame.tankTopZ - wall[2] * s).roundToInt()
+            // Deksel: LAAGSTE punt (onderkant van de zijflenzen = full-bbox-Z-min) op de ECHTE
+            // tankrand, zodat de vlakke deksel-onderkant de tankrand raakt (alleen Z-offset).
+            model.role == StlPartRole.Cover -> (frame.tankTopZ - full[2] * s).roundToInt()
             // Binnenwerk-groep: gedeelde Z-offset, laagste deel op de vloer (+ vloeroffset).
             model.id in frame.sharedZGroup -> (-frame.groupMinZ * s).roundToInt() + frame.floorOffset
             // Los binnenwerk: eigen onderkant op de vloer (+ vloeroffset).

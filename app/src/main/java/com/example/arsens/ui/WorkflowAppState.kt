@@ -256,14 +256,12 @@ internal class WorkflowAppState(context: Context) {
     var defaultTagSizeMm by mutableStateOf(appSettings.defaultTagSizeMm)
         private set
 
-    fun setDefaultTagSize(sizeMm: Int) {
-        val size = sizeMm.coerceIn(10, 1000)
-        defaultTagSizeMm = size
-        appSettings.defaultTagSizeMm = size
-        if (tagSize.toIntOrNull() == null || project.markers.none { it.isAprilTagCalibrationMarker() }) {
-            tagSize = size.toString()
-        }
-    }
+fun setDefaultTagSize(sizeMm: Int) {
+    val size = sizeMm.coerceIn(10, 1000)
+    defaultTagSizeMm = size
+    appSettings.defaultTagSizeMm = size
+    tagSize = size.toString()
+}
 
     /** Past het standaard tagformaat toe op ALLE bestaande referentietags (met bevestiging). De
      *  setting zelf geldt normaal alleen voor nieuwe tags; deze actie herschaalt ook de al
@@ -292,6 +290,7 @@ internal class WorkflowAppState(context: Context) {
                     if (marker.isAprilTagCalibrationMarker()) marker.copy(sizeMm = size) else marker
                 }
             )
+            tagSize = size.toString()
             resetArPoseState()
             saveProject()
             message = "$affected tag(s) op $size mm gezet. AR-pose gereset."
@@ -1777,7 +1776,7 @@ internal class WorkflowAppState(context: Context) {
         val plane = tagPlaneForMapView(viewName, position)
         val requestedId = tagId.toIntOrNull()
         val id = requestedId ?: nextAprilTagId()
-        val size = tagSize.toIntOrNull()?.takeIf { it > 0 } ?: 100
+        val size = tagSize.toIntOrNull()?.takeIf { it > 0 } ?: defaultTagSizeMm
         val rotation = tagRotationFor(plane)
         upsertPreparedTag(
             id = id,
@@ -1891,6 +1890,7 @@ internal class WorkflowAppState(context: Context) {
         setTagRotation(rotation.x.toInt(), rotation.y.toInt(), rotation.z.toInt())
         if (advanceToNextId) {
             tagId = nextAprilTagId().toString()
+            tagSize = defaultTagSizeMm.toString()
         } else {
             tagId = id.toString()
         }

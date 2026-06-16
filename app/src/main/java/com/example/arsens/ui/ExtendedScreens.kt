@@ -12,7 +12,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -31,7 +29,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -41,7 +38,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,8 +78,6 @@ import kotlin.math.roundToInt
 internal fun TransformerMapWorkspace(
     project: Project,
     log: InstallationLog,
-    title: String,
-    subtitle: String,
     onBack: () -> Unit,
     initialView: TransformerMapView = TransformerMapView.Top,
     onViewChanged: ((TransformerMapView) -> Unit)? = null,
@@ -94,14 +88,12 @@ internal fun TransformerMapWorkspace(
     tagPlacementLabel: String? = null,
     onPlaceTagPoint: ((MmPosition, String) -> Unit)? = null,
     onMoveTagPoint: ((Int, MmPosition, String) -> Unit)? = null,
-    compactControls: Boolean = false,
     tagControls: (@Composable ColumnScope.() -> Unit)? = null,
     sensorControls: (@Composable ColumnScope.() -> Unit)? = null,
     startControls: (@Composable ColumnScope.() -> Unit)? = null,
     onSelectSensor: ((String) -> Unit)? = null,
     onSelectTag: ((Int) -> Unit)? = null,
     selectControls: (@Composable ColumnScope.() -> Unit)? = null,
-    extraControls: @Composable () -> Unit = {},
     overflowItems: List<ArSensMenuItem> = emptyList()
 ) {
     var selectedView by remember(initialView) { mutableStateOf(initialView) }
@@ -119,7 +111,7 @@ internal fun TransformerMapWorkspace(
         else -> MapEditMode.Measure
     }
     var editMode by remember(onPlaceSensorPoint != null, onPlaceTagPoint != null) { mutableStateOf(initialEditMode) }
-    var openMenuKey by remember(compactControls) { mutableStateOf<String?>(null) }
+    var openMenuKey by remember { mutableStateOf<String?>(null) }
     val hasPlacementMode = onPlaceSensorPoint != null || onPlaceTagPoint != null
     val hasMoveMode = onMoveSensorPoint != null || onMoveTagPoint != null
     val measureText = if (editMode == MapEditMode.Measure) {
@@ -248,26 +240,6 @@ internal fun TransformerMapWorkspace(
                 .align(Alignment.TopCenter)
                 .padding(top = 82.dp)
         )
-        if (subtitle.isNotBlank()) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 148.dp),
-                shape = RoundedCornerShape(999.dp),
-                color = Color.White.copy(alpha = 0.74f),
-                shadowElevation = 4.dp
-            ) {
-                Text(
-                    subtitle,
-                    color = ArSensChromeMuted,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
         val activeMeasure = measureStart
         if (editMode == MapEditMode.Measure && activeMeasure != null && measureEnd == null) {
             MapWallOffsetOverlay(
@@ -282,7 +254,10 @@ internal fun TransformerMapWorkspace(
                     .widthIn(max = 360.dp)
             )
         }
-        if (compactControls) {
+        // Eén 2D-layout voor álle modi (rapport, voorbereiden én sensor-setup): de camera-glas
+        // tool-rail rechts + donkere tool-sheet. De vroegere lichte onderbalk (mini-trafo +
+        // tekstknoppen) is vervallen zodat de 2D-kaart overal hetzelfde oogt als de 3D-weergave.
+        run {
             val menus = transformerMapCompactMenus(
                 sensorPlacementLabel = sensorPlacementLabel,
                 onPlaceSensorPoint = onPlaceSensorPoint,
@@ -326,31 +301,19 @@ internal fun TransformerMapWorkspace(
                 )
             }
             if (openMenu != null) {
-                Surface(
+                // Donkere camera-glas-sheet, identiek aan de 3D-weergave en de camera, zodat de
+                // 2D-kaart bij de rest aansluit. De menu-inhoud gebruikt thematische kleuren en
+                // schakelt daardoor vanzelf mee naar het donkere schema.
+                WorkflowStlToolPanel(
+                    title = openMenu.label,
+                    onClose = { openMenuKey = null },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(start = 12.dp, end = 68.dp, bottom = 12.dp)
-                        .fillMaxWidth(0.76f)
-                        .widthIn(max = 460.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                    shadowElevation = 5.dp
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 12.dp, end = 84.dp, bottom = 12.dp)
+                        .fillMaxWidth()
+                        .widthIn(max = 460.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .padding(10.dp)
-                            .heightIn(max = 360.dp)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Text(openMenu.label, fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { openMenuKey = null }) {
-                                Text("Sluit")
-                            }
-                        }
-                        openMenu.content(this)
-                    }
+                    openMenu.content(this)
                 }
             }
             Column(
@@ -361,7 +324,7 @@ internal fun TransformerMapWorkspace(
                 horizontalAlignment = Alignment.End
             ) {
                 menus.reversed().forEach { menu ->
-                    TransformerMapToolButton(
+                    WorkflowCameraToolButton(
                         key = menu.key,
                         selected = openMenuKey == menu.key,
                         onClick = {
@@ -369,72 +332,6 @@ internal fun TransformerMapWorkspace(
                             openMenuKey = if (openMenuKey == menu.key) null else menu.key
                         }
                     )
-                }
-            }
-        } else {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(12.dp)
-                    .fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                shadowElevation = 5.dp
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        // Mini-trafo om het aanzicht te kiezen (vervangt de losse Boven/Voor/… knoppen).
-                        TransformerPlaneMiniMap(
-                            selectedView = selectedView,
-                            onViewSelected = { selectedView = it; onViewChanged?.invoke(it) },
-                            modifier = Modifier.size(108.dp)
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (onPlaceSensorPoint != null && sensorPlacementLabel != null) {
-                                if (editMode == MapEditMode.Sensor) {
-                                    Button(onClick = { editMode = MapEditMode.Sensor }, modifier = Modifier.height(44.dp)) { Text(sensorPlacementLabel) }
-                                } else {
-                                    OutlinedButton(onClick = { editMode = MapEditMode.Sensor }, modifier = Modifier.height(44.dp)) { Text(sensorPlacementLabel) }
-                                }
-                            }
-                            if (onPlaceTagPoint != null && tagPlacementLabel != null) {
-                                if (editMode == MapEditMode.Tag) {
-                                    Button(onClick = { editMode = MapEditMode.Tag }, modifier = Modifier.height(44.dp)) { Text(tagPlacementLabel) }
-                                } else {
-                                    OutlinedButton(onClick = { editMode = MapEditMode.Tag }, modifier = Modifier.height(44.dp)) { Text(tagPlacementLabel) }
-                                }
-                            }
-                            if (hasPlacementMode) {
-                                if (editMode == MapEditMode.Measure) {
-                                    Button(onClick = { editMode = MapEditMode.Measure }, modifier = Modifier.height(44.dp)) { Text("Meten") }
-                                } else {
-                                    OutlinedButton(onClick = { editMode = MapEditMode.Measure }, modifier = Modifier.height(44.dp)) { Text("Meten") }
-                                }
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    mapZoom = 1f
-                                    mapPan = Offset.Zero
-                                    measureStart = null
-                                    measureEnd = null
-                                },
-                                modifier = Modifier.height(44.dp)
-                            ) {
-                                Text("Reset")
-                            }
-                        }
-                    }
-                    message?.let {
-                        Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    extraControls()
-                    measureText?.let {
-                        Text(text = it, fontWeight = FontWeight.Bold)
-                    }
                 }
             }
         }
@@ -564,32 +461,9 @@ private fun TransformerMapCompactStatus(
     }
 }
 
-@Composable
-private fun TransformerMapToolButton(
-    key: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val background = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.84f)
-    } else {
-        Color.Black.copy(alpha = 0.46f)
-    }
-    val iconColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White
-    Surface(
-        modifier = Modifier
-            .size(46.dp)
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = background,
-        shadowElevation = 3.dp
-    ) {
-        Canvas(Modifier.fillMaxSize().padding(11.dp)) {
-            drawTransformerMapToolIcon(key, iconColor)
-        }
-    }
-}
-
+// De 2D-kaart gebruikt nu de gedeelde WorkflowCameraToolButton (camera-glas) voor de tool-rail,
+// zodat de tool-knoppen identiek zijn aan de camera en de 3D-weergave. Dit icoon blijft alleen nog
+// over voor de "Vlak"-dropdown bovenaan.
 private fun DrawScope.drawTransformerMapToolIcon(key: String, color: Color) {
     val w = size.width
     val h = size.height

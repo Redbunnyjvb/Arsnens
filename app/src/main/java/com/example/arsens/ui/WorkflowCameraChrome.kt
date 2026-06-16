@@ -1084,6 +1084,38 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWorkflowCamera
             }
             drawPath(body, color, style = Stroke(width = stroke, cap = StrokeCap.Round))
         }
+        "select" -> {
+            // Aanwijzer/cursor-pijl — de "Selecteer"-tool in de 2D-kaart.
+            val path = Path().apply {
+                moveTo(w * 0.30f, h * 0.20f)
+                lineTo(w * 0.30f, h * 0.74f)
+                lineTo(w * 0.43f, h * 0.61f)
+                lineTo(w * 0.53f, h * 0.82f)
+                lineTo(w * 0.62f, h * 0.78f)
+                lineTo(w * 0.52f, h * 0.57f)
+                lineTo(w * 0.70f, h * 0.55f)
+                close()
+            }
+            drawPath(path, color)
+        }
+        "start" -> {
+            // Play-driehoek — start de installatie vanuit het voorbereide 2D-plan.
+            val path = Path().apply {
+                moveTo(w * 0.34f, h * 0.22f)
+                lineTo(w * 0.76f, h * 0.50f)
+                lineTo(w * 0.34f, h * 0.78f)
+                close()
+            }
+            drawPath(path, color)
+        }
+        "view" -> {
+            // Schuifregelaars — het "Gereedschap"-menu (meten, verplaatsen, reset) in de 2D-kaart.
+            // Bewust géén venster-icoon, zodat het visueel niet botst met de "Vlak"-keuze.
+            drawLine(color, Offset(w * 0.16f, h * 0.36f), Offset(w * 0.84f, h * 0.36f), strokeWidth = stroke, cap = StrokeCap.Round)
+            drawLine(color, Offset(w * 0.16f, h * 0.64f), Offset(w * 0.84f, h * 0.64f), strokeWidth = stroke, cap = StrokeCap.Round)
+            drawCircle(color, radius = w * 0.10f, center = Offset(w * 0.64f, h * 0.36f))
+            drawCircle(color, radius = w * 0.10f, center = Offset(w * 0.36f, h * 0.64f))
+        }
         else -> {
             drawCircle(color, radius = w * 0.28f, center = center, style = Stroke(width = stroke))
         }

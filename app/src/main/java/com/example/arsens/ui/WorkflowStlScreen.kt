@@ -739,16 +739,8 @@ internal fun WorkflowStlEntityListPanel(
     val tags = state.savedAprilTags.sortedBy { it.id }
     val sensors = state.project.sensors.sortedBy { it.order }
     val results = state.log.results.associateBy { it.sensorId }
-    // Diagnose links/rechts-audit: rauwe box-posities (geen mapper) bovenaan, zodat direct te zien
-    // is of een front-links tag intern op X=0 (links) of X=max (rechts) staat.
-    ArSensRawTagCheckCard(state.project)
-    // Migratie: herbouw rotationDeg van bestaande tags uit hun vlak (verplaatst niets).
-    OutlinedButton(
-        onClick = { state.rebuildAprilTagRotationsFromSurface() },
-        modifier = Modifier.fillMaxWidth().height(44.dp)
-    ) {
-        Text("Herbouw tag-rotaties vanuit vlak")
-    }
+    // De links/rechts-diagnostics (rauwe box-check + "Herbouw tag-rotaties") staan nu onder
+    // Instellingen › Diagnose, zodat deze lijst alleen de sensoren en tags toont.
     Text(
         "Tik een rij om er een meetpunt op te zetten.",
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1200,8 +1192,7 @@ internal fun WorkflowStlViewPanel(
         )
     }
     Text(
-        "Massief = dichte vlakken · Draad = doorkijk-draadmodel · Verdekt = draadmodel zonder " +
-            "doorkijk (verborgen lijnen weg).",
+        "Massief = dichte vlakken · Draad = met doorkijk · Verdekt = zonder doorkijk.",
         color = Color.White.copy(alpha = 0.6f),
         fontSize = 11.sp
     )

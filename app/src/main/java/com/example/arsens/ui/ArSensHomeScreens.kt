@@ -448,6 +448,31 @@ internal fun WorkflowSettingsScreen(state: WorkflowAppState) {
             }
         }
         item { WorkflowTagSettingsCard(state) }
+        item {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = ArSensSurface),
+                border = BorderStroke(1.dp, ArSensLine),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Diagnose (links/rechts-audit)", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(
+                        "Hulpmiddelen om de oriëntatie van tags te controleren. Alleen nodig bij het " +
+                            "onderzoeken van de links/rechts-plaatsing — niet voor normaal gebruik.",
+                        color = ArSensMuted,
+                        fontSize = 13.sp
+                    )
+                    OutlinedButton(
+                        onClick = { state.rebuildAprilTagRotationsFromSurface() },
+                        modifier = Modifier.fillMaxWidth().height(44.dp)
+                    ) {
+                        Text("Herbouw tag-rotaties vanuit vlak")
+                    }
+                    ArSensRawTagCheckCard(state.project)
+                }
+            }
+        }
     }
 }
 

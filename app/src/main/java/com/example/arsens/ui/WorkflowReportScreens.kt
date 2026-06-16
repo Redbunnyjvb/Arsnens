@@ -351,6 +351,10 @@ internal fun WorkflowReportEntityRow(
     dotColor: Color,
     onClick: () -> Unit
 ) {
+    // Themakleuren i.p.v. vaste donkere inkt: zo blijft de rij leesbaar op de lichte rapport-
+    // schermen én op de donkere camera-glas-sheet van de 3D-weergave (waar deze rij ook gebruikt wordt).
+    val ink = MaterialTheme.colorScheme.onSurface
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -361,11 +365,11 @@ internal fun WorkflowReportEntityRow(
     ) {
         Box(Modifier.size(10.dp).background(dotColor, RoundedCornerShape(50)))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = ArSensChromeInk)
-            Text(coords, fontSize = 12.sp, color = ArSensChromeMuted)
+            Text(name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = ink)
+            Text(coords, fontSize = 12.sp, color = muted)
         }
-        Text("Vlak: $plane", fontSize = 13.sp, color = ArSensChromeMuted, fontWeight = FontWeight.Medium)
-        Canvas(Modifier.size(18.dp)) { drawWorkflowCameraIcon("chevron", ArSensChromeMuted) }
+        Text("Vlak: $plane", fontSize = 13.sp, color = muted, fontWeight = FontWeight.Medium)
+        Canvas(Modifier.size(18.dp)) { drawWorkflowCameraIcon("chevron", muted) }
     }
 }
 
@@ -386,12 +390,6 @@ internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
     TransformerMapWorkspace(
         project = state.project,
         log = state.log,
-        title = if (preparedSetup) "Voorbereid 2D plan" else "2D model",
-        subtitle = when {
-            preparedSetup -> "Plaats tags en sensoren voordat de camera start"
-            placingSensors -> "Sensorpunten plaatsen"
-            else -> "Tags, sensoren en metingen"
-        },
         onBack = state::navigateBack,
         initialView = state.activeMapView,
         onViewChanged = { state.activeMapView = it },
@@ -402,9 +400,6 @@ internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
         tagPlacementLabel = if (preparedSetup) "Tag" else null,
         onPlaceTagPoint = if (preparedSetup) state::saveTagAtBoxPosition else null,
         onMoveTagPoint = if (preparedSetup) state::moveTagToBoxPosition else null,
-        // Compacte icoon-tools ook in de rapport-2D (niet alleen voorbereid). De
-        // sensor-setup-weergave houdt zijn bestaande onderbalk.
-        compactControls = preparedSetup || !placingSensors,
         onSelectSensor = if (!placingSensors) { id: String ->
             state.project.sensors.firstOrNull { it.id == id }?.let(state::selectSensorForEdit)
             state.selectedMapTarget = MapSelection.Sensor(id)

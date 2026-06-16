@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -104,6 +106,9 @@ internal fun TransformerMapWorkspace(
     // Aangetikte rand in de meet-overlay (0=Links,1=Rechts,2=Onder,3=Boven); licht die rand op.
     var highlightEdge by remember { mutableStateOf<Int?>(null) }
     var selectedMoveTarget by remember { mutableStateOf<MapMoveTarget?>(null) }
+    // Verplaats-modus: het gesleepte deel + de live positie onder de vinger (voor de maatvoering).
+    var dragTarget by remember { mutableStateOf<MapMoveTarget?>(null) }
+    var dragPoint by remember { mutableStateOf<MapMeasurePoint?>(null) }
     val initialEditMode = when {
         onPlaceTagPoint != null -> MapEditMode.Tag
         onPlaceSensorPoint != null -> MapEditMode.Sensor
@@ -207,6 +212,30 @@ internal fun TransformerMapWorkspace(
             measureEnd = measureEnd,
             highlightEdge = highlightEdge,
             selectedTarget = selectedMoveTarget,
+            moveMode = editMode == MapEditMode.Move,
+            dragTarget = dragTarget,
+            dragPoint = dragPoint,
+            onMoveBegin = { target ->
+                dragTarget = target
+                selectedMoveTarget = target
+                measureStart = null
+                measureEnd = null
+            },
+            onMovePoint = { dragPoint = it },
+            onMoveCommit = {
+                val p = dragPoint
+                when (val t = dragTarget) {
+                    is MapMoveTarget.Sensor -> if (p != null) onMoveSensorPoint?.invoke(t.id, p.toBoxPosition(selectedView, project.dimensionsMm))
+                    is MapMoveTarget.Tag -> if (p != null) onMoveTagPoint?.invoke(t.id, p.toBoxPosition(selectedView, project.dimensionsMm), selectedView.name)
+                    null -> Unit
+                }
+                dragTarget = null
+                dragPoint = null
+            },
+            onMoveCancel = {
+                dragTarget = null
+                dragPoint = null
+            },
             onTapPoint = ::handleMapTap,
             onTransform = { pan, zoom ->
                 mapZoom = (mapZoom * zoom).coerceIn(0.35f, 6f)
@@ -242,6 +271,21 @@ internal fun TransformerMapWorkspace(
                     .widthIn(max = 360.dp)
             )
         }
+        // Live maatvoering naar de 4 zijkanten terwijl je een sensor/tag sleept (verplaats-modus).
+        val activeDrag = dragPoint
+        if (editMode == MapEditMode.Move && dragTarget != null && activeDrag != null) {
+            MapWallOffsetOverlay(
+                measureStart = activeDrag,
+                view = selectedView,
+                dimensions = project.dimensionsMm,
+                highlightEdge = null,
+                onEdgeClick = {},
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 88.dp, start = 16.dp, end = 16.dp)
+                    .widthIn(max = 360.dp)
+            )
+        }
         // Eén 2D-layout voor álle modi (rapport, voorbereiden én sensor-setup): de camera-glas
         // tool-rail rechts + donkere tool-sheet. De vroegere lichte onderbalk (mini-trafo +
         // tekstknoppen) is vervallen zodat de 2D-kaart overal hetzelfde oogt als de 3D-weergave.
@@ -265,6 +309,8 @@ internal fun TransformerMapWorkspace(
                     selectedMoveTarget = null
                     measureStart = null
                     measureEnd = null
+                    dragTarget = null
+                    dragPoint = null
                 },
                 onReset = {
                     mapZoom = 1f
@@ -273,27 +319,10 @@ internal fun TransformerMapWorkspace(
                     measureEnd = null
                     selectedMoveTarget = null
                 }
-            ) + TransformerMapWorkspaceMenu("plane", "Vlak", null) {
-                // Aanzicht kiezen via de mini-trafo, in dezelfde donkere sheet als de andere tools.
-                Text(
-                    "Kies het aanzicht van de trafo.",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 13.sp
-                )
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    TransformerPlaneMiniMap(
-                        selectedView = selectedView,
-                        onViewSelected = { v ->
-                            selectedView = v
-                            onViewChanged?.invoke(v)
-                            openMenuKey = null
-                        },
-                        modifier = Modifier.size(220.dp)
-                    )
-                }
-            }
+            )
             val openMenu = menus.firstOrNull { it.key == openMenuKey }
-            if (openMenu == null) {
+            // Status verbergen zodra er iets open is: een tool-sheet óf het zwevende "Vlak"-paneel.
+            if (openMenuKey == null) {
                 TransformerMapCompactStatus(
                     mode = editMode,
                     selectedView = selectedView,
@@ -322,6 +351,36 @@ internal fun TransformerMapWorkspace(
                     openMenu.content(this)
                 }
             }
+            // Zwevend "Vlak"-paneel náást de rail (zoals de "Paneel selector" op de camera) i.p.v. een
+            // bottom-sheet: compact en direct naast de knop.
+            if (openMenuKey == "plane") {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = WorkflowCameraPanel,
+                    contentColor = Color.White,
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                    shadowElevation = 12.dp,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 76.dp)
+                        .width(210.dp)
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Vlak", color = Color.White.copy(alpha = 0.82f), fontWeight = FontWeight.Medium, fontSize = 12.sp)
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            TransformerPlaneMiniMap(
+                                selectedView = selectedView,
+                                onViewSelected = { v ->
+                                    selectedView = v
+                                    onViewChanged?.invoke(v)
+                                    openMenuKey = null
+                                },
+                                modifier = Modifier.size(168.dp)
+                            )
+                        }
+                    }
+                }
+            }
             Column(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -329,6 +388,12 @@ internal fun TransformerMapWorkspace(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.End
             ) {
+                // "Vlak" bovenaan de rail — opent het zwevende paneel hierboven (camera-stijl).
+                WorkflowCameraToolButton(
+                    key = "plane",
+                    selected = openMenuKey == "plane",
+                    onClick = { openMenuKey = if (openMenuKey == "plane") null else "plane" }
+                )
                 menus.reversed().forEach { menu ->
                     WorkflowCameraToolButton(
                         key = menu.key,
@@ -478,6 +543,13 @@ private fun TransformerMapCanvas(
     measureEnd: MapMeasurePoint?,
     highlightEdge: Int? = null,
     selectedTarget: MapMoveTarget? = null,
+    moveMode: Boolean = false,
+    dragTarget: MapMoveTarget? = null,
+    dragPoint: MapMeasurePoint? = null,
+    onMoveBegin: (MapMoveTarget) -> Unit = {},
+    onMovePoint: (MapMeasurePoint) -> Unit = {},
+    onMoveCommit: () -> Unit = {},
+    onMoveCancel: () -> Unit = {},
     onTapPoint: (MapMeasurePoint) -> Unit,
     onTransform: (Offset, Float) -> Unit,
     modifier: Modifier = Modifier
@@ -486,29 +558,60 @@ private fun TransformerMapCanvas(
     Canvas(
         modifier = modifier
             .background(Color(0xFFF7F9FB))
-            .pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers) {
-                detectTapGestures { tap ->
-                    val layout = mapLayoutFor(
-                        canvasSize = Size(size.width.toFloat(), size.height.toFloat()),
-                        view = selectedView,
-                        dimensions = project.dimensionsMm,
-                        zoom = mapZoom,
-                        pan = mapPan
-                    )
-                    val tappedPoint = measurePointFromTap(
-                        tap = tap,
-                        layout = layout,
-                        view = selectedView,
-                        project = project
-                    ) ?: return@detectTapGestures
-                    onTapPoint(tappedPoint)
+            .then(
+                if (moveMode) {
+                    // Verplaats-modus: sleep een sensor/tag rechtstreeks (geen pan/zoom). De sleep pakt
+                    // het dichtstbijzijnde punt onder de vinger; zonder treffer gebeurt er niets.
+                    Modifier.pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers) {
+                        var grabbed = false
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val layout = mapLayoutFor(Size(size.width.toFloat(), size.height.toFloat()), selectedView, project.dimensionsMm, mapZoom, mapPan)
+                                val target = measurePointFromTap(offset, layout, selectedView, project)?.toMoveTarget(project)
+                                grabbed = target != null
+                                if (target != null) {
+                                    onMoveBegin(target)
+                                    onMovePoint(freeMapMeasurePoint(offset, layout, selectedView, project))
+                                }
+                            },
+                            onDrag = { change, _ ->
+                                if (grabbed) {
+                                    change.consume()
+                                    val layout = mapLayoutFor(Size(size.width.toFloat(), size.height.toFloat()), selectedView, project.dimensionsMm, mapZoom, mapPan)
+                                    onMovePoint(freeMapMeasurePoint(change.position, layout, selectedView, project))
+                                }
+                            },
+                            onDragEnd = { if (grabbed) { onMoveCommit(); grabbed = false } },
+                            onDragCancel = { if (grabbed) { onMoveCancel(); grabbed = false } }
+                        )
+                    }
+                } else {
+                    Modifier
+                        .pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers) {
+                            detectTapGestures { tap ->
+                                val layout = mapLayoutFor(
+                                    canvasSize = Size(size.width.toFloat(), size.height.toFloat()),
+                                    view = selectedView,
+                                    dimensions = project.dimensionsMm,
+                                    zoom = mapZoom,
+                                    pan = mapPan
+                                )
+                                val tappedPoint = measurePointFromTap(
+                                    tap = tap,
+                                    layout = layout,
+                                    view = selectedView,
+                                    project = project
+                                ) ?: return@detectTapGestures
+                                onTapPoint(tappedPoint)
+                            }
+                        }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                onTransform(pan, zoom)
+                            }
+                        }
                 }
-            }
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    onTransform(pan, zoom)
-                }
-            }
+            )
     ) {
         drawTransformerMap(
             project = project,
@@ -519,6 +622,8 @@ private fun TransformerMapCanvas(
             measureEnd = measureEnd,
             highlightEdge = highlightEdge,
             selectedTarget = selectedTarget,
+            dragTarget = dragTarget,
+            dragPoint = dragPoint,
             results = results
         )
     }
@@ -533,6 +638,8 @@ private fun DrawScope.drawTransformerMap(
     measureEnd: MapMeasurePoint?,
     highlightEdge: Int? = null,
     selectedTarget: MapMoveTarget? = null,
+    dragTarget: MapMoveTarget? = null,
+    dragPoint: MapMeasurePoint? = null,
     results: Map<String, com.example.arsens.data.InstallationResult>
 ) {
     val layout = mapLayoutFor(size, selectedView, project.dimensionsMm, mapZoom, mapPan)
@@ -586,7 +693,10 @@ private fun DrawScope.drawTransformerMap(
         .filter { it.isAprilTagCalibrationMarker() }
         .map { it.asAprilTagCalibrationMarker(project.dimensionsMm) }
         .forEach { marker ->
-            val point = marker.positionMm.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+            val point = dragPoint
+                ?.takeIf { (dragTarget as? MapMoveTarget.Tag)?.id == marker.id }
+                ?.toScreenPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+                ?: marker.positionMm.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
             val markerColor = if (marker.active) Color(0xFF9C27B0) else Color(0xFF7E8792)
             val half = 10f
             drawRect(
@@ -600,7 +710,10 @@ private fun DrawScope.drawTransformerMap(
         }
 
     project.sensors.forEach { sensor ->
-        val expected = sensor.positionMm.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+        val expected = dragPoint
+            ?.takeIf { (dragTarget as? MapMoveTarget.Sensor)?.id == sensor.id }
+            ?.toScreenPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+            ?: sensor.positionMm.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
         val result = results[sensor.id]
         val status = result?.status ?: sensor.status
         val color = mapStatusColor(status)
@@ -672,6 +785,12 @@ private fun DrawScope.drawTransformerMap(
             val point = selectedPosition.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
             drawCircle(Color(0xFFFFC107), radius = 20f, center = point, style = Stroke(width = 4f))
         }
+    }
+
+    // Gesleept deel: blauwe ring op de live positie onder de vinger.
+    if (dragTarget != null && dragPoint != null) {
+        val p = dragPoint.toScreenPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+        drawCircle(Color(0xFF2563EB), radius = 20f, center = p, style = Stroke(width = 4f))
     }
 }
 
@@ -981,6 +1100,23 @@ private fun MapMeasurePoint.toScreenPoint(
     return Offset(
         x = origin.x + horizontalRatio * width,
         y = origin.y + screenVerticalRatio * height
+    )
+}
+
+/** Vrij punt onder de vinger (geen snap naar bestaande punten) — gebruikt tijdens het slepen. */
+private fun freeMapMeasurePoint(
+    tap: Offset,
+    layout: MapLayout,
+    view: TransformerMapView,
+    project: Project
+): MapMeasurePoint {
+    val horizontalRatio = ((tap.x - layout.origin.x) / layout.mapWidth).coerceIn(0f, 1f)
+    val screenVerticalRatio = ((tap.y - layout.origin.y) / layout.mapHeight).coerceIn(0f, 1f)
+    val verticalRatio = 1f - screenVerticalRatio
+    return MapMeasurePoint(
+        label = "punt",
+        horizontalMm = (horizontalRatio * view.horizontalMm(project.dimensionsMm)).toDouble(),
+        verticalMm = (verticalRatio * view.verticalMm(project.dimensionsMm)).toDouble()
     )
 }
 

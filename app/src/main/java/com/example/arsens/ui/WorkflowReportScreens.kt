@@ -396,10 +396,11 @@ internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
         message = state.message,
         sensorPlacementLabel = if (placingSensors) "Sensor" else null,
         onPlaceSensorPoint = if (placingSensors) state::saveSensorAtBoxPosition else null,
-        onMoveSensorPoint = if (placingSensors) state::moveSensorToBoxPosition else null,
+        // Verplaatsen (slepen) overal beschikbaar in de 2D-kaart, niet alleen tijdens plaatsen.
+        onMoveSensorPoint = state::moveSensorToBoxPosition,
         tagPlacementLabel = if (preparedSetup) "Tag" else null,
         onPlaceTagPoint = if (preparedSetup) state::saveTagAtBoxPosition else null,
-        onMoveTagPoint = if (preparedSetup) state::moveTagToBoxPosition else null,
+        onMoveTagPoint = state::moveTagToBoxPosition,
         onSelectSensor = if (!placingSensors) { id: String ->
             state.project.sensors.firstOrNull { it.id == id }?.let(state::selectSensorForEdit)
             state.selectedMapTarget = MapSelection.Sensor(id)

@@ -55,6 +55,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -181,6 +183,9 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
     var measureB by remember { mutableStateOf<StlScenePoint?>(null) }
     // Aangetikte wand in de meet-overlay (0=Links..5=Top); licht het bijbehorende boxvlak op.
     var highlightWall by remember { mutableStateOf<Int?>(null) }
+    // Hernoem-dialoog voor de geselecteerde sensor (id != null → dialoog open).
+    var renameSensorId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
     fun addMeasurePoint(point: StlScenePoint) {
         highlightWall = null
         if (measureA == null || measureB != null) {
@@ -239,7 +244,8 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
             measureA = measureA,
             measureB = measureB,
             highlightWall = highlightWall,
-            onPickPoint = if (openTool == "measure") ::addMeasurePoint else null,
+            // Geen tool open → tik een sensor of tag aan om te selecteren/meten (zie de selectie-sheet).
+            onPickPoint = if (openTool == null) ::addMeasurePoint else null,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -264,15 +270,37 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 .fillMaxWidth()
         )
 
-        // Meet-overlay (doorzichtig, bovenin): wandafstanden van het gekozen punt of de afstand
-        // tussen twee punten — houdt de meet-sheet klein.
-        if (openTool == "measure") {
+        // Selectie/meet-overlay (bovenin): verschijnt zodra je een sensor/tag aantikt (geen tool nodig).
+        // Eén punt → afstanden tot de wanden + opties (⋮); twee punten → onderlinge afstand.
+        val selection = measureA?.let { resolveStl3DSelection(state, it) }
+        if (openTool == null && measureA != null) {
             WorkflowStlMeasureOverlay(
                 measureA = measureA,
                 measureB = measureB,
                 box = state.project.dimensionsMm,
                 highlightWall = highlightWall,
                 onWallClick = { highlightWall = it },
+                hasOptions = selection != null,
+                canRename = selection is Stl3DSelection.Sensor,
+                onRename = {
+                    (selection as? Stl3DSelection.Sensor)?.let { sel ->
+                        state.project.sensors.firstOrNull { it.id == sel.id }?.let { sensor ->
+                            state.selectSensorForEdit(sensor)
+                            renameText = state.sensorName
+                            renameSensorId = sel.id
+                        }
+                    }
+                },
+                onDelete = {
+                    when (val sel = selection) {
+                        is Stl3DSelection.Sensor -> state.project.sensors.firstOrNull { it.id == sel.id }?.let(state::requestRemoveSensor)
+                        is Stl3DSelection.Tag -> state.savedAprilTags.firstOrNull { it.id == sel.id }?.let(state::requestDeleteMarker)
+                        null -> Unit
+                    }
+                    measureA = null; measureB = null; highlightWall = null
+                },
+                onMove = { state.open2DModel(WorkflowScreen.Stl) },
+                onDeselect = { measureA = null; measureB = null; highlightWall = null },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 96.dp, start = 16.dp, end = 16.dp)
@@ -280,8 +308,8 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
             )
         }
 
-        // Statuschip linksonder (zoals de 2D-kaart): actieve tool, weergave en meetresultaat.
-        if (openTool == null) {
+        // Statuschip linksonder: alleen als er niets geselecteerd is (anders neemt de selectie-sheet het over).
+        if (openTool == null && measureA == null) {
             WorkflowStlStatusChip(
                 toolLabel = workflowStlToolTitle(openTool),
                 viewMode = viewMode,
@@ -329,19 +357,11 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                         showLabels = showLabels,
                         onShowLabelsChange = { showLabels = it }
                     )
-                    "measure" -> WorkflowStlMeasurePanel(
-                        measureA = measureA,
-                        onClear = {
-                            measureA = null
-                            measureB = null
-                            highlightWall = null
-                        }
-                    )
                     "list" -> WorkflowStlEntityListPanel(
                         state = state,
                         onMeasureFrom = { point ->
                             addMeasurePoint(point)
-                            openTool = "measure"
+                            openTool = null
                         }
                     )
                     else -> WorkflowStlViewPanel(
@@ -371,11 +391,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 onClick = { openTool = if (openTool == "view") null else "view" }
             )
             WorkflowCameraToolButton(
-                key = "measure",
-                selected = openTool == "measure",
-                onClick = { openTool = if (openTool == "measure") null else "measure" }
-            )
-            WorkflowCameraToolButton(
                 key = "list",
                 selected = openTool == "list",
                 onClick = { openTool = if (openTool == "list") null else "list" }
@@ -389,6 +404,32 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 key = "fill",
                 selected = openTool == "kader",
                 onClick = { openTool = if (openTool == "kader") null else "kader" }
+            )
+        }
+
+        // Hernoem-dialoog voor de geselecteerde sensor.
+        renameSensorId?.let {
+            AlertDialog(
+                onDismissRequest = { renameSensorId = null },
+                title = { Text("Sensor hernoemen") },
+                text = {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it },
+                        label = { Text("Naam") },
+                        singleLine = true
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        state.sensorName = renameText
+                        state.saveSensorPoint()
+                        renameSensorId = null
+                    }) { Text("Opslaan") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { renameSensorId = null }) { Text("Annuleren") }
+                }
             )
         }
     }
@@ -441,6 +482,25 @@ internal fun buildStlScenePoints(
         }
     }
     return points
+}
+
+/** Wat de gebruiker in de 3D-weergave aantikte: een sensor of een tag (of niets bij een los punt). */
+internal sealed interface Stl3DSelection {
+    data class Sensor(val id: String) : Stl3DSelection
+    data class Tag(val id: Int) : Stl3DSelection
+}
+
+/** Zoekt bij een aangetikt scènepunt de bijbehorende sensor of tag (exacte positie-match; de
+ *  scènepunten zijn immers uit dezelfde posities opgebouwd). Null voor een gemeten/los punt. */
+internal fun resolveStl3DSelection(state: WorkflowAppState, p: StlScenePoint): Stl3DSelection? {
+    if (p.square) {
+        return state.savedAprilTags.firstOrNull {
+            it.positionMm.x.toFloat() == p.x && it.positionMm.y.toFloat() == p.y && it.positionMm.z.toFloat() == p.z
+        }?.let { Stl3DSelection.Tag(it.id) }
+    }
+    return state.project.sensors.firstOrNull {
+        it.positionMm.x.toFloat() == p.x && it.positionMm.y.toFloat() == p.y && it.positionMm.z.toFloat() == p.z
+    }?.let { Stl3DSelection.Sensor(it.id) }
 }
 
 /** Berekent de wandbox van de tank in projectframe-mm ([minX,minY,minZ,maxX,maxY,maxZ]) — de
@@ -643,19 +703,6 @@ internal fun WorkflowStlStatusChip(
     }
 }
 
-@Composable
-internal fun WorkflowStlMeasurePanel(
-    measureA: StlScenePoint?,
-    onClear: () -> Unit
-) {
-    // Uitleg staat in de compacte overlay bovenin; hier alleen de wis-knop zodra er gemeten is.
-    if (measureA != null) {
-        OutlinedButton(onClick = onClear, modifier = Modifier.height(44.dp)) {
-            Text("Wis meting")
-        }
-    }
-}
-
 /** Loodrechte afstand van een meetpunt tot elke boxwand (mm): de box-coördinaten zijn de offsets. */
 internal fun wallOffsetsMm(p: StlScenePoint, box: MmPosition): List<Pair<String, Int>> = listOf(
     "Links" to p.x.roundToInt(),
@@ -675,13 +722,21 @@ internal fun WorkflowStlMeasureOverlay(
     box: MmPosition,
     highlightWall: Int?,
     onWallClick: (Int?) -> Unit,
+    hasOptions: Boolean = false,
+    canRename: Boolean = false,
+    onRename: () -> Unit = {},
+    onDelete: () -> Unit = {},
+    onMove: () -> Unit = {},
+    onDeselect: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (measureA == null) return
+    var menuOpen by remember(measureA, measureB) { mutableStateOf(false) }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(13.dp),
         color = WorkflowCameraPanel.copy(alpha = 0.92f),
+        contentColor = Color.White,
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
         shadowElevation = 8.dp
     ) {
@@ -689,16 +744,45 @@ internal fun WorkflowStlMeasureOverlay(
             Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            if (measureB != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    stlMeasureStatusText(measureA, measureB) ?: "",
-                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp
+                    if (measureB != null) (stlMeasureStatusText(measureA, measureB) ?: "")
+                    else measureA.label.ifEmpty { "Meetpunt" },
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (measureB != null) 13.sp else 12.sp,
+                    modifier = Modifier.weight(1f)
                 )
-            } else {
-                Text(
-                    measureA.label.ifEmpty { "Meetpunt" },
-                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp
-                )
+                // ⋮ opties alleen bij één geselecteerde sensor/tag (niet bij een 2-punts meting).
+                if (measureB == null && hasOptions) {
+                    Box {
+                        Surface(
+                            modifier = Modifier.size(28.dp).clickable { menuOpen = true },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color.White.copy(alpha = 0.12f)
+                        ) {
+                            Canvas(Modifier.fillMaxSize().padding(8.dp)) {
+                                repeat(3) { i ->
+                                    drawCircle(
+                                        Color.White,
+                                        radius = size.minDimension * 0.11f,
+                                        center = Offset(size.width / 2f, size.height * (0.2f + i * 0.3f))
+                                    )
+                                }
+                            }
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            if (canRename) {
+                                DropdownMenuItem(text = { Text("Hernoemen") }, onClick = { menuOpen = false; onRename() })
+                            }
+                            DropdownMenuItem(text = { Text("Verplaats (2D)") }, onClick = { menuOpen = false; onMove() })
+                            DropdownMenuItem(text = { Text("Verwijderen") }, onClick = { menuOpen = false; onDelete() })
+                            DropdownMenuItem(text = { Text("Deselecteren") }, onClick = { menuOpen = false; onDeselect() })
+                        }
+                    }
+                }
+            }
+            if (measureB == null) {
                 wallOffsetsMm(measureA, box).chunked(3).forEachIndexed { rowIdx, row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                         row.forEachIndexed { colIdx, (label, mm) ->

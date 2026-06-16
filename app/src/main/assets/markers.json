@@ -1,0 +1,25 @@
+{
+  "markers": [
+    {
+      "id": 1,
+      "type": "apriltag",
+      "size_mm": 100,
+      "position_mm": [0, 0, 0],
+      "rotation_deg": [0, 0, 180]
+    },
+    {
+      "id": 2,
+      "type": "apriltag",
+      "size_mm": 100,
+      "position_mm": [5000, 0, 0],
+      "rotation_deg": [0, 0, 180]
+    },
+    {
+      "id": 3,
+      "type": "apriltag",
+      "size_mm": 100,
+      "position_mm": [0, 0, 2500],
+      "rotation_deg": [0, 0, 180]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+kan je verder gaan met het implementeren en het controlleren of het goed zit. want als ik een tag scan dan flikkert die heel erg en verspringt die ook en ook klopt de AR niet. is het zo gemaakt dat als ik een Tag gescant heb dat die de AR weer kalibreert en zo niet dat die de AR sensoren toch behoudt ookal ziet die de sensoren niet maar wel natuurlijk mee gaat in XYZ en de positie van de telefoon. is dit mogelijk met de techniek van de telefoon?
+
+als dit allemaal niet werkt wil ik het anders doen.
+
+ik plak op bijv 3 tags op verschillende locaties op een plane (3 hoeken? of hoek onder, midden andere hoek boven (diagonaal). ik selecteer een zeikant van de trafo en dan registeerd die daar de sensoren als ik die plaats met de cursor. maar het liefst natuurlijk het eerste idee.

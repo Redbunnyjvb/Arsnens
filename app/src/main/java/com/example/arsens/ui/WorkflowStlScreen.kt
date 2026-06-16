@@ -320,8 +320,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                         onShowMeasuredPointsChange = { showMeasuredPoints = it },
                         showAprilTags = showAprilTags,
                         onShowAprilTagsChange = { showAprilTags = it },
-                        showFrame = showFrame,
-                        onShowFrameChange = { showFrame = it },
                         showLabels = showLabels,
                         onShowLabelsChange = { showLabels = it }
                     )
@@ -591,7 +589,7 @@ internal fun WorkflowStlToolPanel(
 
 internal fun workflowStlToolTitle(tool: String?): String =
     when (tool) {
-        "kader" -> "Kader & onderdelen"
+        "kader" -> "Box & onderdelen"
         "layers" -> "Lagen"
         "measure" -> "Meten"
         "list" -> "Sensoren & tags"
@@ -807,19 +805,11 @@ internal fun WorkflowStlKaderPanel(
     onShowWallBoxChange: (Boolean) -> Unit
 ) {
     val models = state.project.stlModels
+    val scope = rememberCoroutineScope()
     WorkflowMessage(state.message)
 
-    // 1. Boxweergave — laat zien waar de box-rand en de berekende (buiten)wandbox liggen.
-    WorkflowSheetSectionLabel("Boxweergave")
-    WorkflowStlBoxPanel(
-        showFrame = showFrame,
-        onShowFrameChange = onShowFrameChange,
-        showWallBox = showWallBox,
-        onShowWallBoxChange = onShowWallBoxChange
-    )
-
-    // 2. Trafo-afmetingen — handinvoer of automatisch van de buitenwand; vergrendelen = leidend.
-    WorkflowSheetSectionLabel("Trafo-afmetingen (mm)")
+    // 1. Box — maten, vergrendelen en wat je van de box ziet, bij elkaar.
+    WorkflowSheetSectionLabel("Box (mm)")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         WorkflowNumberField("Lengte", state.lengthMm, { state.lengthMm = it }, Modifier.weight(1f))
         WorkflowNumberField("Breedte", state.widthMm, { state.widthMm = it }, Modifier.weight(1f))
@@ -838,21 +828,27 @@ internal fun WorkflowStlKaderPanel(
             Switch(checked = state.project.dimensionsLocked, onCheckedChange = state::setDimensionsLocked)
         }
     }
+    OutlinedButton(
+        onClick = { state.recomputeBoxFromStl(scope) },
+        modifier = Modifier.fillMaxWidth().height(44.dp)
+    ) {
+        Text("Box uit 3D-model")
+    }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        StlLayerToggle("Toon box", showFrame) { onShowFrameChange(!showFrame) }
+        StlLayerToggle("Toon wandbox", showWallBox) { onShowWallBoxChange(!showWallBox) }
+    }
 
-    // 3. Onderdelen — importeren + per deel rol/transform en "Lijn uit op tank".
+    // 2. Onderdelen — importeren en per onderdeel rol/positie aanpassen.
     WorkflowSheetSectionLabel("Onderdelen (${models.size})")
     OutlinedButton(onClick = onLoadStl, modifier = Modifier.fillMaxWidth().height(46.dp)) {
         Text("Importeer STL's")
     }
     if (models.isEmpty()) {
-        Text(
-            "Nog geen STL geladen.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 13.sp
-        )
+        Text("Nog geen STL geladen.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
     } else {
         Text(
-            "Tik om te openen of te sluiten.",
+            "Tik een onderdeel om rol en positie aan te passen.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp
         )
@@ -868,18 +864,18 @@ internal fun WorkflowStlKaderPanel(
             }
         }
 
-        // 4. Hele assembly — vloeroffset binnenwerk + alles in één keer op de tank uitlijnen.
-        WorkflowSheetSectionLabel("Hele assembly")
+        // 3. Uitlijnen — alles in één keer op de tank + vloeroffset binnenwerk.
+        WorkflowSheetSectionLabel("Uitlijnen")
+        WorkflowSheetPlaceButton(
+            label = "Lijn alles uit op tank",
+            color = ArSensBlue,
+            onClick = onAutoAlign
+        )
         WorkflowNumberField(
             label = "Vloeroffset binnenwerk (mm)",
             value = state.assemblyFloorOffsetMm,
             onValueChange = { state.assemblyFloorOffsetMm = it },
             modifier = Modifier.fillMaxWidth()
-        )
-        WorkflowSheetPlaceButton(
-            label = "Lijn alles uit op tank",
-            color = ArSensBlue,
-            onClick = onAutoAlign
         )
     }
 }
@@ -1115,24 +1111,6 @@ internal fun StlAdjustField(
 }
 
 @Composable
-internal fun WorkflowStlBoxPanel(
-    showFrame: Boolean,
-    onShowFrameChange: (Boolean) -> Unit,
-    showWallBox: Boolean,
-    onShowWallBoxChange: (Boolean) -> Unit
-) {
-    Text(
-        "Wandbox (oranje stippel) = berekend uit de tankwanden.",
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 12.sp
-    )
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StlLayerToggle("Trafokader", showFrame) { onShowFrameChange(!showFrame) }
-        StlLayerToggle("Wandbox", showWallBox) { onShowWallBoxChange(!showWallBox) }
-    }
-}
-
-@Composable
 internal fun WorkflowStlLayersPanel(
     showStlModels: Boolean,
     onShowStlModelsChange: (Boolean) -> Unit,
@@ -1142,8 +1120,6 @@ internal fun WorkflowStlLayersPanel(
     onShowMeasuredPointsChange: (Boolean) -> Unit,
     showAprilTags: Boolean,
     onShowAprilTagsChange: (Boolean) -> Unit,
-    showFrame: Boolean,
-    onShowFrameChange: (Boolean) -> Unit,
     showLabels: Boolean,
     onShowLabelsChange: (Boolean) -> Unit
 ) {
@@ -1152,7 +1128,6 @@ internal fun WorkflowStlLayersPanel(
         StlLayerToggle("Sensoren", showSensors) { onShowSensorsChange(!showSensors) }
         StlLayerToggle("Gemeten", showMeasuredPoints) { onShowMeasuredPointsChange(!showMeasuredPoints) }
         StlLayerToggle("Tags", showAprilTags) { onShowAprilTagsChange(!showAprilTags) }
-        StlLayerToggle("Frame", showFrame) { onShowFrameChange(!showFrame) }
         StlLayerToggle("Labels", showLabels) { onShowLabelsChange(!showLabels) }
     }
 }

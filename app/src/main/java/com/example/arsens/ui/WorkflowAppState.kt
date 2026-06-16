@@ -1258,6 +1258,31 @@ internal class WorkflowAppState(context: Context) {
         }
     }
 
+    /** Herberekent ALLEEN de box-maten uit het 3D-model (tank/deksel-wandbox); de delen blijven
+     *  staan. Respecteert vergrendelde maten — ontgrendel eerst om te overschrijven. */
+    fun recomputeBoxFromStl(scope: CoroutineScope) {
+        scope.launch {
+            if (project.dimensionsLocked) {
+                message = "Maten zijn vergrendeld — ontgrendel eerst om de box uit het model te halen."
+                return@launch
+            }
+            val built = buildTankFrame(adoptTankDimensions = true)
+            if (built == null) {
+                message = "Geen geldige STL-meshes om de box te berekenen."
+                return@launch
+            }
+            val stl = built.first.dims
+            if (stl == project.dimensionsMm) {
+                message = "Box is al ${stl.x}×${stl.y}×${stl.z} mm."
+                return@launch
+            }
+            project = project.copy(dimensionsMm = stl)
+            syncDimensionsFromProject()
+            saveProject()
+            message = "Box uit 3D-model: ${stl.x}×${stl.y}×${stl.z} mm (delen ongewijzigd)."
+        }
+    }
+
     /** Importeert STL's en vraagt daarna of we ze automatisch op de tank plaatsen (i.p.v. stil
      *  uitlijnen). Bevestigen → nieuwe delen op de tank; is de tank zélf erbij → volledige uitlijning. */
     fun addStlModelsThenAskPlace(uris: List<Uri>, scope: CoroutineScope) {
@@ -1328,12 +1353,28 @@ internal class WorkflowAppState(context: Context) {
         // (ribben/radiatoren steken erbuiten en tellen niet mee — daar zitten geen sensoren op).
         val tankWall = wallBoundsOf(tankModel, tankMesh)
         val ts = tankModel.scalePercent / 100f
+        // Echte tankrand in projectframe, ONAFHANKELIJK van dims.z: hierop rust de deksel. Bij
+        // vergrendelde/handmatige maten kan dims.z afwijken; dan zou een op dims.z geplaatste deksel zweven.
+        val tankTopZ = (tankWall[5] - tankWall[2]) * ts
+        // Box-hoogte: is er náást de tank óók een deksel, dan loopt de box door tot de BOVENKANT van
+        // het MASSIEVE deksel (wandbox-Z-max = géén ribben/uitstulpsels). De deksel-flens rust op de
+        // tankrand, dus deksel-top = tankrand + deksel-wandboxhoogte. Geen apart deksel → tot de tankrand.
+        val coverEntry = withMesh
+            .filter { (m, _) -> m.role == StlPartRole.Cover && m.id != tankModel.id }
+            .maxByOrNull { (_, mesh) -> volumeOf(mesh) }
+        val boxHeightMm = if (coverEntry != null) {
+            val (coverModel, coverMesh) = coverEntry
+            val coverWall = wallBoundsOf(coverModel, coverMesh)
+            tankTopZ + (coverWall[5] - coverWall[2]) * (coverModel.scalePercent / 100f)
+        } else {
+            tankTopZ
+        }
         // Vergrendelde maten zijn leidend: de operator heeft ze bewust handmatig ingevoerd.
         val dims = if (adoptTankDimensions && !project.dimensionsLocked) {
             MmPosition(
                 x = ((tankWall[3] - tankWall[0]) * ts).roundToInt().coerceAtLeast(1),
                 y = ((tankWall[4] - tankWall[1]) * ts).roundToInt().coerceAtLeast(1),
-                z = ((tankWall[5] - tankWall[2]) * ts).roundToInt().coerceAtLeast(1)
+                z = boxHeightMm.roundToInt().coerceAtLeast(1)
             )
         } else {
             project.dimensionsMm
@@ -1343,10 +1384,6 @@ internal class WorkflowAppState(context: Context) {
             y = (-tankWall[1] * ts).roundToInt(),
             z = (-tankWall[2] * ts).roundToInt()
         )
-        // Echte tankrand in projectframe, ONAFHANKELIJK van dims.z: hierop rust de deksel. Bij
-        // vergrendelde/handmatige maten kan dims.z afwijken van de STL-tankhoogte; dan zou een op
-        // dims.z geplaatste deksel zweven.
-        val tankTopZ = (tankWall[5] - tankWall[2]) * ts
         val base = TankFrame(
             tankModelId = tankModel.id,
             tankModel = tankModel,

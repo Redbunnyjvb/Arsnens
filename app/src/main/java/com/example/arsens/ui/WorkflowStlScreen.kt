@@ -176,10 +176,13 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
     var showAprilTags by remember { mutableStateOf(true) }
     var showFrame by remember { mutableStateOf(true) }
     var showLabels by remember { mutableStateOf(true) }
-    // Meet-tool: twee gekozen scènepunten (sensor, tag of boxhoek) → 3D-afstand in mm.
+    // Meet-tool: twee gekozen punten (sensor of tag) → 3D-afstand in mm.
     var measureA by remember { mutableStateOf<StlScenePoint?>(null) }
     var measureB by remember { mutableStateOf<StlScenePoint?>(null) }
+    // Aangetikte wand in de meet-overlay (0=Links..5=Top); licht het bijbehorende boxvlak op.
+    var highlightWall by remember { mutableStateOf<Int?>(null) }
     fun addMeasurePoint(point: StlScenePoint) {
+        highlightWall = null
         if (measureA == null || measureB != null) {
             measureA = point
             measureB = null
@@ -235,6 +238,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
             seeThrough = renderSeeThrough,
             measureA = measureA,
             measureB = measureB,
+            highlightWall = highlightWall,
             onPickPoint = if (openTool == "measure") ::addMeasurePoint else null,
             modifier = Modifier.fillMaxSize()
         )
@@ -267,6 +271,8 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 measureA = measureA,
                 measureB = measureB,
                 box = state.project.dimensionsMm,
+                highlightWall = highlightWall,
+                onWallClick = { highlightWall = it },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 96.dp, start = 16.dp, end = 16.dp)
@@ -328,6 +334,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                         onClear = {
                             measureA = null
                             measureB = null
+                            highlightWall = null
                         }
                     )
                     "list" -> WorkflowStlEntityListPanel(
@@ -661,13 +668,15 @@ internal fun wallOffsetsMm(p: StlScenePoint, box: MmPosition): List<Pair<String,
     "Top" to (box.z - p.z).roundToInt()
 )
 
-/** Doorzichtige meet-overlay bovenin: één punt → afstand tot de 6 wanden; twee punten → 3D-afstand.
- *  Houdt de meet-sheet klein en geeft direct overzicht over de positie t.o.v. de box. */
+/** Doorzichtige, INTERACTIEVE meet-overlay bovenin: één punt → afstand tot de 6 wanden (tik een
+ *  waarde → die wand licht op in 3D); twee punten → 3D-afstand. Houdt de meet-sheet klein. */
 @Composable
 internal fun WorkflowStlMeasureOverlay(
     measureA: StlScenePoint?,
     measureB: StlScenePoint?,
     box: MmPosition,
+    highlightWall: Int?,
+    onWallClick: (Int?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (measureA == null) return
@@ -692,17 +701,28 @@ internal fun WorkflowStlMeasureOverlay(
                     measureA.label.ifEmpty { "Meetpunt" },
                     color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
                 )
-                wallOffsetsMm(measureA, box).chunked(3).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxWidth()) {
-                        row.forEach { (label, mm) ->
-                            Column(Modifier.weight(1f)) {
+                wallOffsetsMm(measureA, box).chunked(3).forEachIndexed { rowIdx, row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        row.forEachIndexed { colIdx, (label, mm) ->
+                            val wall = rowIdx * 3 + colIdx
+                            val selected = wall == highlightWall
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .clickable { onWallClick(if (selected) null else wall) }
+                                    .background(
+                                        if (selected) ArSensBlue.copy(alpha = 0.40f) else Color.Transparent,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                            ) {
                                 Text(label, color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
                                 Text("$mm", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                             }
                         }
                     }
                 }
-                Text("afstand tot wand (mm)", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+                Text("tik een waarde → wand licht op", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
             }
         }
     }

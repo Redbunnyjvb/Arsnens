@@ -109,6 +109,8 @@ internal fun TransformerMapWorkspace(
     var mapPan by remember { mutableStateOf(Offset.Zero) }
     var measureStart by remember { mutableStateOf<MapMeasurePoint?>(null) }
     var measureEnd by remember { mutableStateOf<MapMeasurePoint?>(null) }
+    // Aangetikte rand in de meet-overlay (0=Links,1=Rechts,2=Onder,3=Boven); licht die rand op.
+    var highlightEdge by remember { mutableStateOf<Int?>(null) }
     var selectedMoveTarget by remember { mutableStateOf<MapMoveTarget?>(null) }
     var planeDropdownOpen by remember { mutableStateOf(false) }
     val initialEditMode = when {
@@ -189,6 +191,7 @@ internal fun TransformerMapWorkspace(
             MapEditMode.Measure -> Unit
         }
         selectedMoveTarget = null
+        highlightEdge = null
         if (measureStart == null || measureEnd != null) {
             measureStart = point
             measureEnd = null
@@ -211,6 +214,7 @@ internal fun TransformerMapWorkspace(
             mapPan = mapPan,
             measureStart = measureStart,
             measureEnd = measureEnd,
+            highlightEdge = highlightEdge,
             selectedTarget = selectedMoveTarget,
             onTapPoint = ::handleMapTap,
             onTransform = { pan, zoom ->
@@ -263,6 +267,20 @@ internal fun TransformerMapWorkspace(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+        val activeMeasure = measureStart
+        if (editMode == MapEditMode.Measure && activeMeasure != null && measureEnd == null) {
+            MapWallOffsetOverlay(
+                measureStart = activeMeasure,
+                view = selectedView,
+                dimensions = project.dimensionsMm,
+                highlightEdge = highlightEdge,
+                onEdgeClick = { highlightEdge = it },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 150.dp, start = 16.dp, end = 16.dp)
+                    .widthIn(max = 360.dp)
+            )
         }
         if (compactControls) {
             val menus = transformerMapCompactMenus(
@@ -643,6 +661,7 @@ private fun TransformerMapCanvas(
     mapPan: Offset,
     measureStart: MapMeasurePoint?,
     measureEnd: MapMeasurePoint?,
+    highlightEdge: Int? = null,
     selectedTarget: MapMoveTarget? = null,
     onTapPoint: (MapMeasurePoint) -> Unit,
     onTransform: (Offset, Float) -> Unit,
@@ -683,6 +702,7 @@ private fun TransformerMapCanvas(
             mapPan = mapPan,
             measureStart = measureStart,
             measureEnd = measureEnd,
+            highlightEdge = highlightEdge,
             selectedTarget = selectedTarget,
             results = results
         )
@@ -696,6 +716,7 @@ private fun DrawScope.drawTransformerMap(
     mapPan: Offset,
     measureStart: MapMeasurePoint?,
     measureEnd: MapMeasurePoint?,
+    highlightEdge: Int? = null,
     selectedTarget: MapMoveTarget? = null,
     results: Map<String, com.example.arsens.data.InstallationResult>
 ) {
@@ -806,6 +827,23 @@ private fun DrawScope.drawTransformerMap(
             val label = "${measureStart.distanceTo(measureEnd).roundToInt()} mm"
             drawContext.canvas.nativeCanvas.drawText(label, mid.x + 10f, mid.y - 10f, paint)
         }
+    }
+
+    // Aangetikte rand oplichten + loodlijn van het meetpunt ernaartoe (interactieve rand-afstand).
+    if (highlightEdge != null && measureStart != null) {
+        val sp = measureStart.toScreenPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+        val right = origin.x + mapWidth
+        val bottom = origin.y + mapHeight
+        val accent = Color(0xFF2563EB)
+        val (e0, e1, foot) = when (highlightEdge) {
+            0 -> Triple(Offset(origin.x, origin.y), Offset(origin.x, bottom), Offset(origin.x, sp.y))
+            1 -> Triple(Offset(right, origin.y), Offset(right, bottom), Offset(right, sp.y))
+            2 -> Triple(Offset(origin.x, bottom), Offset(right, bottom), Offset(sp.x, bottom))
+            else -> Triple(Offset(origin.x, origin.y), Offset(right, origin.y), Offset(sp.x, origin.y))
+        }
+        drawLine(accent, e0, e1, strokeWidth = 5f)
+        drawLine(accent, sp, foot, strokeWidth = 3f)
+        drawCircle(accent, radius = 6f, center = foot)
     }
 
     if (selectedTarget != null) {
@@ -1018,6 +1056,58 @@ private data class MapLayout(
     val mapWidth: Float,
     val mapHeight: Float
 )
+
+/** Interactieve rand-afstand-overlay voor de 2D-kaart: afstand van het meetpunt tot de 4 randen
+ *  van het gekozen vlak; tik een waarde → die rand licht op in de kaart (parallel aan de 3D-overlay). */
+@Composable
+private fun MapWallOffsetOverlay(
+    measureStart: MapMeasurePoint,
+    view: TransformerMapView,
+    dimensions: MmPosition,
+    highlightEdge: Int?,
+    onEdgeClick: (Int?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hMax = view.horizontalMm(dimensions)
+    val vMax = view.verticalMm(dimensions)
+    val edges = listOf(
+        "Links" to measureStart.horizontalMm.roundToInt(),
+        "Rechts" to (hMax - measureStart.horizontalMm).roundToInt(),
+        "Onder" to measureStart.verticalMm.roundToInt(),
+        "Boven" to (vMax - measureStart.verticalMm).roundToInt()
+    )
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = Color.White.copy(alpha = 0.94f),
+        shadowElevation = 6.dp
+    ) {
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text("Afstand tot rand (mm) — tik om op te lichten", color = ArSensChromeMuted, fontSize = 11.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                edges.forEachIndexed { i, (label, mm) ->
+                    val selected = i == highlightEdge
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .clickable { onEdgeClick(if (selected) null else i) }
+                            .background(
+                                if (selected) ArSensBlue.copy(alpha = 0.18f) else Color.Transparent,
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                    ) {
+                        Text(label, color = ArSensChromeMuted, fontSize = 10.sp)
+                        Text("$mm", color = Color(0xFF111827), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        }
+    }
+}
 
 private data class MapMeasurePoint(
     val label: String,

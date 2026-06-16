@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.asImageBitmap
@@ -117,7 +118,9 @@ fun StlPreview(
     /** Meetpunten: A→B wordt als lijn met mm-afstand over de scène getekend. */
     measureA: StlScenePoint? = null,
     measureB: StlScenePoint? = null,
-    /** Niet-null = meetmodus: een tik kiest het dichtstbijzijnde scènepunt (sensor/tag/boxhoek). */
+    /** Aangetikte wand-index (0=Links..5=Top) → licht dat boxvlak op + loodlijn vanaf measureA. */
+    highlightWall: Int? = null,
+    /** Niet-null = meetmodus: een tik kiest het dichtstbijzijnde scènepunt (sensor of tag). */
     onPickPoint: ((StlScenePoint) -> Unit)? = null
 ) {
     var freeYaw by remember { mutableFloatStateOf(28f) }
@@ -227,7 +230,7 @@ fun StlPreview(
                         }
                     }
                 }
-                drawSceneOverlay(bounds, yaw, pitch, zoom, pan, boxDimsMm, points, measureA, measureB, hFlip, wallBoxMm)
+                drawSceneOverlay(bounds, yaw, pitch, zoom, pan, boxDimsMm, points, measureA, measureB, hFlip, wallBoxMm, highlightWall)
             }
         }
 
@@ -798,7 +801,9 @@ private fun pickScenePoint(
     maxDistancePx: Float,
     hFlip: Float = 1f
 ): StlScenePoint? {
-    val candidates = if (box != null) points + boxCornerScenePoints(box) else points
+    // Box-hoeken bewust NIET meer aantikbaar: fiddly met vingers, en de wand-afstand-overlay geeft
+    // de afstand tot elke wand al. Meten gaat tussen sensoren/tags onderling.
+    val candidates = points
     var best: StlScenePoint? = null
     var bestDistSq = maxDistancePx * maxDistancePx
     for (candidate in candidates) {
@@ -836,7 +841,8 @@ private fun DrawScope.drawSceneOverlay(
     measureA: StlScenePoint? = null,
     measureB: StlScenePoint? = null,
     hFlip: Float = 1f,
-    wallBox: FloatArray? = null
+    wallBox: FloatArray? = null,
+    highlightWall: Int? = null
 ) {
     val yaw = yawDeg * (PI.toFloat() / 180f)
     val pitch = pitchDeg * (PI.toFloat() / 180f)
@@ -900,6 +906,39 @@ private fun DrawScope.drawSceneOverlay(
                 )
             }
         }
+    }
+
+    // Aangetikte wand oplichten + loodlijn van het meetpunt ernaartoe (interactieve wand-afstand).
+    if (box != null && highlightWall != null && measureA != null) {
+        val bx = box.x.toFloat(); val by = box.y.toFloat(); val bz = box.z.toFloat()
+        val face: List<FloatArray> = when (highlightWall) {
+            0 -> listOf(floatArrayOf(0f, 0f, 0f), floatArrayOf(0f, by, 0f), floatArrayOf(0f, by, bz), floatArrayOf(0f, 0f, bz))
+            1 -> listOf(floatArrayOf(bx, 0f, 0f), floatArrayOf(bx, by, 0f), floatArrayOf(bx, by, bz), floatArrayOf(bx, 0f, bz))
+            2 -> listOf(floatArrayOf(0f, 0f, 0f), floatArrayOf(bx, 0f, 0f), floatArrayOf(bx, 0f, bz), floatArrayOf(0f, 0f, bz))
+            3 -> listOf(floatArrayOf(0f, by, 0f), floatArrayOf(bx, by, 0f), floatArrayOf(bx, by, bz), floatArrayOf(0f, by, bz))
+            4 -> listOf(floatArrayOf(0f, 0f, 0f), floatArrayOf(bx, 0f, 0f), floatArrayOf(bx, by, 0f), floatArrayOf(0f, by, 0f))
+            else -> listOf(floatArrayOf(0f, 0f, bz), floatArrayOf(bx, 0f, bz), floatArrayOf(bx, by, bz), floatArrayOf(0f, by, bz))
+        }
+        val poly = face.map { Offset(px(it[0], it[1]), py(it[0], it[1], it[2])) }
+        val path = Path().apply {
+            moveTo(poly[0].x, poly[0].y)
+            for (i in 1 until poly.size) lineTo(poly[i].x, poly[i].y)
+            close()
+        }
+        drawPath(path, Color(0x3342A5F5))
+        drawPath(path, Color(0xFF2563EB), style = Stroke(width = 3f))
+        val foot = when (highlightWall) {
+            0 -> floatArrayOf(0f, measureA.y, measureA.z)
+            1 -> floatArrayOf(bx, measureA.y, measureA.z)
+            2 -> floatArrayOf(measureA.x, 0f, measureA.z)
+            3 -> floatArrayOf(measureA.x, by, measureA.z)
+            4 -> floatArrayOf(measureA.x, measureA.y, 0f)
+            else -> floatArrayOf(measureA.x, measureA.y, bz)
+        }
+        val aPos = Offset(px(measureA.x, measureA.y), py(measureA.x, measureA.y, measureA.z))
+        val footPos = Offset(px(foot[0], foot[1]), py(foot[0], foot[1], foot[2]))
+        drawLine(Color(0xFF2563EB), aPos, footPos, strokeWidth = 4f)
+        drawCircle(Color(0xFF2563EB), radius = 7f, center = footPos)
     }
 
     // Berekende wandbox (gestippeld, oranje): toont waar "Lijn uit op tank" de afmetingen vandaan

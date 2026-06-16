@@ -689,65 +689,6 @@ internal fun ArSensCreateProjectCard(state: WorkflowAppState) {
 }
 
 /**
- * Trafo-afmetingen op het projectscherm: handmatig aan te passen, óók nadat een STL geladen is.
- * Met "Maten vergrendelen" laat STL-import / "Lijn uit op tank" de handmatige maten staan —
- * handig bij een afwijkende STL of wanneer je in een ander meetkader wilt werken.
- */
-@Composable
-internal fun WorkflowDimensionsCard(state: WorkflowAppState) {
-    val dims = state.project.dimensionsMm
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = ArSensSurface),
-        border = BorderStroke(1.dp, ArSensLine),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Trafo-afmetingen",
-                    color = ArSensInk,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    "${dims.x} × ${dims.y} × ${dims.z} mm",
-                    color = ArSensMuted,
-                    fontSize = 13.sp
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                WorkflowNumberField("Lengte", state.lengthMm, { state.lengthMm = it }, Modifier.weight(1f))
-                WorkflowNumberField("Breedte", state.widthMm, { state.widthMm = it }, Modifier.weight(1f))
-                WorkflowNumberField("Hoogte", state.heightMm, { state.heightMm = it }, Modifier.weight(1f))
-            }
-            Button(onClick = state::applyManualDimensions, modifier = Modifier.fillMaxWidth().height(46.dp)) {
-                Text("Pas maten toe")
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Maten vergrendelen", color = ArSensInk, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                    Text(
-                        "STL-import en \"Lijn uit op tank\" overschrijven de maten dan niet.",
-                        color = ArSensMuted,
-                        fontSize = 12.sp
-                    )
-                }
-                Switch(
-                    checked = state.project.dimensionsLocked,
-                    onCheckedChange = state::setDimensionsLocked
-                )
-            }
-        }
-    }
-}
-
-/**
  * Assembly-kaart op het projectscherm: STL-delen importeren, automatisch uitlijnen op de tank
  * (projectafmetingen = tankafmetingen) en doorklikken naar de 3D-editor voor fijnafstelling.
  * Zelfde kaartstijl als de overige projectkaarten (wit, ink, ArSens-lijnen).

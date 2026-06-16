@@ -549,6 +549,9 @@ internal fun WorkflowStlToolPanel(
         modifier = modifier,
         shape = RoundedCornerShape(24.dp),
         color = WorkflowCameraPanel,
+        // Witte content-kleur: ongekleurde Text-regels (zoals "Tags (N)") erven anders de donkere
+        // inkt van het lichte buitenste thema → onleesbaar donker-op-donker in deze glas-sheet.
+        contentColor = Color.White,
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
         shadowElevation = 10.dp
     ) {
@@ -645,12 +648,7 @@ internal fun WorkflowStlMeasurePanel(
     measureA: StlScenePoint?,
     onClear: () -> Unit
 ) {
-    Text(
-        "Tik een sensor, tag of boxhoek aan. Eén punt toont de afstand tot de wanden, " +
-            "twee punten de onderlinge afstand.",
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 13.sp
-    )
+    // Uitleg staat in de compacte overlay bovenin; hier alleen de wis-knop zodra er gemeten is.
     if (measureA != null) {
         OutlinedButton(onClick = onClear, modifier = Modifier.height(44.dp)) {
             Text("Wis meting")
@@ -682,27 +680,27 @@ internal fun WorkflowStlMeasureOverlay(
     if (measureA == null) return
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(13.dp),
         color = WorkflowCameraPanel.copy(alpha = 0.92f),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
         shadowElevation = 8.dp
     ) {
         Column(
-            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             if (measureB != null) {
                 Text(
                     stlMeasureStatusText(measureA, measureB) ?: "",
-                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
+                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp
                 )
             } else {
                 Text(
                     measureA.label.ifEmpty { "Meetpunt" },
-                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
+                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp
                 )
                 wallOffsetsMm(measureA, box).chunked(3).forEachIndexed { rowIdx, row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                         row.forEachIndexed { colIdx, (label, mm) ->
                             val wall = rowIdx * 3 + colIdx
                             val selected = wall == highlightWall
@@ -712,17 +710,17 @@ internal fun WorkflowStlMeasureOverlay(
                                     .clickable { onWallClick(if (selected) null else wall) }
                                     .background(
                                         if (selected) ArSensBlue.copy(alpha = 0.40f) else Color.Transparent,
-                                        RoundedCornerShape(8.dp)
+                                        RoundedCornerShape(7.dp)
                                     )
-                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    .padding(horizontal = 5.dp, vertical = 3.dp)
                             ) {
-                                Text(label, color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
-                                Text("$mm", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text(label, color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp)
+                                Text("$mm", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                             }
                         }
                     }
                 }
-                Text("tik een waarde → wand licht op", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+                Text("tik een waarde → wand licht op", color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp)
             }
         }
     }

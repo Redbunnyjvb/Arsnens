@@ -104,7 +104,6 @@ internal fun TransformerMapWorkspace(
     // Aangetikte rand in de meet-overlay (0=Links,1=Rechts,2=Onder,3=Boven); licht die rand op.
     var highlightEdge by remember { mutableStateOf<Int?>(null) }
     var selectedMoveTarget by remember { mutableStateOf<MapMoveTarget?>(null) }
-    var planeDropdownOpen by remember { mutableStateOf(false) }
     val initialEditMode = when {
         onPlaceTagPoint != null -> MapEditMode.Tag
         onPlaceSensorPoint != null -> MapEditMode.Sensor
@@ -227,19 +226,8 @@ internal fun TransformerMapWorkspace(
         ) {
             ArSensCounterPill("${project.sensors.size} sensoren geplaatst", dark = false)
         }
-        TransformerMapPlaneDropdown(
-            selectedView = selectedView,
-            expanded = planeDropdownOpen,
-            onExpandedChange = { planeDropdownOpen = it },
-            onViewSelected = {
-                selectedView = it
-                onViewChanged?.invoke(it)
-                planeDropdownOpen = false
-            },
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 82.dp)
-        )
+        // De vlak-/aanzichtkiezer zit nu als "Vlak"-knop in de rechter tool-rail (zelfde idee als
+        // de "Paneel selector" op de camera) i.p.v. een aparte dropdown bovenaan — zie de menu's.
         val activeMeasure = measureStart
         if (editMode == MapEditMode.Measure && activeMeasure != null && measureEnd == null) {
             MapWallOffsetOverlay(
@@ -250,7 +238,7 @@ internal fun TransformerMapWorkspace(
                 onEdgeClick = { highlightEdge = it },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 150.dp, start = 16.dp, end = 16.dp)
+                    .padding(top = 88.dp, start = 16.dp, end = 16.dp)
                     .widthIn(max = 360.dp)
             )
         }
@@ -285,7 +273,25 @@ internal fun TransformerMapWorkspace(
                     measureEnd = null
                     selectedMoveTarget = null
                 }
-            )
+            ) + TransformerMapWorkspaceMenu("plane", "Vlak", null) {
+                // Aanzicht kiezen via de mini-trafo, in dezelfde donkere sheet als de andere tools.
+                Text(
+                    "Kies het aanzicht van de trafo.",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 13.sp
+                )
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    TransformerPlaneMiniMap(
+                        selectedView = selectedView,
+                        onViewSelected = { v ->
+                            selectedView = v
+                            onViewChanged?.invoke(v)
+                            openMenuKey = null
+                        },
+                        modifier = Modifier.size(220.dp)
+                    )
+                }
+            }
             val openMenu = menus.firstOrNull { it.key == openMenuKey }
             if (openMenu == null) {
                 TransformerMapCompactStatus(
@@ -457,71 +463,6 @@ private fun TransformerMapCompactStatus(
                 !message.isNullOrBlank() -> Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 else -> Text("Tik op de kaart of open een tool rechts.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             }
-        }
-    }
-}
-
-// De 2D-kaart gebruikt nu de gedeelde WorkflowCameraToolButton (camera-glas) voor de tool-rail,
-// zodat de tool-knoppen identiek zijn aan de camera en de 3D-weergave. Dit icoon blijft alleen nog
-// over voor de "Vlak"-dropdown bovenaan.
-private fun DrawScope.drawTransformerMapToolIcon(key: String, color: Color) {
-    val w = size.width
-    val h = size.height
-    val center = Offset(w / 2f, h / 2f)
-    val stroke = (w * 0.11f).coerceAtLeast(2.2f)
-    when (key) {
-        "tags" -> {
-            drawRect(color, topLeft = Offset(w * 0.18f, h * 0.18f), size = Size(w * 0.64f, h * 0.64f), style = Stroke(width = stroke))
-            drawCircle(color, radius = w * 0.11f, center = center)
-            drawLine(color, Offset(w * 0.18f, h * 0.36f), Offset(w * 0.36f, h * 0.18f), strokeWidth = stroke, cap = StrokeCap.Round)
-            drawLine(color, Offset(w * 0.64f, h * 0.82f), Offset(w * 0.82f, h * 0.64f), strokeWidth = stroke, cap = StrokeCap.Round)
-        }
-        "sensor" -> {
-            drawCircle(color, radius = w * 0.24f, center = center, style = Stroke(width = stroke))
-            drawCircle(color, radius = w * 0.08f, center = center)
-            drawLine(color, Offset(center.x, h * 0.08f), Offset(center.x, h * 0.24f), strokeWidth = stroke, cap = StrokeCap.Round)
-            drawLine(color, Offset(center.x, h * 0.76f), Offset(center.x, h * 0.92f), strokeWidth = stroke, cap = StrokeCap.Round)
-            drawLine(color, Offset(w * 0.08f, center.y), Offset(w * 0.24f, center.y), strokeWidth = stroke, cap = StrokeCap.Round)
-            drawLine(color, Offset(w * 0.76f, center.y), Offset(w * 0.92f, center.y), strokeWidth = stroke, cap = StrokeCap.Round)
-        }
-        "view" -> {
-            drawRect(color, topLeft = Offset(w * 0.18f, h * 0.26f), size = Size(w * 0.64f, h * 0.48f), style = Stroke(width = stroke))
-            drawLine(color, Offset(w * 0.18f, h * 0.42f), Offset(w * 0.82f, h * 0.42f), strokeWidth = stroke, cap = StrokeCap.Round)
-            drawLine(color, Offset(w * 0.40f, h * 0.26f), Offset(w * 0.40f, h * 0.74f), strokeWidth = stroke, cap = StrokeCap.Round)
-        }
-        "start" -> {
-            val path = androidx.compose.ui.graphics.Path().apply {
-                moveTo(w * 0.34f, h * 0.22f)
-                lineTo(w * 0.76f, h * 0.50f)
-                lineTo(w * 0.34f, h * 0.78f)
-                close()
-            }
-            drawPath(path, color)
-        }
-        "measure" -> {
-            // Meetlat: diagonale lijn met eindpunten.
-            val a = Offset(w * 0.22f, h * 0.78f)
-            val b = Offset(w * 0.78f, h * 0.22f)
-            drawLine(color, a, b, strokeWidth = stroke, cap = StrokeCap.Round)
-            drawCircle(color, radius = w * 0.09f, center = a)
-            drawCircle(color, radius = w * 0.09f, center = b)
-        }
-        "select" -> {
-            // Aanwijzer/cursor-pijl.
-            val path = androidx.compose.ui.graphics.Path().apply {
-                moveTo(w * 0.30f, h * 0.20f)
-                lineTo(w * 0.30f, h * 0.74f)
-                lineTo(w * 0.43f, h * 0.61f)
-                lineTo(w * 0.53f, h * 0.82f)
-                lineTo(w * 0.62f, h * 0.78f)
-                lineTo(w * 0.52f, h * 0.57f)
-                lineTo(w * 0.70f, h * 0.55f)
-                close()
-            }
-            drawPath(path, color)
-        }
-        else -> {
-            drawCircle(color, radius = w * 0.28f, center = center, style = Stroke(width = stroke))
         }
     }
 }
@@ -841,88 +782,6 @@ private fun planeMiniRects(size: Size): List<Pair<TransformerMapView, Rect>> {
         TransformerMapView.Right to rect(2, 1),
         TransformerMapView.Front to rect(1, 2)
     )
-}
-
-@Composable
-private fun TransformerMapPlaneDropdown(
-    selectedView: TransformerMapView,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    onViewSelected: (TransformerMapView) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Surface(
-            modifier = Modifier
-                .height(58.dp)
-                .widthIn(min = 178.dp, max = 236.dp)
-                .clickable { onExpandedChange(!expanded) },
-            shape = RoundedCornerShape(16.dp),
-            color = Color.White,
-            border = BorderStroke(1.dp, Color(0x14101B33)),
-            shadowElevation = 10.dp
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 15.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Canvas(Modifier.size(30.dp)) {
-                    drawTransformerMapToolIcon("view", ArSensChromeMuted)
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-                    Text("Vlak", color = ArSensChromeMuted, fontSize = 13.sp)
-                    Text(
-                        selectedView.label,
-                        color = ArSensChromeInk,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Canvas(Modifier.size(18.dp)) {
-                    val stroke = 2.1.dp.toPx()
-                    val top = if (expanded) size.height * 0.62f else size.height * 0.38f
-                    val bottom = if (expanded) size.height * 0.38f else size.height * 0.62f
-                    drawLine(
-                        ArSensChromeMuted,
-                        Offset(size.width * 0.18f, top),
-                        Offset(size.width * 0.50f, bottom),
-                        strokeWidth = stroke,
-                        cap = StrokeCap.Round
-                    )
-                    drawLine(
-                        ArSensChromeMuted,
-                        Offset(size.width * 0.82f, top),
-                        Offset(size.width * 0.50f, bottom),
-                        strokeWidth = stroke,
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
-        }
-        if (expanded) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = Color.White,
-                border = BorderStroke(1.dp, Color(0x14101B33)),
-                shadowElevation = 12.dp
-            ) {
-                TransformerPlaneMiniMap(
-                    selectedView = selectedView,
-                    onViewSelected = onViewSelected,
-                    modifier = Modifier
-                        .padding(12.dp)
-                        .size(178.dp)
-                )
-            }
-        }
-    }
 }
 
 private data class MapLayout(

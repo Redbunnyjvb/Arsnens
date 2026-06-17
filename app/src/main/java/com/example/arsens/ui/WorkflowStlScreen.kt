@@ -174,7 +174,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
     var showWallBox by remember { mutableStateOf(false) }
     var showStlModels by remember { mutableStateOf(true) }
     var showSensors by remember { mutableStateOf(true) }
-    var showMeasuredPoints by remember { mutableStateOf(true) }
     var showAprilTags by remember { mutableStateOf(true) }
     var showFrame by remember { mutableStateOf(true) }
     var showLabels by remember { mutableStateOf(true) }
@@ -218,7 +217,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
     val scenePoints = buildStlScenePoints(
         state = state,
         showSensors = showSensors,
-        showMeasuredPoints = showMeasuredPoints,
         showAprilTags = showAprilTags,
         showLabels = showLabels
     )
@@ -350,8 +348,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                         onShowStlModelsChange = { showStlModels = it },
                         showSensors = showSensors,
                         onShowSensorsChange = { showSensors = it },
-                        showMeasuredPoints = showMeasuredPoints,
-                        onShowMeasuredPointsChange = { showMeasuredPoints = it },
                         showAprilTags = showAprilTags,
                         onShowAprilTagsChange = { showAprilTags = it },
                         showLabels = showLabels,
@@ -438,7 +434,6 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
 internal fun buildStlScenePoints(
     state: WorkflowAppState,
     showSensors: Boolean = true,
-    showMeasuredPoints: Boolean = true,
     showAprilTags: Boolean = true,
     showLabels: Boolean = true
 ): List<StlScenePoint> {
@@ -467,18 +462,6 @@ internal fun buildStlScenePoints(
                 square = false,
                 label = if (showLabels) sensor.id else ""
             )
-        }
-        if (showMeasuredPoints) {
-            results[sensor.id]?.measuredPositionMm?.let { measured ->
-                points += StlScenePoint(
-                    x = measured.x.toFloat(),
-                    y = measured.y.toFloat(),
-                    z = measured.z.toFloat(),
-                    argb = 0xFF2563EB.toInt(),
-                    square = false,
-                    label = ""
-                )
-            }
         }
     }
     return points
@@ -1210,8 +1193,6 @@ internal fun WorkflowStlLayersPanel(
     onShowStlModelsChange: (Boolean) -> Unit,
     showSensors: Boolean,
     onShowSensorsChange: (Boolean) -> Unit,
-    showMeasuredPoints: Boolean,
-    onShowMeasuredPointsChange: (Boolean) -> Unit,
     showAprilTags: Boolean,
     onShowAprilTagsChange: (Boolean) -> Unit,
     showLabels: Boolean,
@@ -1220,7 +1201,6 @@ internal fun WorkflowStlLayersPanel(
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         StlLayerToggle("STL", showStlModels) { onShowStlModelsChange(!showStlModels) }
         StlLayerToggle("Sensoren", showSensors) { onShowSensorsChange(!showSensors) }
-        StlLayerToggle("Gemeten", showMeasuredPoints) { onShowMeasuredPointsChange(!showMeasuredPoints) }
         StlLayerToggle("Tags", showAprilTags) { onShowAprilTagsChange(!showAprilTags) }
         StlLayerToggle("Labels", showLabels) { onShowLabelsChange(!showLabels) }
     }

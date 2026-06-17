@@ -397,21 +397,28 @@ internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
         sensorPlacementLabel = if (placingSensors) "Sensor" else null,
         onPlaceSensorPoint = if (placingSensors) state::saveSensorAtBoxPosition else null,
         // Verplaatsen (slepen) overal beschikbaar in de 2D-kaart, niet alleen tijdens plaatsen.
+        // Verplaatsen via ⋮ → Verplaats (tik de nieuwe plek) in de verenigde weergave; tijdens
+        // plaatsen blijft de Verplaats-tool (slepen) beschikbaar.
         onMoveSensorPoint = state::moveSensorToBoxPosition,
         tagPlacementLabel = if (preparedSetup) "Tag" else null,
         onPlaceTagPoint = if (preparedSetup) state::saveTagAtBoxPosition else null,
         onMoveTagPoint = state::moveTagToBoxPosition,
-        onSelectSensor = if (!placingSensors) { id: String ->
-            state.project.sensors.firstOrNull { it.id == id }?.let(state::selectSensorForEdit)
-            state.selectedMapTarget = MapSelection.Sensor(id)
-        } else null,
-        onSelectTag = if (!placingSensors) { id: Int ->
-            state.savedAprilTags.firstOrNull { it.id == id }?.let(state::selectTagForEdit)
-            state.selectedMapTarget = MapSelection.Tag(id)
-        } else null,
-        selectControls = if (!placingSensors) {
-            { WorkflowMapSelectionPanel(state) }
-        } else null,
+        // Gewone 2D-weergave: verenigde selectie zoals de 3D-weergave (tik = selecteren → ⋮-sheet
+        // met Hernoemen / Verplaats / Verwijderen / Deselecteren). Geen aparte Selecteer-/Gereedschap-tool.
+        unifiedSelection = !placingSensors,
+        onRenameSensor = { id, newName ->
+            state.project.sensors.firstOrNull { it.id == id }?.let { sensor ->
+                state.selectSensorForEdit(sensor)
+                state.sensorName = newName
+                state.saveSensorPoint()
+            }
+        },
+        onDeleteSensor = { id ->
+            state.project.sensors.firstOrNull { it.id == id }?.let(state::requestRemoveSensor)
+        },
+        onDeleteTag = { id ->
+            state.savedAprilTags.firstOrNull { it.id == id }?.let(state::requestDeleteMarker)
+        },
         tagControls = if (preparedSetup) {
             { WorkflowPreparedTagMapMenu(state) }
         } else {
@@ -429,97 +436,6 @@ internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
         },
         overflowItems = workflowTopBarMenuItems(state)
     )
-}
-
-/** Zijpaneel van de Selecteer-tool in de 2D-kaart: bewerk (naam/positie) of verwijder de
- *  aangetikte sensor of tag. Hergebruikt de bestaande edit-velden en state-methodes. */
-@Composable
-internal fun WorkflowMapSelectionPanel(state: WorkflowAppState) {
-    when (val selection = state.selectedMapTarget) {
-        is MapSelection.Sensor -> {
-            val sensor = state.project.sensors.firstOrNull { it.id == selection.id }
-            if (sensor == null) {
-                WorkflowStatusChip(text = "Sensor niet meer beschikbaar.", status = SensorStatus.Pending)
-                return
-            }
-            Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Sensor ${sensor.id} bewerken", fontWeight = FontWeight.Bold)
-                    OutlinedTextField(
-                        value = state.sensorName,
-                        onValueChange = { state.sensorName = it },
-                        label = { Text("Naam") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        WorkflowNumberField("Meet X", state.sensorX, { state.sensorX = it }, Modifier.weight(1f))
-                        WorkflowNumberField("Meet Y", state.sensorY, { state.sensorY = it }, Modifier.weight(1f))
-                        WorkflowNumberField("Meet Z", state.sensorZ, { state.sensorZ = it }, Modifier.weight(1f))
-                    }
-                    WorkflowNumberField("Tolerantie mm", state.sensorTolerance, { state.sensorTolerance = it }, Modifier.fillMaxWidth())
-                    OutlinedTextField(
-                        value = state.sensorInstruction,
-                        onValueChange = { state.sensorInstruction = it },
-                        label = { Text("Instructie") },
-                        minLines = 2,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                state.saveSensorPoint()
-                                state.project.sensors.firstOrNull { it.id == selection.id }
-                                    ?.let(state::selectSensorForEdit)
-                            },
-                            modifier = Modifier.height(48.dp)
-                        ) { Text("Opslaan") }
-                        OutlinedButton(
-                            onClick = { state.requestRemoveSensor(sensor) },
-                            modifier = Modifier.height(48.dp)
-                        ) { Text("Verwijder") }
-                    }
-                }
-            }
-        }
-        is MapSelection.Tag -> {
-            val tag = state.savedAprilTags.firstOrNull { it.id == selection.id }
-            if (tag == null) {
-                WorkflowStatusChip(text = "Tag niet meer beschikbaar.", status = SensorStatus.Pending)
-                return
-            }
-            Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("AprilTag ${tag.id} bewerken", fontWeight = FontWeight.Bold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        WorkflowNumberField("Tag ID", state.tagId, { state.tagId = it }, Modifier.weight(1f))
-                        WorkflowNumberField("Formaat mm", state.tagSize, { state.tagSize = it }, Modifier.weight(1f))
-                    }
-                    WorkflowTagCoordinateFields(state)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                state.savePreparedTagFromFields()
-                                state.savedAprilTags.firstOrNull { it.id == selection.id }
-                                    ?.let(state::selectTagForEdit)
-                            },
-                            modifier = Modifier.height(48.dp)
-                        ) { Text("Opslaan") }
-                        OutlinedButton(
-                            onClick = { state.requestDeleteMarker(tag) },
-                            modifier = Modifier.height(48.dp)
-                        ) { Text("Verwijder") }
-                    }
-                }
-            }
-        }
-        null -> {
-            WorkflowStatusChip(
-                text = "Tik een sensor of tag op de kaart om te bewerken of te verwijderen.",
-                status = SensorStatus.Pending
-            )
-        }
-    }
 }
 
 @Composable

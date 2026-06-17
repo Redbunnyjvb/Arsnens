@@ -1040,33 +1040,15 @@ private fun WorkflowMapSelectionOverlay(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    when {
-                        moving -> "Verplaatsen — ${target?.label ?: "punt"}"
-                        measureEnd != null -> "Meting: ${measureStart.distanceTo(measureEnd).roundToInt()} mm"
-                        else -> target?.label ?: "Meetpunt"
-                    },
+                    if (measureEnd != null) "Meting: ${measureStart.distanceTo(measureEnd).roundToInt()} mm"
+                    else target?.label ?: "Meetpunt",
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
                     modifier = Modifier.weight(1f)
                 )
-                // In verplaatsmodus: "Annuleer"-knop om de modus te verlaten (de sensor blijft staan).
-                if (moving) {
-                    Surface(
-                        modifier = Modifier.clickable { onCancelMove() },
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color.White.copy(alpha = 0.14f)
-                    ) {
-                        Text(
-                            "Annuleer",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        )
-                    }
-                } else if (measureEnd == null && target != null && !dragging) {
-                    // ⋮ bij een geselecteerde sensor/tag in rust (niet bij een 2-punts meting).
+                // ⋮ bij een geselecteerde sensor/tag in rust (niet bij een 2-punts meting of actief slepen).
+                if (measureEnd == null && target != null && !dragging) {
                     Box {
                         Surface(
                             modifier = Modifier.size(28.dp).clickable { menuOpen = true },

@@ -122,11 +122,7 @@ class TransformerGeometryTest {
 
     @Test
     fun markerPresetNormalsPointOutsideTransformerPlanes() {
-        // Front is gecorrigeerd naar Rz=0 zodat de geprinte hoeken op hun ECHTE box-positie staan
-        // (printed-right = +X). De winding-normaal wijst daardoor naar +Y (naar binnen) — dat is prima
-        // voor solvePnP en is juist de fix voor de gespiegelde AR-pose. Back/Left/Right/Top staan nog
-        // op de oude (naar buiten gerichte) waarden en worden pas per vlak omgezet ná verificatie.
-        assertNormal(TagPlane.Front, MmPosition(5_000, 0, 1_600), 0.0, 1.0, 0.0)
+        assertNormal(TagPlane.Front, MmPosition(5_000, 0, 1_600), 0.0, -1.0, 0.0)
         assertNormal(TagPlane.Back, MmPosition(5_000, dimensions.y, 1_600), 0.0, 1.0, 0.0)
         assertNormal(TagPlane.Left, MmPosition(0, 2_500, 1_600), -1.0, 0.0, 0.0)
         assertNormal(TagPlane.Right, MmPosition(dimensions.x, 2_500, 1_600), 1.0, 0.0, 0.0)

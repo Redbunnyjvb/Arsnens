@@ -456,6 +456,57 @@ internal fun WorkflowSettingsScreen(state: WorkflowAppState) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("AR-driftcorrectie", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(
+                        "Corrigeer een sensorpositie automatisch zodra de bijbehorende tag weer stabiel " +
+                            "in beeld komt: de camerastraal van het plaatsmoment wordt opnieuw op het " +
+                            "gecorrigeerde kader geprojecteerd. Werkt binnen dezelfde camerasessie en " +
+                            "corrigeert alleen drift, niet een richtfout. Wijzigt opgeslagen meetdata — " +
+                            "staat daarom standaard uit.",
+                        color = ArSensMuted,
+                        fontSize = 13.sp
+                    )
+                    val autoCorrectOn = state.autoCorrectSensorDrift
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (autoCorrectOn) ArSensBlue.copy(alpha = 0.10f) else Color.Transparent,
+                        border = BorderStroke(1.dp, if (autoCorrectOn) ArSensBlue else ArSensLine),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { state.setAutoCorrectDrift(!autoCorrectOn) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Automatisch corrigeren", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text(
+                                    if (autoCorrectOn) "Aan — sensoren worden bijgewerkt bij herankering" else "Uit — posities blijven zoals geplaatst",
+                                    color = ArSensMuted,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Text(
+                                if (autoCorrectOn) "Aan" else "Uit",
+                                color = if (autoCorrectOn) ArSensBlue else ArSensMuted,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = ArSensSurface),
+                border = BorderStroke(1.dp, ArSensLine),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Diagnose (links/rechts-audit)", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                     Text(
                         "Hulpmiddelen om de oriëntatie van tags te controleren. Alleen nodig bij het " +

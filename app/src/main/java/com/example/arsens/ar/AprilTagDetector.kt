@@ -78,7 +78,17 @@ data class AprilTagFrameResult(
      *  maar zonder de per-draw Rodrigues round-trip in de STL-overlay. In die mode wordt
      *  [transformerPose] niet gesmoothed, dus de directe matrix omzeilt geen smoothing. Buiten
      *  ARCore-leading mode null → de overlay houdt het bestaande solvePnP-pad. */
-    val cameraCvFromTransformer: Transform3D? = null
+    val cameraCvFromTransformer: Transform3D? = null,
+    /** Cameraverplaatsing tussen het grijpen van het camerabeeld en het verwerken/fuseren van de
+     *  detectie (ARCore-pose bij capture vs. nu). Hoog = de telefoon bewoog tijdens de detectie →
+     *  de tag-pose is minder betrouwbaar. Voedt de plaatsingskwaliteit. Null = geen tag-packet. */
+    val motionDuringDetectionMm: Float? = null,
+    val motionDuringDetectionDeg: Float? = null,
+    /** Anker transformer→ARCore-wereld (alleen gezet als gekalibreerd; zelfde transform waaruit
+     *  [displayProjection]/[cameraCvFromTransformer] volgen). Voor straal-replay-driftcorrectie:
+     *  samen met de bij plaatsing bewaarde transformer-straal reconstrueert dit de anker-
+     *  onafhankelijke camerastraal in ARCore's wereld. */
+    val arFromTransformer: Transform3D? = null
 )
 
 /**
@@ -964,6 +974,40 @@ fun estimateCursorOnReferenceSurface(
         intersectMarkerReferencePlane(ray, placementReferenceMarker, dimensionsMm)?.let { return it.hit }
     }
     return intersectTransformerBox(ray, dimensionsMm)
+}
+
+/**
+ * Straal-replay-driftcorrectie: herprojecteert de bij plaatsing bewaarde camerastraal op het nu
+ * (correct) verankerde frame en geeft de bijgewerkte box-positie. [rayAtPlacement] staat in het
+ * transformerframe van het plaatsmoment; met [anchorAtPlacement] (transformer→ARCore-wereld toen)
+ * en [anchorNow] (idem nu) wordt de anker-onafhankelijke wereldstraal opnieuw in het huidige frame
+ * uitgedrukt en gesneden met het referentievlak van de tag (anders de trafo-box). Null = geen snit.
+ */
+fun reprojectPlacementRay(
+    rayAtPlacement: RayMm,
+    anchorAtPlacement: Transform3D,
+    anchorNow: Transform3D,
+    dimensionsMm: MmPosition,
+    referenceMarker: Marker?
+): MmPosition? {
+    // transformer_nu ← transformer_plaatsing, via de wereld: anchorNow⁻¹ ∘ anchorAtPlacement.
+    val rebase = anchorNow.inverseRigid() * anchorAtPlacement
+    val origin = rebase.transformPoint(rayAtPlacement.origin)
+    val tip = rebase.transformPoint(
+        doubleArrayOf(
+            rayAtPlacement.origin[0] + rayAtPlacement.direction[0],
+            rayAtPlacement.origin[1] + rayAtPlacement.direction[1],
+            rayAtPlacement.origin[2] + rayAtPlacement.direction[2]
+        )
+    )
+    val dir = doubleArrayOf(tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2])
+    val len = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
+    if (len < 1e-9) return null
+    val ray = RayMm(origin = origin, direction = doubleArrayOf(dir[0] / len, dir[1] / len, dir[2] / len))
+    if (referenceMarker != null) {
+        intersectMarkerReferencePlane(ray, referenceMarker, dimensionsMm)?.let { return it.hit.position }
+    }
+    return intersectTransformerBox(ray, dimensionsMm)?.position
 }
 
 fun cameraRayInTransformer(

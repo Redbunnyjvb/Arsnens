@@ -132,7 +132,10 @@ object JsonProjectStore {
             .put("tolerance_mm", sensor.toleranceMm)
             .put("instruction", sensor.instruction)
             .put("status", sensor.status.wireName)
-            .apply { sensor.referenceTagId?.let { put("reference_tag_id", it) } }
+            .apply {
+                sensor.referenceTagId?.let { put("reference_tag_id", it) }
+                sensor.placement?.let { put("placement", placementToJson(it)) }
+            }
 
     private fun sensorFromJson(json: JSONObject): Sensor =
         Sensor(
@@ -145,7 +148,49 @@ object JsonProjectStore {
             toleranceMm = json.optInt("tolerance_mm", 50),
             instruction = json.optString("instruction"),
             status = statusFromWireName(json.optString("status")),
-            referenceTagId = json.optInt("reference_tag_id", -1).takeIf { it >= 0 }
+            referenceTagId = json.optInt("reference_tag_id", -1).takeIf { it >= 0 },
+            placement = json.optJSONObject("placement")?.let(::placementFromJson)
+        )
+
+    private fun placementToJson(audit: SensorPlacementAudit): JSONObject =
+        JSONObject()
+            .put("grade", audit.grade.wireName)
+            .put("tracking_status", audit.trackingStatus)
+            .put("tracking_quality_percent", audit.trackingQualityPercent)
+            .put("detection_age_millis", audit.detectionAgeMillis)
+            .put("pose_marker_ids", JSONArray(audit.poseMarkerIds))
+            .put("was_stable_placement_lock", audit.wasStablePlacementLock)
+            .put("reasons", JSONArray(audit.reasons))
+            .put("placed_at_wall_millis", audit.placedAtWallMillis)
+            .apply {
+                audit.referenceTagId?.let { put("reference_tag_id", it) }
+                audit.reprojectionErrorPx?.let { put("reprojection_error_px", it.toDouble()) }
+                audit.reprojectionErrorMm?.let { put("reprojection_error_mm", it.toDouble()) }
+                audit.jitterMm?.let { put("jitter_mm", it.toDouble()) }
+                audit.motionDuringDetectionMm?.let { put("motion_during_detection_mm", it.toDouble()) }
+                audit.motionDuringDetectionDeg?.let { put("motion_during_detection_deg", it.toDouble()) }
+                audit.fusionEvent?.let { put("fusion_event", it) }
+                audit.fusionReason?.let { put("fusion_reason", it) }
+            }
+
+    private fun placementFromJson(json: JSONObject): SensorPlacementAudit =
+        SensorPlacementAudit(
+            grade = QualityGrade.fromWireName(json.optString("grade")),
+            trackingStatus = json.optString("tracking_status"),
+            trackingQualityPercent = json.optInt("tracking_quality_percent", 0),
+            detectionAgeMillis = json.optLong("detection_age_millis", Long.MAX_VALUE),
+            poseMarkerIds = json.optJSONArray("pose_marker_ids")?.toIntList() ?: emptyList(),
+            referenceTagId = json.optInt("reference_tag_id", -1).takeIf { it >= 0 },
+            reprojectionErrorPx = json.optDoubleOrNull("reprojection_error_px")?.toFloat(),
+            reprojectionErrorMm = json.optDoubleOrNull("reprojection_error_mm")?.toFloat(),
+            jitterMm = json.optDoubleOrNull("jitter_mm")?.toFloat(),
+            motionDuringDetectionMm = json.optDoubleOrNull("motion_during_detection_mm")?.toFloat(),
+            motionDuringDetectionDeg = json.optDoubleOrNull("motion_during_detection_deg")?.toFloat(),
+            wasStablePlacementLock = json.optBoolean("was_stable_placement_lock", false),
+            fusionEvent = json.optString("fusion_event").ifBlank { null },
+            fusionReason = json.optString("fusion_reason").ifBlank { null },
+            reasons = json.optJSONArray("reasons")?.toStringList() ?: emptyList(),
+            placedAtWallMillis = json.optLong("placed_at_wall_millis", 0L)
         )
 
     private fun markerToJson(marker: Marker): JSONObject =
@@ -253,6 +298,15 @@ object JsonProjectStore {
 
     private fun JSONArray.toFloatVector(): FloatVector =
         FloatVector(optDouble(0).toFloat(), optDouble(1).toFloat(), optDouble(2).toFloat())
+
+    private fun JSONArray.toIntList(): List<Int> =
+        List(length()) { optInt(it) }
+
+    private fun JSONArray.toStringList(): List<String> =
+        List(length()) { optString(it) }
+
+    private fun JSONObject.optDoubleOrNull(key: String): Double? =
+        if (has(key) && !isNull(key)) optDouble(key).takeUnless { it.isNaN() } else null
 
     private fun <T> JSONArray.mapObjects(transform: (JSONObject) -> T): List<T> =
         List(length()) { index -> transform(getJSONObject(index)) }

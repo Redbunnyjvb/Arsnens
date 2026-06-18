@@ -651,6 +651,10 @@ private class ArCoreAprilTagFusion {
         displayHeight: Int
     ): AprilTagFrameResult {
         val now = SystemClock.elapsedRealtime()
+        // Beweging-tijdens-detectie: hoeveel de ARCore-camerapose verschoof tussen het grijpen van
+        // het camerabeeld (capture) en nu (verwerking/fusion). Voedt de plaatsingskwaliteit.
+        val motionDuringDetectionMm = tagArFromCameraGl?.distanceTo(currentArFromCameraGl)?.toFloat()
+        val motionDuringDetectionDeg = tagArFromCameraGl?.rotationAngleDegreesTo(currentArFromCameraGl)?.toFloat()
         var fusionEvent: String? = null
         var fusionReason: String? = null
         fun recordFusionDecision(event: String, reason: String): String {
@@ -1013,7 +1017,10 @@ private class ArCoreAprilTagFusion {
             fusionEvent = fusionEvent,
             fusionReason = fusionReason,
             detectionAgeMillis = detectionAgeMillis,
-            cameraCvFromTransformer = cameraCvFromTransformerDirect
+            cameraCvFromTransformer = cameraCvFromTransformerDirect,
+            motionDuringDetectionMm = motionDuringDetectionMm,
+            motionDuringDetectionDeg = motionDuringDetectionDeg,
+            arFromTransformer = calibratedTransform
         )
     }
 

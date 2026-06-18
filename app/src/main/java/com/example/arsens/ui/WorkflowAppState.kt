@@ -112,6 +112,14 @@ import com.example.arsens.ar.ScreenPointPx
 import com.example.arsens.ar.TagDictionaryOption
 import com.example.arsens.ar.TagPoseMode
 import com.example.arsens.ar.TagPoseSmoother
+import com.example.arsens.ar.PlacementQuality
+import com.example.arsens.ar.PlacementQualityTuning
+import com.example.arsens.ar.computePlacementQuality
+import com.example.arsens.ar.toAudit
+import com.example.arsens.ar.RayMm
+import com.example.arsens.ar.Transform3D
+import com.example.arsens.ar.cameraRayInTransformer
+import com.example.arsens.ar.reprojectPlacementRay
 import com.example.arsens.ar.tagPlacementFor
 import com.example.arsens.ar.tagPositionFor
 import com.example.arsens.ar.tagRotationFor
@@ -127,6 +135,7 @@ import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
 import com.example.arsens.data.SensorStatus
+import com.example.arsens.data.SensorPlacementAudit
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
 import com.example.arsens.data.StlPartRole
@@ -316,6 +325,22 @@ fun setDefaultTagSize(sizeMm: Int) {
         sensorTagSizeMm = size
         appSettings.sensorTagSizeMm = size
     }
+
+    /** Automatische straal-replay-driftcorrectie aan/uit (app-breed, instelling). */
+    var autoCorrectSensorDrift by mutableStateOf(appSettings.autoCorrectSensorDrift)
+        private set
+
+    fun setAutoCorrectDrift(enabled: Boolean) {
+        if (autoCorrectSensorDrift == enabled) return
+        autoCorrectSensorDrift = enabled
+        appSettings.autoCorrectSensorDrift = enabled
+        if (!enabled) placementRays.clear()
+        message = if (enabled) {
+            "Automatische driftcorrectie aan: een sensor wordt bijgewerkt zodra zijn tag weer stabiel in beeld komt."
+        } else {
+            "Automatische driftcorrectie uit."
+        }
+    }
     var mode by mutableStateOf(WorkMode.Prepared)
     var cameraPlacementTarget by mutableStateOf(CameraPlacementTarget.Sensor)
     var project by mutableStateOf(repository.loadInitialProject())
@@ -401,8 +426,30 @@ fun setDefaultTagSize(sizeMm: Int) {
      *  scherm (x,y ∈ [-1,1]; +x = rechts, +y = omlaag in schermzin). Zo kun je een sensor aan de
      *  rand plaatsen terwijl de AprilTag in beeld (en dus getrackt) blijft. (0,0) = midden. */
     var arCursorScreenOffset by mutableStateOf(Offset.Zero)
+    /** RMS-jitter (mm) van de laatste cursorposities tijdens een lock; null = onvoldoende samples. */
+    var cursorJitterMm by mutableStateOf<Float?>(null)
+        private set
+    /** Live plaatsingskwaliteit (±mm + grade) voor de huidige pose; voedt de status-chip en wordt
+     *  als onveranderlijke snapshot bij een sensor opgeslagen. Blokkeert het opslaan NIET. */
+    var placementQuality by mutableStateOf<PlacementQuality?>(null)
+        private set
     private var lastCursorLogKey: String = ""
     private var lastCursorLogMillis: Long = 0L
+    private val cursorJitterSamples = ArrayDeque<MmPosition>()
+    private var lockTagSignature: List<Int> = emptyList()
+    private var lockSinceMillis: Long = 0L
+    private var lockSamples: Int = 0
+    private var lastLockStable: Boolean = false
+    private var lastLockLogMillis: Long = 0L
+    /** Sessie-gebonden camerastralen van het plaatsmoment per sensor-id, voor straal-replay-
+     *  driftcorrectie. NIET gepersisteerd: alleen geldig binnen de huidige ARCore-sessie. */
+    private val placementRays = mutableMapOf<String, StoredPlacementRay>()
+    /** Voortgang (0..1) van de settle-timer vóór een straal-replay-correctie vuurt; null = geen
+     *  correctie-procedure bezig. Voedt het voortgangsringetje om het camera-kwaliteitspuntje. */
+    var correctionSettleProgress by mutableStateOf<Float?>(null)
+        private set
+    private var correctionSettleSinceMillis: Long = 0L
+    private var correctionSettleTags: List<Int> = emptyList()
     var showAxisOverlay by mutableStateOf(false)
     var showMiniAxisOverlay by mutableStateOf(true)
     /** Debug (links/rechts-audit): tekent de CANONIEKE box-assen via de tag-pose, zonder
@@ -682,6 +729,227 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
         arCursorSource = cursorSource
         logCursorSource(now, cursorSource, hit)
+        updatePlacementQuality(now, hit, cursorSource)
+    }
+
+    /** Werkt de jitter-buffer, stabiele-lock-bepaling en live [placementQuality] bij, en markeert
+     *  reeds (stabiel) geplaatste sensoren als "opnieuw valideren" bij een significante herankering.
+     *  Blokkeert nooit het opslaan — puur informatief + audittrail. */
+    private fun updatePlacementQuality(now: Long, cursorHit: PlaneHit?, cursorSource: String) {
+        val result = aprilTagResult
+        // Verse, hoge-kwaliteit tag-pose? Dat is de basis voor een stabiele lock.
+        val freshGoodPose = result.detectionAgeMillis <= PlacementQualityTuning.LOCK_FRESH_AGE_MILLIS &&
+            result.trackingQualityPercent >= PlacementQualityTuning.LOCK_MIN_QUALITY_PERCENT &&
+            result.transformerPose != null &&
+            result.trackingStatus == ArTrackingStatus.TagCalibration
+        val signature = result.poseMarkerIds.sorted()
+        if (freshGoodPose && signature.isNotEmpty()) {
+            if (signature != lockTagSignature) {
+                // Andere (set) tags of opnieuw vergrendeld → dwell/samples/jitter opnieuw opbouwen.
+                lockTagSignature = signature
+                lockSinceMillis = now
+                lockSamples = 1
+                cursorJitterSamples.clear()
+            } else {
+                lockSamples += 1
+            }
+            val hitPosition = cursorHit?.position
+                ?.takeIf { cursorSource == "surface" || cursorSource == "depth" }
+            if (hitPosition != null) {
+                cursorJitterSamples.addLast(hitPosition)
+                while (cursorJitterSamples.size > CURSOR_JITTER_WINDOW) cursorJitterSamples.removeFirst()
+            }
+        } else {
+            lockTagSignature = emptyList()
+            lockSinceMillis = 0L
+            lockSamples = 0
+            cursorJitterSamples.clear()
+        }
+        val jitter = rmsJitterMm(cursorJitterSamples)
+        cursorJitterMm = jitter
+
+        val motionMm = result.motionDuringDetectionMm ?: 0f
+        val motionDeg = result.motionDuringDetectionDeg ?: 0f
+        val dwellOk = lockSinceMillis != 0L &&
+            now - lockSinceMillis >= PlacementQualityTuning.LOCK_MIN_DWELL_MILLIS
+        val jitterOk = (jitter ?: Float.MAX_VALUE) <= PlacementQualityTuning.LOCK_MAX_JITTER_MM
+        val motionOk = motionMm <= PlacementQualityTuning.LOCK_MAX_MOTION_MM &&
+            motionDeg <= PlacementQualityTuning.LOCK_MAX_MOTION_DEG
+        val isStableLock = freshGoodPose &&
+            lockSamples >= PlacementQualityTuning.LOCK_MIN_SAMPLES &&
+            dwellOk && jitterOk && motionOk
+
+        val referenceTagId = result.poseMarkerIds.firstOrNull() ?: lastPlacementReference?.tagId
+        placementQuality = computePlacementQuality(
+            result = result,
+            jitterMm = jitter,
+            isStableLock = isStableLock,
+            referenceTagId = referenceTagId
+        )
+        placementQuality?.let { logCalibrationLock(now, it) }
+        maybeAutoCorrectSensors(result)
+    }
+
+    /** Bewaart (in-memory, sessie-gebonden) de camerastraal van het plaatsmoment, zodat de positie
+     *  later via straal-replay gecorrigeerd kan worden. Vereist een ARCore-anker + displayProjection;
+     *  anders niets te corrigeren en wordt geen straal bewaard. */
+    private fun storePlacementRayFor(sensorId: String, referenceTagId: Int?) {
+        val anchor = aprilTagResult.arFromTransformer
+        val ray = cameraRayInTransformer(
+            aprilTagResult,
+            arCursorScreenOffset.x.toDouble(),
+            -arCursorScreenOffset.y.toDouble()
+        )
+        if (anchor == null || ray == null) {
+            placementRays.remove(sensorId)
+            return
+        }
+        placementRays[sensorId] = StoredPlacementRay(
+            rayTransformer = ray,
+            anchorAtPlacement = anchor,
+            referenceTagId = referenceTagId,
+            placedAtMillis = System.currentTimeMillis()
+        )
+    }
+
+    /** Straal-replay-driftcorrectie (alleen als de instelling aan staat): zodra de referentietag van
+     *  een eerder geplaatste sensor weer VERS en betrouwbaar in beeld is, herprojecteert dit de
+     *  bewaarde camerastraal op het gecorrigeerde frame en werkt [Sensor.positionMm] bij. Eén keer
+     *  per sensor (de straal wordt daarna gewist). Werkt alleen binnen dezelfde ARCore-sessie. */
+    private fun maybeAutoCorrectSensors(result: AprilTagFrameResult) {
+        if (!autoCorrectSensorDrift || placementRays.isEmpty()) { resetCorrectionSettle(); return }
+        val anchorNow = result.arFromTransformer ?: run { resetCorrectionSettle(); return }
+        if (result.trackingStatus != ArTrackingStatus.TagCalibration ||
+            result.detectionAgeMillis > PlacementQualityTuning.LOCK_FRESH_AGE_MILLIS
+        ) {
+            resetCorrectionSettle(); return
+        }
+        val visibleTags = result.poseMarkerIds.toSet()
+        if (visibleTags.isEmpty()) { resetCorrectionSettle(); return }
+        // Openstaande sensoren waarvan de referentietag nu in beeld is.
+        val pending = project.sensors.filter { sensor ->
+            val stored = placementRays[sensor.id] ?: return@filter false
+            val refTag = stored.referenceTagId ?: sensor.referenceTagId
+            refTag != null && refTag in visibleTags
+        }
+        if (pending.isEmpty()) { resetCorrectionSettle(); return }
+        // Rustig anker vereist: bij te veel beweging tijdens detectie wacht de timer (reset naar 0).
+        val motionMm = result.motionDuringDetectionMm ?: 0f
+        val motionDeg = result.motionDuringDetectionDeg ?: 0f
+        if (motionMm > PlacementQualityTuning.LOCK_MAX_MOTION_MM ||
+            motionDeg > PlacementQualityTuning.LOCK_MAX_MOTION_DEG
+        ) {
+            correctionSettleSinceMillis = 0L
+            correctionSettleTags = emptyList()
+            correctionSettleProgress = 0f
+            return
+        }
+        // Settle-timer: dezelfde tag-set moet CORRECTION_SETTLE_MILLIS aaneengesloten rustig + vers
+        // in beeld blijven; pas dan is het anker "rustig" genoeg om op te corrigeren.
+        val now = System.currentTimeMillis()
+        val signature = visibleTags.sorted()
+        if (correctionSettleSinceMillis == 0L || signature != correctionSettleTags) {
+            correctionSettleSinceMillis = now
+            correctionSettleTags = signature
+        }
+        val elapsed = now - correctionSettleSinceMillis
+        correctionSettleProgress = (elapsed.toFloat() / CORRECTION_SETTLE_MILLIS).coerceIn(0f, 1f)
+        if (elapsed < CORRECTION_SETTLE_MILLIS) return
+        // Anker is gesetteld → herprojecteren en toepassen. Stralen worden hoe dan ook verbruikt.
+        val dims = project.dimensionsMm
+        val markersById = knownAprilTags.associateBy { it.id }
+        val corrections = mutableMapOf<String, MmPosition>()
+        val handled = mutableListOf<String>()
+        var lastId: String? = null
+        var lastDelta = 0
+        pending.forEach { sensor ->
+            val stored = placementRays[sensor.id] ?: return@forEach
+            val refTag = stored.referenceTagId ?: sensor.referenceTagId ?: return@forEach
+            handled += sensor.id
+            val newPos = reprojectPlacementRay(
+                rayAtPlacement = stored.rayTransformer,
+                anchorAtPlacement = stored.anchorAtPlacement,
+                anchorNow = anchorNow,
+                dimensionsMm = dims,
+                referenceMarker = markersById[refTag]
+            ) ?: return@forEach
+            if (!newPos.insideBox(dims)) return@forEach
+            val delta = distanceMm(newPos - sensor.positionMm)
+            if (delta <= AUTO_CORRECT_MIN_DELTA_MM || delta > AUTO_CORRECT_MAX_DELTA_MM) return@forEach
+            corrections[sensor.id] = newPos
+            lastId = sensor.id
+            lastDelta = delta
+        }
+        if (handled.isNotEmpty()) placementRays.keys.removeAll(handled.toSet())
+        resetCorrectionSettle()
+        if (corrections.isEmpty()) return
+        project = project.copy(
+            sensors = project.sensors.map { sensor ->
+                corrections[sensor.id]?.let { sensor.copy(positionMm = it) } ?: sensor
+            }
+        )
+        saveProject()
+        Log.i("ARSensCalibrationLock", "AUTO_CORRECT corrected=${corrections.size} tags=$visibleTags")
+        message = if (corrections.size == 1) {
+            "Sensor $lastId auto-gecorrigeerd: $lastDelta mm bijgesteld na herankering."
+        } else {
+            "${corrections.size} sensoren auto-gecorrigeerd na herankering."
+        }
+    }
+
+    private fun resetCorrectionSettle() {
+        if (correctionSettleProgress != null) correctionSettleProgress = null
+        correctionSettleSinceMillis = 0L
+        correctionSettleTags = emptyList()
+    }
+
+    private fun rmsJitterMm(samples: Collection<MmPosition>): Float? {
+        val n = samples.size
+        if (n < 3) return null
+        val meanX = samples.sumOf { it.x.toDouble() } / n
+        val meanY = samples.sumOf { it.y.toDouble() } / n
+        val meanZ = samples.sumOf { it.z.toDouble() } / n
+        val variance = samples.sumOf {
+            val dx = it.x - meanX
+            val dy = it.y - meanY
+            val dz = it.z - meanZ
+            dx * dx + dy * dy + dz * dz
+        } / n
+        return kotlin.math.sqrt(variance).toFloat()
+    }
+
+    private fun logCalibrationLock(now: Long, quality: PlacementQuality) {
+        if (quality.isStableLock == lastLockStable &&
+            now - lastLockLogMillis < CALIBRATION_LOCK_LOG_INTERVAL_MILLIS
+        ) {
+            return
+        }
+        lastLockStable = quality.isStableLock
+        lastLockLogMillis = now
+        Log.i(
+            "ARSensCalibrationLock",
+            "stableLock=${quality.isStableLock} grade=${quality.grade.name} reprojPx=${quality.reprojectionErrorPx} " +
+                "reprojMm=${quality.reprojectionErrorMm} tags=${quality.poseMarkerIds} age=${quality.detectionAgeMillis}ms q=${quality.trackingQualityPercent} " +
+                "jitter=${quality.jitterMm?.roundToInt() ?: -1}mm motion=${quality.motionDuringDetectionMm?.roundToInt() ?: -1}mm " +
+                "reasons=${quality.reasons}"
+        )
+    }
+
+    /** Bevriest de huidige plaatsingskwaliteit tot een audit-snapshot voor de zojuist geplaatste
+     *  sensor (ruwe signalen + grade), met de jitter/lock-status van het plaatsingsmoment. */
+    private fun buildPlacementAudit(): SensorPlacementAudit {
+        val referenceTagId = aprilTagResult.poseMarkerIds.firstOrNull() ?: lastPlacementReference?.tagId
+        val quality = computePlacementQuality(
+            result = aprilTagResult,
+            jitterMm = cursorJitterMm,
+            isStableLock = placementQuality?.isStableLock ?: false,
+            referenceTagId = referenceTagId
+        )
+        return quality.toAudit(
+            placedAtWallMillis = System.currentTimeMillis(),
+            fusionEvent = aprilTagResult.fusionEvent,
+            fusionReason = aprilTagResult.fusionReason
+        )
     }
 
     fun selectTagPlane(plane: TagPlane) {
@@ -1675,7 +1943,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         saveSensorPointInternal(markInstalled = false)
     }
 
-    private fun saveSensorPointInternal(markInstalled: Boolean): Sensor? {
+    private fun saveSensorPointInternal(markInstalled: Boolean, placement: SensorPlacementAudit? = null): Sensor? {
         val operatorPosition = operatorPositionOrNull(sensorX, sensorY, sensorZ)
         val tolerance = sensorTolerance.toIntOrNull()
         val id = sensorId.ifBlank { nextSensorId() }.trim()
@@ -1705,7 +1973,10 @@ fun setDefaultTagSize(sizeMm: Int) {
             // dichtstbijzijnde tag (zo verschijnt de sensor bij die tag zodra hij gescand wordt).
             referenceTagId = sensorReferenceTagId
                 ?: existingSensor?.referenceTagId
-                ?: nearestTagIdForBox(boxPosition)
+                ?: nearestTagIdForBox(boxPosition),
+            // Live-AR plaatsing levert een audit-snapshot; form-/2D-edits (placement == null) behouden
+            // de bestaande audit.
+            placement = placement ?: existingSensor?.placement
         )
         val sensors = (project.sensors.filterNot { it.id == sensor.id } + sensor)
             .sortedBy { it.order }
@@ -1729,6 +2000,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         } else {
             "Sensor ${sensor.id} opgeslagen op meet-XYZ ${operatorPosition.toReadableMm()}."
         }
+        // Handmatige/2D-bewerking (geen audit) = positie is autoritatief → eventuele oude straal weg.
+        if (placement == null) placementRays.remove(sensor.id)
         return sensor
     }
 
@@ -1754,7 +2027,23 @@ fun setDefaultTagSize(sizeMm: Int) {
         setSensorFieldsFromBox(cursor)
         if (sensorId.isBlank()) sensorId = nextSensorId()
         if (sensorName.isBlank()) sensorName = "sens"
-        saveSensorPointInternal(markInstalled = true)
+        val audit = buildPlacementAudit()
+        Log.i(
+            "ARSensPlacementQuality",
+            "save sensor=$sensorId grade=${audit.grade.name} reprojPx=${audit.reprojectionErrorPx} " +
+                "reprojMm=${audit.reprojectionErrorMm} stableLock=${audit.wasStablePlacementLock} " +
+                "tags=${audit.poseMarkerIds} ref=${audit.referenceTagId} jitter=${audit.jitterMm} " +
+                "motionMm=${audit.motionDuringDetectionMm} fusion=${audit.fusionEvent}:${audit.fusionReason} " +
+                "reasons=${audit.reasons}"
+        )
+        val saved = saveSensorPointInternal(markInstalled = true, placement = audit)
+        if (saved != null) {
+            storePlacementRayFor(saved.id, saved.referenceTagId)
+            message = "Sensor ${saved.id} geplaatst — ${audit.grade.label}" +
+                (audit.reprojectionErrorPx?.let { " · fit ${it.roundToInt()} px" } ?: "") +
+                (audit.jitterMm?.let { " · jitter ${it.roundToInt()} mm" } ?: "") +
+                if (audit.reasons.isEmpty()) "." else "; ${audit.reasons.joinToString()}."
+        }
     }
 
     fun saveSensorAtBoxPosition(position: MmPosition) {
@@ -1981,6 +2270,7 @@ fun setDefaultTagSize(sizeMm: Int) {
                 if (sensor.id == sensorId) updated else sensor
             }
         )
+        placementRays.remove(sensorId)
         selectSensorForEdit(updated)
         showSensorOverlay = true
         saveProject()
@@ -2020,6 +2310,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             sensors = project.sensors.filterNot { it.id == sensor.id }
                 .mapIndexed { index, item -> item.copy(order = index + 1) }
         )
+        placementRays.remove(sensor.id)
         saveProject()
         message = "Sensor ${sensor.id} verwijderd."
     }
@@ -2037,6 +2328,7 @@ fun setDefaultTagSize(sizeMm: Int) {
                 .sortedBy { it.order }
                 .mapIndexed { index, item -> item.copy(order = index + 1) }
         )
+        placementRays.remove(last.id)
         saveProject()
         message = "Laatst geplaatste sensor (${last.id}) verwijderd."
     }
@@ -2519,6 +2811,18 @@ private fun smoothArPoses(result: AprilTagFrameResult, now: Long): AprilTagFrame
         lastPlacementReference = null
         lastCursorLogKey = ""
         lastCursorLogMillis = 0L
+        cursorJitterSamples.clear()
+        cursorJitterMm = null
+        lockTagSignature = emptyList()
+        lockSinceMillis = 0L
+        lockSamples = 0
+        lastLockStable = false
+        lastLockLogMillis = 0L
+        placementQuality = null
+        placementRays.clear()
+        correctionSettleProgress = null
+        correctionSettleSinceMillis = 0L
+        correctionSettleTags = emptyList()
     }
 }
 
@@ -2527,6 +2831,15 @@ private fun smoothArPoses(result: AprilTagFrameResult, now: Long): AprilTagFrame
 internal data class PlacementReference(
     val tagId: Int,
     val marker: Marker
+)
+
+/** Sessie-gebonden camerastraal van het plaatsmoment (transformer-frame van toen) + het anker van
+ *  toen, voor straal-replay-driftcorrectie. Niet gepersisteerd — alleen geldig binnen de ARCore-sessie. */
+private data class StoredPlacementRay(
+    val rayTransformer: RayMm,
+    val anchorAtPlacement: Transform3D,
+    val referenceTagId: Int?,
+    val placedAtMillis: Long
 )
 
 internal fun MmPosition.insideBox(dimensions: MmPosition): Boolean =
@@ -2604,6 +2917,16 @@ internal fun AprilTagFrameResult.hasOverlayPose(): Boolean =
 internal fun AprilTagFrameResult.hasFreshDetection(): Boolean =
     detectionsFresh && hasAnyDetection()
 
+private const val CURSOR_JITTER_WINDOW = 15
+private const val CALIBRATION_LOCK_LOG_INTERVAL_MILLIS = 1_500L
+/** Straal-replay-correctie wordt pas toegepast boven [AUTO_CORRECT_MIN_DELTA_MM] (ruis negeren) en
+ *  genegeerd boven [AUTO_CORRECT_MAX_DELTA_MM] (sanity: een absurd grote sprong duidt op een fout,
+ *  niet op drift). */
+private const val AUTO_CORRECT_MIN_DELTA_MM = 5
+private const val AUTO_CORRECT_MAX_DELTA_MM = 2_000
+/** Hoelang de tag rustig + vers in beeld moet blijven vóór een straal-replay-correctie vuurt
+ *  (settle-timer; voedt het voortgangsringetje om het camera-puntje). */
+private const val CORRECTION_SETTLE_MILLIS = 1_000L
 private const val TAG_SCAN_SAVE_GRACE_MILLIS = 30_000L
 private const val OBJECT_CURSOR_HOLD_MILLIS = 1_500L
 private const val FRESH_PER_TAG_POSE_MILLIS = 300L

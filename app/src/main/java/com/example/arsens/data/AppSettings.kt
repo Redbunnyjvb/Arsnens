@@ -43,11 +43,20 @@ class AppSettings(context: Context) {
             prefs.edit().putInt(KEY_SENSOR_TAG_SIZE, value).apply()
         }
 
+    /** Corrigeer een sensorpositie automatisch zodra de bijbehorende tag weer stabiel in beeld komt
+     *  (straal-replay). Wijzigt opgeslagen meetdata, dus opt-in: standaard uit. */
+    var autoCorrectSensorDrift: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_CORRECT_DRIFT, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AUTO_CORRECT_DRIFT, value).apply()
+        }
+
     private companion object {
         const val KEY_TAG_DICTIONARY = "tag_dictionary"
         const val KEY_TAG_POSE_MODE = "tag_pose_mode"
         const val KEY_TAG_SIZE = "tag_size_mm"
         const val KEY_SENSOR_TAG_START = "sensor_tag_start_id"
         const val KEY_SENSOR_TAG_SIZE = "sensor_tag_size_mm"
+        const val KEY_AUTO_CORRECT_DRIFT = "auto_correct_sensor_drift"
     }
 }

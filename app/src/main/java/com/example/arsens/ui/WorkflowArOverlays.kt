@@ -106,6 +106,8 @@ import com.example.arsens.ar.AprilTagCorner
 import com.example.arsens.ar.AprilTagFrameResult
 import com.example.arsens.ar.ArCoreCameraPanel
 import com.example.arsens.ar.ArTrackingStatus
+import com.example.arsens.ar.PlacementQuality
+import com.example.arsens.data.QualityGrade
 import com.example.arsens.ar.PlaneHit
 import com.example.arsens.ar.TagAnchor
 import com.example.arsens.ar.TagPlane
@@ -196,6 +198,45 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
         offset = state.arCursorScreenOffset,
         onOffsetChange = { state.arCursorScreenOffset = it }
     )
+    WorkflowPlacementQualityDot(state.placementQuality, state.correctionSettleProgress)
+}
+
+/** Heel klein kleurpuntje aan de rechterrand van het camerabeeld dat de live plaatsingskwaliteit
+ *  toont (groen = goed/stabiel, oranje = redelijk, rood = onnauwkeurig, grijs = geen pose). Bewust
+ *  minimaal — details staan in de save-melding en de opgeslagen audit-snapshot. */
+@Composable
+private fun WorkflowPlacementQualityDot(quality: PlacementQuality?, correctionSettleProgress: Float?) {
+    val color = when (quality?.grade) {
+        QualityGrade.High -> Color(0xFF2E7D32)
+        QualityGrade.Medium -> Color(0xFFEF6C00)
+        QualityGrade.Low -> Color(0xFFC62828)
+        QualityGrade.Unsafe, null -> Color(0xFF9E9E9E)
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        val radius = 5.dp.toPx()
+        val margin = 14.dp.toPx()
+        val center = Offset(size.width - margin - radius, size.height * 0.5f)
+        // Voortgangsring: vult terwijl een straal-replay-correctie "kalibreert" (rustig anker op de
+        // tag). Vol → de sensor wordt op dat moment bijgesteld (zie ook de melding).
+        correctionSettleProgress?.let { progress ->
+            val ringRadius = radius + 7.dp.toPx()
+            val stroke = 2.5.dp.toPx()
+            val topLeft = Offset(center.x - ringRadius, center.y - ringRadius)
+            val ringSize = Size(ringRadius * 2, ringRadius * 2)
+            drawCircle(Color.White.copy(alpha = 0.25f), radius = ringRadius, center = center, style = Stroke(width = stroke))
+            drawArc(
+                color = Color(0xFF2E7D32),
+                startAngle = -90f,
+                sweepAngle = 360f * progress.coerceIn(0f, 1f),
+                useCenter = false,
+                topLeft = topLeft,
+                size = ringSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+        }
+        drawCircle(Color.Black.copy(alpha = 0.45f), radius = radius + 2.5f, center = center)
+        drawCircle(color, radius = radius, center = center)
+    }
 }
 
 @Composable

@@ -295,6 +295,14 @@ object StlParser {
      *  [onProgress] (0..1, monotoon, gethrottled) voedt de laadbalk; binaire bestanden kennen het
      *  totaal uit de header, het twee-pass-pad telt de analyse als 0→0,4 en het lezen als 0,4→1. */
     fun parseFile(file: File, onProgress: ((Float) -> Unit)? = null): StlMesh =
+        when (detectFormat(file)) {
+            MeshFormat.OBJ -> parseObjFile(file, onProgress)
+            MeshFormat.PLY -> parsePlyFile(file, onProgress)
+            MeshFormat.STL -> parseStlFile(file, onProgress)
+        }
+
+    /** Leest binaire en ASCII STL-bestanden in — het oorspronkelijke pad, ongewijzigd. */
+    private fun parseStlFile(file: File, onProgress: ((Float) -> Unit)? = null): StlMesh =
         runCatching {
             val sizeBytes = file.length()
             val head = ByteArray(84)
@@ -350,6 +358,411 @@ object StlParser {
         runCatching {
             if (looksBinary(bytes, bytes.size.toLong())) parseBinary(bytes) else parseAscii(bytes)
         }.getOrDefault(StlMesh.EMPTY)
+
+    // ───────────────────────── Extra mesh-formaten: OBJ & PLY ─────────────────────────
+    // Naast STL leest de app Wavefront OBJ en Stanford PLY. Beide parsers vullen exact dezelfde
+    // MeshBuilder (bounding box + zelf-berekende vlaknormalen) en geven een gewone StlMesh terug,
+    // zodat preview, AR, meten, uitlijnen en raycasting niets van het bronformaat hoeven te weten.
+    // De keuze gebeurt op de bestandsextensie; STL houdt exact het oude pad (geen regressie).
+
+    private enum class MeshFormat { STL, OBJ, PLY }
+
+    private fun detectFormat(file: File): MeshFormat =
+        when (file.extension.lowercase()) {
+            "obj" -> MeshFormat.OBJ
+            "ply" -> MeshFormat.PLY
+            "stl" -> MeshFormat.STL
+            // Onbekende/lege extensie: alleen het PLY-magic ("ply") is betrouwbaar te snuiven;
+            // al het andere valt terug op STL (dat zelf binair vs. ASCII detecteert) = oud gedrag.
+            else -> if (looksLikePly(file)) MeshFormat.PLY else MeshFormat.STL
+        }
+
+    private fun looksLikePly(file: File): Boolean =
+        runCatching {
+            file.inputStream().use { input ->
+                val b = ByteArray(4)
+                val n = readFully(input, b, 4)
+                n >= 3 && b[0] == 'p'.code.toByte() && b[1] == 'l'.code.toByte() && b[2] == 'y'.code.toByte()
+            }
+        }.getOrDefault(false)
+
+    /** Voegt driehoek (i0,i1,i2) toe aan de bounds en — als [add] — aan de mesh. Retourneert of er
+     *  daadwerkelijk een driehoek is toegevoegd (voor de kept-teller bij decimatie). */
+    private fun emitTri(
+        builder: MeshBuilder,
+        coords: FloatArray,
+        i0: Int, i1: Int, i2: Int,
+        add: Boolean
+    ): Boolean {
+        val a = i0 * 3; val b = i1 * 3; val c = i2 * 3
+        builder.bounds(
+            coords[a], coords[a + 1], coords[a + 2],
+            coords[b], coords[b + 1], coords[b + 2],
+            coords[c], coords[c + 1], coords[c + 2]
+        )
+        if (add) {
+            builder.add(
+                coords[a], coords[a + 1], coords[a + 2],
+                coords[b], coords[b + 1], coords[b + 2],
+                coords[c], coords[c + 1], coords[c + 2]
+            )
+        }
+        return add
+    }
+
+    // ── Wavefront OBJ (tekst) ──
+    /** Leest 'v'-hoekpunten en 'f'-faces; polygonen worden fan-getrianguleerd, '/'-suffixen
+     *  (textuur/normaal-indexen) en negatieve (relatieve) indexen worden afgehandeld. Twee passes
+     *  over het bestand (lokale schijf, goedkoop): pass 1 verzamelt alle vertices en telt de
+     *  driehoeken, pass 2 bouwt de mesh met dezelfde decimatie/cap-logica als binaire STL. */
+    private fun parseObjFile(file: File, onProgress: ((Float) -> Unit)? = null): StlMesh =
+        runCatching {
+            var coords = FloatArray(3 * 1024)
+            var cc = 0
+            var triTotal = 0
+            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                for (raw in lines) {
+                    val line = raw.trim()
+                    if (line.length < 2) continue
+                    val c1 = line[1]
+                    if (c1 != ' ' && c1 != '\t') continue
+                    when (line[0]) {
+                        'v' -> {
+                            val p = line.split(WHITESPACE)
+                            val x = p.getOrNull(1)?.toFloatOrNull() ?: 0f
+                            val y = p.getOrNull(2)?.toFloatOrNull() ?: 0f
+                            val z = p.getOrNull(3)?.toFloatOrNull() ?: 0f
+                            if (cc + 3 > coords.size) coords = coords.copyOf(coords.size * 2)
+                            coords[cc++] = x; coords[cc++] = y; coords[cc++] = z
+                        }
+                        'f' -> {
+                            val verts = countObjFaceVerts(line)
+                            if (verts >= 3) triTotal += verts - 2
+                        }
+                    }
+                }
+            }
+            val vertCount = cc / 3
+            if (vertCount == 0 || triTotal == 0) return@runCatching StlMesh.EMPTY
+            val decimation = maxOf(1, triTotal / RENDER_CAP)
+            val hardCap = RENDER_CAP + RENDER_CAP / 20
+            val builder = MeshBuilder()
+            var facet = 0
+            var kept = 0
+            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                for (raw in lines) {
+                    val line = raw.trim()
+                    if (line.length < 2 || line[0] != 'f') continue
+                    val c1 = line[1]
+                    if (c1 != ' ' && c1 != '\t') continue
+                    var v0 = -1
+                    var vPrev = -1
+                    var idx = 1
+                    val len = line.length
+                    while (idx < len) {
+                        while (idx < len && (line[idx] == ' ' || line[idx] == '\t')) idx++
+                        if (idx >= len) break
+                        val start = idx
+                        while (idx < len && line[idx] != ' ' && line[idx] != '\t') idx++
+                        var slash = start
+                        while (slash < idx && line[slash] != '/') slash++
+                        val viRaw = line.substring(start, slash).toIntOrNull() ?: continue
+                        val vi = if (viRaw < 0) vertCount + viRaw else viRaw - 1
+                        if (vi < 0 || vi >= vertCount) continue
+                        when {
+                            v0 < 0 -> v0 = vi
+                            vPrev < 0 -> vPrev = vi
+                            else -> {
+                                val take = facet % decimation == 0
+                                if (emitTri(builder, coords, v0, vPrev, vi, take && kept < hardCap)) kept++
+                                facet++
+                                if (facet and 0xFFF == 0) {
+                                    onProgress?.invoke((facet.toFloat() / triTotal).coerceIn(0f, 1f))
+                                }
+                                vPrev = vi
+                            }
+                        }
+                    }
+                }
+            }
+            onProgress?.invoke(1f)
+            builder.build(triTotal)
+        }.getOrDefault(StlMesh.EMPTY)
+
+    /** Aantal hoekpunten in een OBJ 'f'-regel (witruimte-gescheiden tokens na de 'f'). */
+    private fun countObjFaceVerts(line: String): Int {
+        var count = 0
+        var inToken = false
+        var idx = 1
+        val len = line.length
+        while (idx < len) {
+            val ch = line[idx]
+            if (ch == ' ' || ch == '\t') {
+                inToken = false
+            } else if (!inToken) {
+                count++
+                inToken = true
+            }
+            idx++
+        }
+        return count
+    }
+
+    // ── Stanford PLY (ASCII + binair, little/big-endian) ──
+    private const val PLY_ASCII = 0
+    private const val PLY_LE = 1
+    private const val PLY_BE = 2
+
+    private class PlyProp(val isList: Boolean, val countType: String, val type: String, val name: String)
+    private class PlyElement(val name: String, val count: Int, val props: MutableList<PlyProp> = mutableListOf())
+    private class PlyHeader(val format: Int, val elements: List<PlyElement>)
+
+    /** Eén ASCII-regel byte-voor-byte uit de stream (zodat de stroompositie ná de header exact op
+     *  het begin van het binaire blok staat — een gebufferde reader zou te ver vooruit lezen). */
+    private fun readAsciiLine(input: java.io.InputStream): String? {
+        val sb = StringBuilder()
+        var any = false
+        while (true) {
+            val b = input.read()
+            if (b < 0) return if (any) sb.toString() else null
+            any = true
+            if (b == '\n'.code) break
+            if (b != '\r'.code) sb.append(b.toChar())
+        }
+        return sb.toString()
+    }
+
+    private fun readPlyHeader(input: java.io.InputStream): PlyHeader? {
+        if ((readAsciiLine(input)?.trim()) != "ply") return null
+        var format = -1
+        val elements = mutableListOf<PlyElement>()
+        while (true) {
+            val line = (readAsciiLine(input) ?: return null).trim()
+            if (line == "end_header") break
+            if (line.isEmpty()) continue
+            val p = line.split(WHITESPACE)
+            when (p[0]) {
+                "format" -> format = when (p.getOrNull(1)) {
+                    "ascii" -> PLY_ASCII
+                    "binary_little_endian" -> PLY_LE
+                    "binary_big_endian" -> PLY_BE
+                    else -> -1
+                }
+                "element" -> elements += PlyElement(
+                    name = p.getOrNull(1) ?: "",
+                    count = p.getOrNull(2)?.toIntOrNull() ?: 0
+                )
+                "property" -> {
+                    val el = elements.lastOrNull() ?: continue
+                    if (p.getOrNull(1) == "list") {
+                        el.props += PlyProp(true, p.getOrNull(2) ?: "uchar", p.getOrNull(3) ?: "int", p.getOrNull(4) ?: "")
+                    } else {
+                        el.props += PlyProp(false, "", p.getOrNull(1) ?: "float", p.getOrNull(2) ?: "")
+                    }
+                }
+            }
+        }
+        if (format < 0) return null
+        return PlyHeader(format, elements)
+    }
+
+    private fun plyTypeSize(t: String): Int = when (t) {
+        "char", "uchar", "int8", "uint8" -> 1
+        "short", "ushort", "int16", "uint16" -> 2
+        "double", "float64" -> 8
+        else -> 4 // int/uint/int32/uint32/float/float32 + onbekend
+    }
+
+    private fun readPlyScalar(buf: ByteBuffer, pos: Int, type: String): Float {
+        buf.position(pos)
+        return when (type) {
+            "char", "int8" -> buf.get().toFloat()
+            "uchar", "uint8" -> (buf.get().toInt() and 0xFF).toFloat()
+            "short", "int16" -> buf.short.toFloat()
+            "ushort", "uint16" -> (buf.short.toInt() and 0xFFFF).toFloat()
+            "int", "int32" -> buf.int.toFloat()
+            "uint", "uint32" -> (buf.int.toLong() and 0xFFFFFFFFL).toFloat()
+            "double", "float64" -> buf.double.toFloat()
+            else -> buf.float
+        }
+    }
+
+    /** Leest één index/teller sequentieel uit [buf] (positie schuift mee). */
+    private fun readPlyInt(buf: ByteBuffer, type: String): Int = when (type) {
+        "char", "uchar", "int8", "uint8" -> buf.get().toInt() and 0xFF
+        "short", "ushort", "int16", "uint16" -> buf.short.toInt() and 0xFFFF
+        "double", "float64" -> buf.double.toInt()
+        else -> buf.int
+    }
+
+    private fun parsePlyFile(file: File, onProgress: ((Float) -> Unit)? = null): StlMesh =
+        runCatching {
+            file.inputStream().buffered(64 * 1024).use { input ->
+                val header = readPlyHeader(input) ?: return@runCatching StlMesh.EMPTY
+                val mesh = if (header.format == PLY_ASCII) {
+                    parsePlyAscii(input, header, onProgress)
+                } else {
+                    val order = if (header.format == PLY_LE) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN
+                    parsePlyBinary(input, header, order, onProgress)
+                }
+                onProgress?.invoke(1f)
+                mesh
+            }
+        }.getOrDefault(StlMesh.EMPTY)
+
+    private fun parsePlyAscii(
+        input: java.io.InputStream,
+        header: PlyHeader,
+        onProgress: ((Float) -> Unit)?
+    ): StlMesh {
+        val builder = MeshBuilder()
+        var coords = FloatArray(0)
+        var vertCount = 0
+        var triTotal = 0
+        for (el in header.elements) {
+            when (el.name) {
+                "vertex" -> {
+                    val names = el.props.map { it.name }
+                    val xi = names.indexOf("x"); val yi = names.indexOf("y"); val zi = names.indexOf("z")
+                    coords = FloatArray(el.count * 3)
+                    vertCount = el.count
+                    for (i in 0 until el.count) {
+                        val vals = (readAsciiLine(input) ?: break).trim().split(WHITESPACE)
+                        coords[i * 3] = vals.getOrNull(xi)?.toFloatOrNull() ?: 0f
+                        coords[i * 3 + 1] = vals.getOrNull(yi)?.toFloatOrNull() ?: 0f
+                        coords[i * 3 + 2] = vals.getOrNull(zi)?.toFloatOrNull() ?: 0f
+                    }
+                }
+                "face" -> {
+                    val stride = maxOf(1, el.count / RENDER_CAP)
+                    val hardCap = RENDER_CAP + RENDER_CAP / 20
+                    var facet = 0
+                    var kept = 0
+                    for (i in 0 until el.count) {
+                        val vals = (readAsciiLine(input) ?: break).trim().split(WHITESPACE)
+                        val n = vals.getOrNull(0)?.toIntOrNull() ?: continue
+                        if (n < 3 || vals.size < n + 1) continue
+                        val i0 = vals[1].toIntOrNull() ?: continue
+                        for (k in 2 until n) {
+                            val i1 = vals[k].toIntOrNull() ?: continue
+                            val i2 = vals[k + 1].toIntOrNull() ?: continue
+                            val take = facet % stride == 0
+                            facet++
+                            triTotal++
+                            if (i0 in 0 until vertCount && i1 in 0 until vertCount && i2 in 0 until vertCount) {
+                                if (emitTri(builder, coords, i0, i1, i2, take && kept < hardCap)) kept++
+                            }
+                        }
+                        if (i and 0xFFF == 0 && el.count > 0) onProgress?.invoke(0.5f + 0.5f * i / el.count)
+                    }
+                }
+                else -> repeat(el.count) { readAsciiLine(input) }
+            }
+        }
+        return builder.build(triTotal)
+    }
+
+    private fun parsePlyBinary(
+        input: java.io.InputStream,
+        header: PlyHeader,
+        order: ByteOrder,
+        onProgress: ((Float) -> Unit)?
+    ): StlMesh {
+        val builder = MeshBuilder()
+        var coords = FloatArray(0)
+        var vertCount = 0
+        var triTotal = 0
+        for (el in header.elements) {
+            when (el.name) {
+                "vertex" -> {
+                    // Vaste record-stride + byte-offsets/typen van x,y,z (overige props worden mee-
+                    // overgeslagen via de stride). Een lijst-property binnen vertex kan geen vaste
+                    // stride hebben → niet ondersteund.
+                    var stride = 0
+                    var xOff = -1; var yOff = -1; var zOff = -1
+                    var xType = "float"; var yType = "float"; var zType = "float"
+                    for (prop in el.props) {
+                        if (prop.isList) return StlMesh.EMPTY
+                        when (prop.name) {
+                            "x" -> { xOff = stride; xType = prop.type }
+                            "y" -> { yOff = stride; yType = prop.type }
+                            "z" -> { zOff = stride; zType = prop.type }
+                        }
+                        stride += plyTypeSize(prop.type)
+                    }
+                    if (xOff < 0 || yOff < 0 || zOff < 0 || stride <= 0) return StlMesh.EMPTY
+                    coords = FloatArray(el.count * 3)
+                    vertCount = el.count
+                    val recsPerBlock = 4096
+                    val block = ByteArray(stride * recsPerBlock)
+                    var read = 0
+                    var base = 0
+                    while (read < el.count) {
+                        val want = minOf(recsPerBlock, el.count - read)
+                        val got = readFully(input, block, want * stride)
+                        val have = got / stride
+                        if (have <= 0) break
+                        val buf = ByteBuffer.wrap(block, 0, have * stride).order(order)
+                        for (r in 0 until have) {
+                            val rb = r * stride
+                            coords[base++] = readPlyScalar(buf, rb + xOff, xType)
+                            coords[base++] = readPlyScalar(buf, rb + yOff, yType)
+                            coords[base++] = readPlyScalar(buf, rb + zOff, zType)
+                        }
+                        read += have
+                        if (el.count > 0) onProgress?.invoke(0.4f * read / el.count)
+                        if (have < want) break
+                    }
+                }
+                "face" -> {
+                    val listProp = el.props.firstOrNull { it.isList } ?: continue
+                    val countSize = plyTypeSize(listProp.countType)
+                    val idxSize = plyTypeSize(listProp.type)
+                    val stride = maxOf(1, el.count / RENDER_CAP)
+                    val hardCap = RENDER_CAP + RENDER_CAP / 20
+                    var facet = 0
+                    var kept = 0
+                    val countBuf = ByteArray(8)
+                    var idxBuf = ByteArray(256)
+                    for (i in 0 until el.count) {
+                        if (readFully(input, countBuf, countSize) < countSize) break
+                        val n = readPlyInt(ByteBuffer.wrap(countBuf, 0, countSize).order(order), listProp.countType)
+                        if (n < 0) break
+                        val needed = n * idxSize
+                        if (needed > idxBuf.size) idxBuf = ByteArray(needed)
+                        if (readFully(input, idxBuf, needed) < needed) break
+                        if (n < 3) continue
+                        val ibuf = ByteBuffer.wrap(idxBuf, 0, needed).order(order)
+                        val i0 = readPlyInt(ibuf, listProp.type)
+                        var prev = readPlyInt(ibuf, listProp.type)
+                        for (k in 2 until n) {
+                            val cur = readPlyInt(ibuf, listProp.type)
+                            val take = facet % stride == 0
+                            facet++
+                            triTotal++
+                            if (i0 in 0 until vertCount && prev in 0 until vertCount && cur in 0 until vertCount) {
+                                if (emitTri(builder, coords, i0, prev, cur, take && kept < hardCap)) kept++
+                            }
+                            prev = cur
+                        }
+                        if (i and 0xFFF == 0 && el.count > 0) onProgress?.invoke(0.4f + 0.6f * i / el.count)
+                    }
+                }
+                else -> {
+                    // Onbekend element: alleen overslaan als alle props een vaste grootte hebben.
+                    var recSize = 0
+                    var fixed = true
+                    for (prop in el.props) {
+                        if (prop.isList) { fixed = false; break }
+                        recSize += plyTypeSize(prop.type)
+                    }
+                    if (!fixed) return builder.build(triTotal)
+                    skipFully(input, recSize.toLong() * el.count)
+                }
+            }
+        }
+        return builder.build(triTotal)
+    }
 
     private fun skipFully(input: java.io.InputStream, count: Long) {
         var remaining = count

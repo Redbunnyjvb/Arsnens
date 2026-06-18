@@ -696,6 +696,12 @@ internal fun WorkflowTagSettingsCard(state: WorkflowAppState) {
                 color = ArSensMuted,
                 fontSize = 12.sp
             )
+            WorkflowSettingsToggleRow(
+                title = "Sensor-tag koppelen bij plaatsen",
+                subtitle = "On-the-fly: 'Plaats sensor' pakt automatisch de sensor-tag onder de cursor " +
+                    "en leidt het sensornummer ervan af (tag ${state.sensorTagStartId} → sensor 1).",
+                checked = state.autoLinkSensorTagOnPlace
+            ) { state.setAutoLinkSensorTag(!state.autoLinkSensorTagOnPlace) }
         }
     }
 }

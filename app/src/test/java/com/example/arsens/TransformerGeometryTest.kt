@@ -121,12 +121,15 @@ class TransformerGeometryTest {
     }
 
     @Test
-    fun markerPresetNormalsPointOutsideTransformerPlanes() {
-        assertNormal(TagPlane.Front, MmPosition(5_000, 0, 1_600), 0.0, -1.0, 0.0)
-        assertNormal(TagPlane.Back, MmPosition(5_000, dimensions.y, 1_600), 0.0, 1.0, 0.0)
-        assertNormal(TagPlane.Left, MmPosition(0, 2_500, 1_600), -1.0, 0.0, 0.0)
-        assertNormal(TagPlane.Right, MmPosition(dimensions.x, 2_500, 1_600), 1.0, 0.0, 0.0)
-        assertNormal(TagPlane.Top, MmPosition(5_000, 2_500, dimensions.z), 0.0, 0.0, 1.0)
+    fun markerPresetWindingNormalsMatchCorrectedConvention() {
+        // De gecorrigeerde vlakken zetten de geprinte hoeken op de echte box-as (fix voor de gespiegelde
+        // solvePnP-pose). Het winding-normaal wijst daardoor op ALLE vlakken naar BINNEN (na de zijvlak-
+        // én back-fix): Front +Y, Back -Y, Left +X, Right -X, Top -Z.
+        assertNormal(TagPlane.Front, MmPosition(5_000, 0, 1_600), 0.0, 1.0, 0.0)
+        assertNormal(TagPlane.Back, MmPosition(5_000, dimensions.y, 1_600), 0.0, -1.0, 0.0)
+        assertNormal(TagPlane.Left, MmPosition(0, 2_500, 1_600), 1.0, 0.0, 0.0)
+        assertNormal(TagPlane.Right, MmPosition(dimensions.x, 2_500, 1_600), -1.0, 0.0, 0.0)
+        assertNormal(TagPlane.Top, MmPosition(5_000, 2_500, dimensions.z), 0.0, 0.0, -1.0)
     }
 
     private fun markerCornersFor(plane: TagPlane, position: MmPosition) =

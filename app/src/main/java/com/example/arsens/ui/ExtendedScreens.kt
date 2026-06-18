@@ -137,7 +137,7 @@ internal fun TransformerMapWorkspace(
     val measureText = if (editMode == MapEditMode.Measure) {
         measureStart?.let { start ->
             measureEnd?.let { end ->
-                "Meting ${start.label} -> ${end.label}: ${start.distanceTo(end).roundToInt()} mm"
+                "Meting ${start.label} -> ${end.label}: ${start.distanceTo(end).roundToInt()} mm (${start.componentsTo(end, selectedView)})"
             } ?: "Meting start: ${start.label}"
         }
     } else if (editMode == MapEditMode.Move) {
@@ -983,6 +983,19 @@ enum class TransformerMapView(val label: String) {
             .coerceIn(0.1f, 10.0f)
 }
 
+/** De box-as die in dit aanzicht horizontaal in het vlak ligt — voor de Δ-uitsplitsing van een meting
+ *  (de twee zijden die je in het echt apart afmeet). Sluit aan bij de 3D-uitlezing (ΔX/ΔY/ΔZ). */
+internal fun TransformerMapView.horizontalAxisLabel(): String = when (this) {
+    TransformerMapView.Top, TransformerMapView.Front, TransformerMapView.Back -> "X"
+    TransformerMapView.Left, TransformerMapView.Right -> "Y"
+}
+
+/** De box-as die in dit aanzicht verticaal in het vlak ligt. */
+internal fun TransformerMapView.verticalAxisLabel(): String = when (this) {
+    TransformerMapView.Top -> "Y"
+    TransformerMapView.Front, TransformerMapView.Back, TransformerMapView.Left, TransformerMapView.Right -> "Z"
+}
+
 /** De 2D-aanzichten komen 1-op-1 overeen met de camera-vlakken (TagPlane); via deze koppeling
  *  hergebruikt de 2D-kaart exact dezelfde "Paneel selector"-UI (knoppen-kruis) als de camera.
  *  De omgekeerde richting (TagPlane.toMapView) staat al in WorkflowTagScreens.kt. */
@@ -1040,7 +1053,7 @@ private fun WorkflowMapSelectionOverlay(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    if (measureEnd != null) "Meting: ${measureStart.distanceTo(measureEnd).roundToInt()} mm"
+                    if (measureEnd != null) "Meting: ${measureStart.distanceTo(measureEnd).roundToInt()} mm (${measureStart.componentsTo(measureEnd, view)})"
                     else target?.label ?: "Meetpunt",
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
@@ -1177,6 +1190,14 @@ private data class MapMeasurePoint(
 ) {
     fun distanceTo(other: MapMeasurePoint): Double =
         hypot(horizontalMm - other.horizontalMm, verticalMm - other.verticalMm)
+}
+
+/** Δ per vlak-as tussen twee meetpunten ("ΔX 1200 · ΔY 800") — de twee zijden die je in het echt apart
+ *  afmeet (eerst horizontaal, dan verticaal); de directe afstand is dan de schuine zijde (Pythagoras). */
+private fun MapMeasurePoint.componentsTo(other: MapMeasurePoint, view: TransformerMapView): String {
+    val dh = kotlin.math.abs(horizontalMm - other.horizontalMm).roundToInt()
+    val dv = kotlin.math.abs(verticalMm - other.verticalMm).roundToInt()
+    return "Δ${view.horizontalAxisLabel()} $dh · Δ${view.verticalAxisLabel()} $dv"
 }
 
 private fun MapMeasurePoint.toMoveTarget(project: Project): MapMoveTarget? {

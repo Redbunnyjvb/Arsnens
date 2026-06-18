@@ -144,6 +144,7 @@ import com.example.arsens.data.StlPartRole
 import com.example.arsens.data.StlParser
 import com.example.arsens.data.asAprilTagCalibrationMarker
 import com.example.arsens.data.confirmSensorAtMeasuredPosition
+import com.example.arsens.data.deriveSensorIdForScannedTag
 import com.example.arsens.data.sensorForSensorTag
 import com.example.arsens.data.coordinateMapper
 import com.example.arsens.data.defaultFrameForOrigin
@@ -327,6 +328,21 @@ fun setDefaultTagSize(sizeMm: Int) {
         val size = sizeMm.coerceIn(10, 200)
         sensorTagSizeMm = size
         appSettings.sensorTagSizeMm = size
+    }
+
+    /** Sensor-tag automatisch koppelen bij het plaatsen van een sensor (on-the-fly). */
+    var autoLinkSensorTagOnPlace by mutableStateOf(appSettings.autoLinkSensorTagOnPlace)
+        private set
+
+    fun setAutoLinkSensorTag(enabled: Boolean) {
+        if (autoLinkSensorTagOnPlace == enabled) return
+        autoLinkSensorTagOnPlace = enabled
+        appSettings.autoLinkSensorTagOnPlace = enabled
+        message = if (enabled) {
+            "Sensor-tag koppelen aan: 'Plaats sensor' pakt automatisch de sensor-tag onder de cursor."
+        } else {
+            "Sensor-tag koppelen uit: sensoren worden zonder tag-koppeling geplaatst."
+        }
     }
 
     /** Automatische straal-replay-driftcorrectie aan/uit (app-breed, instelling). */
@@ -2054,12 +2070,35 @@ fun setDefaultTagSize(sizeMm: Int) {
             message = "Cursor raakt buiten de trafo-afmetingen. Richt opnieuw op de trafo."
             return
         }
+        // On-the-fly sensor-tag koppeling: staat er een sensor-tag (ID ≥ sensorTagStartId) onder de
+        // cursor en is de instelling aan, dan koppelt deze plaatsing die tag automatisch. De positie
+        // komt dan van het tagmiddelpunt op het trafo-vlak (nauwkeuriger dan de losse cursor) en het
+        // sensornummer wordt van de tag afgeleid (tag 200 → sensor 1, …).
+        val sensorTag = if (autoLinkSensorTagOnPlace && aprilTagResult.hasFreshDetection()) {
+            bestDetectionAtCursorForSetup(aprilTagResult) { it.id >= sensorTagStartId }
+        } else {
+            null
+        }
+        val tagSurface = sensorTag?.let { tag ->
+            estimateSurfaceAtPixel(
+                result = aprilTagResult,
+                pixelX = tag.centerPx.xPx,
+                pixelY = tag.centerPx.yPx,
+                dimensionsMm = project.dimensionsMm
+            )?.takeIf { it.insideBox(project.dimensionsMm) }
+        }
+        val placePosition = tagSurface ?: cursor
+        if (sensorTag != null) {
+            sensorId = deriveSensorIdForScannedTag(project.sensors, sensorTag.id, sensorTagStartId)
+            sensorTagId = sensorTag.id.toString()
+            sensorForSensorTag(project.sensors, sensorTag.id)?.let { sensorName = it.name }
+        }
         // Sla de tag op die nu de pose levert — dit wordt de vaste referentietag voor deze sensor.
         // Bij een stale tag (ARCore-fallback) is poseMarkerIds leeg; val dan terug op de laatst
         // gebruikte plaatsingsreferentie zodat de sensor toch aan de juiste tag gekoppeld wordt.
         sensorReferenceTagId = aprilTagResult.poseMarkerIds.firstOrNull()
             ?: lastPlacementReference?.tagId
-        setSensorFieldsFromBox(cursor)
+        setSensorFieldsFromBox(placePosition)
         if (sensorId.isBlank()) sensorId = nextSensorId()
         if (sensorName.isBlank()) sensorName = "sens"
         val audit = buildPlacementAudit()
@@ -2074,7 +2113,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         val saved = saveSensorPointInternal(markInstalled = true, placement = audit)
         if (saved != null) {
             storePlacementRayFor(saved.id, saved.referenceTagId)
-            message = "Sensor ${saved.id} geplaatst — ${audit.grade.label}" +
+            val tagNote = sensorTag?.let { " · tag ${it.id}" } ?: ""
+            message = "Sensor ${saved.id} geplaatst — ${audit.grade.label}$tagNote" +
                 (audit.reprojectionErrorPx?.let { " · fit ${it.roundToInt()} px" } ?: "") +
                 (audit.jitterMm?.let { " · jitter ${it.roundToInt()} mm" } ?: "") +
                 if (audit.reasons.isEmpty()) "." else "; ${audit.reasons.joinToString()}."
@@ -2324,7 +2364,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             normalized.rotationDeg.y.toInt(),
             normalized.rotationDeg.z.toInt()
         )
-        selectedTagPlane = tagPlaneForSurfacePosition(normalized.positionMm)
+        selectedTagPlane = tagPlaneForMarker(normalized)
         selectedTagAnchor = nearestTagAnchorForPosition(selectedTagPlane, normalized.positionMm)
         tagCoordinateFieldsExpanded = true
         clearScannedTagSelection()
@@ -2563,14 +2603,16 @@ fun setDefaultTagSize(sizeMm: Int) {
             "Het model staat nu op tag-diepte."
     }
 
-    /** Vlak van een tag: eerst exact op de standaard-rotatie, anders op de vlakpositie. */
-    private fun tagPlaneForMarker(marker: Marker): TagPlane =
-        TagPlane.entries.firstOrNull { plane ->
-            val rotation = tagRotationFor(plane)
-            rotation.x == marker.rotationDeg.x &&
-                rotation.y == marker.rotationDeg.y &&
-                rotation.z == marker.rotationDeg.z
-        } ?: tagPlaneForSurfacePosition(marker.positionMm)
+    /** Vlak van een tag. Back/Links/Rechts/Boven hebben een UNIEKE standaard-rotatie → die wint
+     *  (eenduidig, ook op een gedeelde rand). Front (Rz=0) en niet-standaard/oude rotaties vallen terug
+     *  op de vlakpositie (Front = y==0; ook een nog-niet-gemigreerde back-tag op Rz=0 klopt zo). */
+    private fun tagPlaneForMarker(marker: Marker): TagPlane = when (marker.rotationDeg) {
+        tagRotationFor(TagPlane.Back) -> TagPlane.Back
+        tagRotationFor(TagPlane.Left) -> TagPlane.Left
+        tagRotationFor(TagPlane.Right) -> TagPlane.Right
+        tagRotationFor(TagPlane.Top) -> TagPlane.Top
+        else -> tagPlaneForSurfacePosition(marker.positionMm)
+    }
 
     fun openCameraMenu(key: String) {
         cameraMenuRequest = key
@@ -2969,6 +3011,14 @@ internal fun MmPosition.snapToTransformerSurface(dimensions: MmPosition): PlaneH
 
 internal fun markerSurfaceLabel(marker: Marker, dimensions: MmPosition): String =
     when {
+        // Back/Links/Rechts/Boven hebben een UNIEKE standaard-rotatie → die identificeert het vlak
+        // eenduidig, ook als de tag op een gedeelde rand ligt (bv. een Links-tag op de achterrand
+        // y==diepte; die werd anders als "Achter" gelabeld omdat y==diepte vóór x==0 gecheckt werd).
+        // Front (Rz=0) en oude/niet-standaard rotaties vallen terug op de positie.
+        marker.rotationDeg == tagRotationFor(TagPlane.Back) -> "Achter"
+        marker.rotationDeg == tagRotationFor(TagPlane.Left) -> "Links"
+        marker.rotationDeg == tagRotationFor(TagPlane.Right) -> "Rechts"
+        marker.rotationDeg == tagRotationFor(TagPlane.Top) -> "Boven"
         marker.positionMm.z == dimensions.z -> "Boven"
         marker.positionMm.y == 0 -> "Voor"
         marker.positionMm.y == dimensions.y -> "Achter"

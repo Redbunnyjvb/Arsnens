@@ -242,7 +242,8 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
             measureA = measureA,
             measureB = measureB,
             highlightWall = highlightWall,
-            // Geen tool open → tik een sensor of tag aan om te selecteren/meten (zie de selectie-sheet).
+            // Geen tool open → tik een sensor/tag (selecteren/meten) of, in een vast vlak, een vrij punt
+            // (bv. een rib) om vandaan te meten. In de vlak-views is de meting de XY-in-het-vlak.
             onPickPoint = if (openTool == null) ::addMeasurePoint else null,
             modifier = Modifier.fillMaxSize()
         )
@@ -276,6 +277,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 measureA = measureA,
                 measureB = measureB,
                 box = state.project.dimensionsMm,
+                viewMode = viewMode,
                 highlightWall = highlightWall,
                 onWallClick = { highlightWall = it },
                 hasOptions = selection != null,
@@ -312,7 +314,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
                 toolLabel = workflowStlToolTitle(openTool),
                 viewMode = viewMode,
                 info = "${state.project.stlModels.count { it.visible }}/${state.project.stlModels.size} delen${if (showWallBox) " · wandbox aan" else ""}",
-                measureText = stlMeasureStatusText(measureA, measureB),
+                measureText = stlMeasureStatusText(measureA, measureB, viewMode),
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 12.dp, end = 74.dp, bottom = 12.dp)
@@ -649,16 +651,22 @@ internal fun workflowStlToolTitle(tool: String?): String =
         else -> "3D weergave"
     }
 
-/** Statusregel van de meet-tool: startpunt of volledig resultaat (3D-afstand + Δ per as). */
-internal fun stlMeasureStatusText(a: StlScenePoint?, b: StlScenePoint?): String? {
+/** Statusregel van de meet-tool: startpunt of volledig resultaat (directe afstand + Δ per as). In een
+ *  vast vlak telt alleen de XY-in-het-vlak mee (de diepte-as valt eruit); in Free de volle 3D. */
+internal fun stlMeasureStatusText(
+    a: StlScenePoint?,
+    b: StlScenePoint?,
+    viewMode: StlViewMode = StlViewMode.Free
+): String? {
     if (a == null) return null
     fun name(p: StlScenePoint) = p.label.ifEmpty { "punt" }
     if (b == null) return "Meting start: ${name(a)} — tik het tweede punt."
-    val distance = stlMeasureDistanceMm(a, b).roundToInt()
-    val dx = kotlin.math.abs(a.x - b.x).roundToInt()
-    val dy = kotlin.math.abs(a.y - b.y).roundToInt()
-    val dz = kotlin.math.abs(a.z - b.z).roundToInt()
-    return "Meting ${name(a)} → ${name(b)}: $distance mm (ΔX $dx · ΔY $dy · ΔZ $dz)"
+    val axes = viewMode.inPlaneAxes()
+    val distance = stlMeasureDistanceMm(a, b, axes).roundToInt()
+    val parts = axes.joinToString(" · ") { axis ->
+        "Δ${axis.label} ${kotlin.math.abs(axis.of(a) - axis.of(b)).roundToInt()}"
+    }
+    return "Meting ${name(a)} → ${name(b)}: $distance mm ($parts)"
 }
 
 @Composable
@@ -703,6 +711,7 @@ internal fun WorkflowStlMeasureOverlay(
     measureA: StlScenePoint?,
     measureB: StlScenePoint?,
     box: MmPosition,
+    viewMode: StlViewMode,
     highlightWall: Int?,
     onWallClick: (Int?) -> Unit,
     hasOptions: Boolean = false,
@@ -729,7 +738,7 @@ internal fun WorkflowStlMeasureOverlay(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    if (measureB != null) (stlMeasureStatusText(measureA, measureB) ?: "")
+                    if (measureB != null) (stlMeasureStatusText(measureA, measureB, viewMode) ?: "")
                     else measureA.label.ifEmpty { "Meetpunt" },
                     color = Color.White,
                     fontWeight = FontWeight.Bold,

@@ -31,9 +31,18 @@ class AppSettings(context: Context) {
 
     /** Eerste tag-ID dat voor SENSOR-tags gereserveerd is; referentietags blijven eronder. */
     var sensorTagStartId: Int
-        get() = prefs.getInt(KEY_SENSOR_TAG_START, 100)
+        get() = prefs.getInt(KEY_SENSOR_TAG_START, 200)
         set(value) {
             prefs.edit().putInt(KEY_SENSOR_TAG_START, value).apply()
+        }
+
+    /** Koppelt bij het plaatsen van een sensor automatisch de sensor-tag (ID ≥ [sensorTagStartId])
+     *  die onder de cursor staat, en leidt het sensornummer ervan af. Uit = handmatig plaatsen zonder
+     *  tag-koppeling (oud gedrag). */
+    var autoLinkSensorTagOnPlace: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_LINK_SENSOR_TAG, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AUTO_LINK_SENSOR_TAG, value).apply()
         }
 
     /** Formaat (zwart vierkant, mm) van de kleine AprilTags óp de sensoren. */
@@ -58,5 +67,6 @@ class AppSettings(context: Context) {
         const val KEY_SENSOR_TAG_START = "sensor_tag_start_id"
         const val KEY_SENSOR_TAG_SIZE = "sensor_tag_size_mm"
         const val KEY_AUTO_CORRECT_DRIFT = "auto_correct_sensor_drift"
+        const val KEY_AUTO_LINK_SENSOR_TAG = "auto_link_sensor_tag_on_place"
     }
 }

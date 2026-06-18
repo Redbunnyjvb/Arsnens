@@ -99,13 +99,23 @@ fun tagPositionFor(
  *  Top idem: een leesbare top-tag (front-tag plat op het deksel, bovenrand naar achter) hoort bij
  *  Rx=-90; het oude Rx=+90 spiegelde de hoeken in Y (voor/achter) → pose voor/achter omgedraaid.
  *  De gecorrigeerde vlakken hebben hun winding-normaal naar BINNEN; dat is prima voor solvePnP en
- *  is juist de fix. GEVERIFIEERD met ARSensFrameCheck: Front, Top. Back/Left/Right staan nog op de
- *  oude waarden en worden pas per vlak omgezet ná verificatie. */
+ *  is juist de fix.
+ *
+ *  Zijvlakken (Left X=0, Right X=lengte) liggen in het Y-Z-vlak. Een van buitenaf leesbare zijtag
+ *  (printed-up = +Z) hoort printed-right te krijgen naar de kijker-rechts: op Left (kijker kijkt +X)
+ *  is dat -Y → Rz=-90; op Right (kijker kijkt -X) is dat +Y → Rz=+90. De oude Left=+90/Right=-90
+ *  draaiden printed-right naar de andere kant → links/rechts-gespiegelde pose op de zijvlakken.
+ *
+ *  Back: een van-buiten leesbare achtertag lees je vanaf de TEGENOVERGESTELDE kant als de fronttag,
+ *  dus hij staat 180° om de verticale as gedraaid → Rz=180. De kijker achter de box kijkt naar -Y;
+ *  zijn rechts is -X, dus printed-right hoort naar -X (Rz=180 levert dat). Het oude Back=Rz=0 (gelijk
+ *  aan Front) gaf printed-right=+X = kijker-LINKS → links/rechts-gespiegelde back-pose. Met Rz=180
+ *  wijst de winding-normaal naar BINNEN (-Y), net als alle andere gecorrigeerde vlakken. */
 fun tagRotationFor(plane: TagPlane): FloatVector =
     when (plane) {
         TagPlane.Front -> FloatVector(0f, 0f, 0f)
-        TagPlane.Back -> FloatVector(0f, 0f, 0f)
-        TagPlane.Left -> FloatVector(0f, 0f, 90f)
-        TagPlane.Right -> FloatVector(0f, 0f, -90f)
+        TagPlane.Back -> FloatVector(0f, 0f, 180f)
+        TagPlane.Left -> FloatVector(0f, 0f, -90f)
+        TagPlane.Right -> FloatVector(0f, 0f, 90f)
         TagPlane.Top -> FloatVector(-90f, 0f, 0f)
     }

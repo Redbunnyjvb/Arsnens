@@ -120,7 +120,8 @@ fun StlPreview(
     measureB: StlScenePoint? = null,
     /** Aangetikte wand-index (0=Links..5=Top) → licht dat boxvlak op + loodlijn vanaf measureA. */
     highlightWall: Int? = null,
-    /** Niet-null = meetmodus: een tik kiest het dichtstbijzijnde scènepunt (sensor of tag). */
+    /** Niet-null = meetmodus: een tik kiest het dichtstbijzijnde scènepunt (sensor of tag), of — in een
+     *  vást vlak — een vrij meetpunt onder de vinger (bv. op een rib) als er geen sensor/tag in de buurt is. */
     onPickPoint: ((StlScenePoint) -> Unit)? = null
 ) {
     var freeYaw by remember { mutableFloatStateOf(28f) }
@@ -184,7 +185,7 @@ fun StlPreview(
                     if (onPickPoint == null) return@pointerInput
                     detectTapGestures { tap ->
                         // freeYaw/zoom/pan zijn state-backed: hier lezen geeft de actuele waarden.
-                        pickScenePoint(
+                        val picked = pickScenePoint(
                             tap = tap,
                             points = points,
                             box = boxDimsMm,
@@ -197,7 +198,19 @@ fun StlPreview(
                             height = size.height.toFloat(),
                             maxDistancePx = 44.dp.toPx(),
                             hFlip = horizontalFlipFor(viewMode)
-                        )?.let(onPickPoint)
+                        ) ?: freeInPlanePoint(
+                            // Geen sensor/tag in de buurt: in een vást vlak een vrij meetpunt onder de vinger.
+                            tap = tap,
+                            viewMode = viewMode,
+                            box = boxDimsMm,
+                            bounds = bounds,
+                            zoom = zoom,
+                            pan = pan,
+                            width = size.width.toFloat(),
+                            height = size.height.toFloat(),
+                            hFlip = horizontalFlipFor(viewMode)
+                        )
+                        picked?.let(onPickPoint)
                     }
                 }
         ) {
@@ -230,7 +243,7 @@ fun StlPreview(
                         }
                     }
                 }
-                drawSceneOverlay(bounds, yaw, pitch, zoom, pan, boxDimsMm, points, measureA, measureB, hFlip, wallBoxMm, highlightWall)
+                drawSceneOverlay(bounds, yaw, pitch, zoom, pan, boxDimsMm, points, measureA, measureB, hFlip, wallBoxMm, highlightWall, viewMode.inPlaneAxes())
             }
         }
 
@@ -822,12 +835,78 @@ private fun pickScenePoint(
     return best
 }
 
-internal fun stlMeasureDistanceMm(a: StlScenePoint, b: StlScenePoint): Float {
-    val dx = a.x - b.x
-    val dy = a.y - b.y
-    val dz = a.z - b.z
-    return sqrt(dx * dx + dy * dy + dz * dz)
+/** Vrij meetpunt in een vást vlak: keert de orthografische projectie om naar de twee vlak-assen (de
+ *  diepte-as beïnvloedt de schermpositie niet in een vast aanzicht) en legt de diepte op het bijbehorende
+ *  boxvlak. Zo kun je een willekeurig punt (bv. op een rib) als referentie nemen, net als in de 2D-kaart.
+ *  In de vrije 3D-view is een losse tik niet eenduidig → null (daar meet je tussen sensoren/tags). */
+private fun freeInPlanePoint(
+    tap: Offset,
+    viewMode: StlViewMode,
+    box: MmPosition?,
+    bounds: SceneBounds,
+    zoom: Float,
+    pan: Offset,
+    width: Float,
+    height: Float,
+    hFlip: Float
+): StlScenePoint? {
+    if (viewMode == StlViewMode.Free) return null
+    val scale = minOf(width, height) * 0.42f / bounds.extent * zoom
+    if (scale <= 0f || hFlip == 0f) return null
+    // Inverse van projectScenePointToScreen: rx is de horizontale wereld-as, s = (verticale projectie).
+    val rx = (tap.x - width / 2f - pan.x) / (hFlip * scale)
+    val s = (height / 2f + pan.y - tap.y) / scale
+    var wx = bounds.cx; var wy = bounds.cy; var wz = bounds.cz
+    when (viewMode) {
+        StlViewMode.Top -> { wx = bounds.cx + rx; wy = bounds.cy + s; wz = box?.z?.toFloat() ?: bounds.cz }
+        StlViewMode.Front -> { wx = bounds.cx + rx; wz = bounds.cz + s; wy = 0f }
+        StlViewMode.Back -> { wx = bounds.cx - rx; wz = bounds.cz + s; wy = box?.y?.toFloat() ?: bounds.cy }
+        StlViewMode.Left -> { wy = bounds.cy - rx; wz = bounds.cz + s; wx = 0f }
+        StlViewMode.Right -> { wy = bounds.cy + rx; wz = bounds.cz + s; wx = box?.x?.toFloat() ?: bounds.cx }
+        StlViewMode.Free -> return null
+    }
+    if (box != null) {
+        wx = wx.coerceIn(0f, box.x.toFloat())
+        wy = wy.coerceIn(0f, box.y.toFloat())
+        wz = wz.coerceIn(0f, box.z.toFloat())
+    }
+    return StlScenePoint(x = wx, y = wy, z = wz, argb = 0xFF111827.toInt(), square = false, label = "Punt")
 }
+
+/** Box-as die voor de meting meetelt. In een vást vlak vallen de twee vlak-assen mee en valt de
+ *  diepte-as eruit (label = de echte box-as, zodat het aansluit bij de 3D ΔX·ΔY·ΔZ-uitlezing). */
+internal enum class MeasureAxis(val label: String) {
+    X("X"), Y("Y"), Z("Z");
+
+    fun of(p: StlScenePoint): Float = when (this) {
+        X -> p.x
+        Y -> p.y
+        Z -> p.z
+    }
+}
+
+/** De twee vlak-assen per vast aanzicht (Free = alle drie). De weggelaten as is de diepte van dat
+ *  vlak — precies de richting die je in het echt niet meet. */
+internal fun StlViewMode.inPlaneAxes(): List<MeasureAxis> = when (this) {
+    StlViewMode.Free -> listOf(MeasureAxis.X, MeasureAxis.Y, MeasureAxis.Z)
+    StlViewMode.Top -> listOf(MeasureAxis.X, MeasureAxis.Y)
+    StlViewMode.Front, StlViewMode.Back -> listOf(MeasureAxis.X, MeasureAxis.Z)
+    StlViewMode.Left, StlViewMode.Right -> listOf(MeasureAxis.Y, MeasureAxis.Z)
+}
+
+/** Directe-pad-afstand over alleen [axes] (mm): in een vast vlak de XY-in-het-vlak (Pythagoras over
+ *  twee assen), in Free de volle 3D-afstand. */
+internal fun stlMeasureDistanceMm(a: StlScenePoint, b: StlScenePoint, axes: List<MeasureAxis>): Float {
+    var sumSq = 0f
+    for (axis in axes) {
+        val d = axis.of(a) - axis.of(b)
+        sumSq += d * d
+    }
+    return sqrt(sumSq)
+}
+
+internal fun stlMeasureDistanceMm(a: StlScenePoint, b: StlScenePoint): Float =
+    stlMeasureDistanceMm(a, b, listOf(MeasureAxis.X, MeasureAxis.Y, MeasureAxis.Z))
 
 /** Box (draadmodel) en meetpunten als scherpe vector over de gerasterde mesh. */
 private fun DrawScope.drawSceneOverlay(
@@ -842,7 +921,8 @@ private fun DrawScope.drawSceneOverlay(
     measureB: StlScenePoint? = null,
     hFlip: Float = 1f,
     wallBox: FloatArray? = null,
-    highlightWall: Int? = null
+    highlightWall: Int? = null,
+    inPlaneAxes: List<MeasureAxis> = listOf(MeasureAxis.X, MeasureAxis.Y, MeasureAxis.Z)
 ) {
     val yaw = yawDeg * (PI.toFloat() / 180f)
     val pitch = pitchDeg * (PI.toFloat() / 180f)
@@ -997,7 +1077,7 @@ private fun DrawScope.drawSceneOverlay(
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
             drawContext.canvas.nativeCanvas.drawText(
-                "${stlMeasureDistanceMm(measureA, measureB).roundToInt()} mm",
+                "${stlMeasureDistanceMm(measureA, measureB, inPlaneAxes).roundToInt()} mm",
                 mid.x + 12f,
                 mid.y - 12f,
                 measurePaint

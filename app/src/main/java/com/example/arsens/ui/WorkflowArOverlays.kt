@@ -171,7 +171,7 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
         onPerfStats = { if (state.showDebugHud) state.arPerfStats = it }
     )
     if (state.showTagOverlay) {
-        WorkflowAprilTagOverlay(state.project, state.overlayAprilTagResult)
+        WorkflowAprilTagOverlay(state.project, state.overlayAprilTagResult, state.sensorTagStartId)
     }
     if (state.showAxisOverlay) {
         WorkflowAxisOverlay(state.overlayAprilTagResult, state.project)
@@ -351,7 +351,11 @@ private fun WorkflowPlacementQualityIndicator(quality: PlacementQuality?, correc
 }
 
 @Composable
-internal fun WorkflowAprilTagOverlay(project: Project, result: AprilTagFrameResult) {
+internal fun WorkflowAprilTagOverlay(
+    project: Project,
+    result: AprilTagFrameResult,
+    sensorTagStartId: Int = Int.MAX_VALUE
+) {
     WorkflowAprilTagProjectionDiagnostics(project, result)
     Canvas(Modifier.fillMaxSize()) {
         val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -364,6 +368,9 @@ internal fun WorkflowAprilTagOverlay(project: Project, result: AprilTagFrameResu
         val freshImageColor = Color(0xFFFFD54F)
         val candidateFusedColor = Color(0xFFFF5252)
         val liveDetectionColor = Color(0xFF00E5FF)
+        // Sensor-tags (ID ≥ sensorTagStartId) krijgen bewust een andere kleur (groen) dan de
+        // referentietags (cyaan), zodat in beeld direct te zien is wat een sensor is.
+        val sensorTagColor = Color(0xFF00E676)
         val liveDetections = if (result.detectionAgeMillis <= DEBUG_DETECTION_HOLD_MILLIS) {
             result.screenDetections
         } else {
@@ -404,7 +411,9 @@ internal fun WorkflowAprilTagOverlay(project: Project, result: AprilTagFrameResu
             if (points.size != 4) return@forEach
             val isKnown = project.markers.any { it.isAprilTagCalibrationMarker() && it.active && it.id == detection.id }
             val isReference = detection.id in referenceIds
+            val isSensorTag = detection.id >= sensorTagStartId
             val color = when {
+                isSensorTag -> sensorTagColor
                 isReference || isKnown -> liveDetectionColor
                 else -> Color(0xFFFFB020)
             }
@@ -424,6 +433,7 @@ internal fun WorkflowAprilTagOverlay(project: Project, result: AprilTagFrameResu
             drawCircle(Color.White, radius = 17f, center = center, style = Stroke(width = 3f))
             drawContext.canvas.nativeCanvas.drawText(
                 when {
+                    isSensorTag -> "Sensor-tag ${detection.id}"
                     isReference -> "Ref ${detection.id} live"
                     isKnown -> "Tag ${detection.id} live"
                     else -> "Tag ${detection.id} nieuw"

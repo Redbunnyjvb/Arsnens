@@ -102,12 +102,18 @@ private fun Marker.correctedLegacyAprilTagRotation(dimensionsMm: MmPosition): Fl
         // het lezen om naar de juiste Rz=0. (Front-tags met (0,0,0) blijven zo ongemoeid.)
         rotationDeg.sameAs(FloatVector(0f, 0f, 180f)) && positionMm.y == 0 ->
             FloatVector(0f, 0f, 0f)
-        rotationDeg.sameAs(FloatVector(0f, 0f, 180f)) && positionMm.y == dimensionsMm.y ->
-            FloatVector(0f, 0f, 0f)
-        rotationDeg.sameAs(FloatVector(0f, 0f, -90f)) && positionMm.x == 0 ->
-            FloatVector(0f, 0f, 90f)
-        rotationDeg.sameAs(FloatVector(0f, 0f, 90f)) && positionMm.x == dimensionsMm.x ->
+        // Back gecorrigeerd (Rz=180 — een achtertag wordt van de TEGENOVERGESTELDE kant gelezen): oude
+        // back-tags op de niet-gedraaide Rz=0 → bij het lezen omzetten naar 180. (Back-tags die al 180
+        // zijn matchen niet en blijven ongemoeid; een fronttag staat op y==0, niet y==diepte.)
+        rotationDeg.sameAs(FloatVector(0f, 0f, 0f)) && positionMm.y == dimensionsMm.y ->
+            FloatVector(0f, 0f, 180f)
+        // Zijvlakken gecorrigeerd (na de Left=-90/Right=+90 fix): oude opgeslagen zijtags staan op de
+        // GESPIEGELDE waarde (Left Rz=+90, Right Rz=-90) → bij het lezen omzetten naar de juiste. Tags
+        // die al op de nieuwe waarde staan matchen hier niet en blijven ongemoeid.
+        rotationDeg.sameAs(FloatVector(0f, 0f, 90f)) && positionMm.x == 0 ->
             FloatVector(0f, 0f, -90f)
+        rotationDeg.sameAs(FloatVector(0f, 0f, -90f)) && positionMm.x == dimensionsMm.x ->
+            FloatVector(0f, 0f, 90f)
         // Top gecorrigeerd: oude opgeslagen top-tags staan op de gespiegelde Rx=+90 → zet ze bij
         // het lezen om naar de juiste Rx=-90. (Top-tags met (-90,0,0) blijven zo ongemoeid.)
         rotationDeg.sameAs(FloatVector(90f, 0f, 0f)) && positionMm.z == dimensionsMm.z ->
@@ -224,6 +230,18 @@ data class InstallationLog(
  *  die tag draagt. Pure mapping (geen AR/Android), zodat de koppeling los te unit-testen is. */
 fun sensorForSensorTag(sensors: List<Sensor>, tagId: Int): Sensor? =
     sensors.firstOrNull { it.sensorTagId == tagId }
+
+/** Sensor-ID voor een (live gescande) sensor-tag bij on-the-fly plaatsen:
+ *  - draagt al een sensor deze tag → diens ID (her-plaatsen werkt die sensor bij i.p.v. dupliceren);
+ *  - anders het afgeleide nummer tagId − [sensorTagStartId] + 1 (tag 200 → "1", 201 → "2", …);
+ *  - is dat afgeleide nummer al door een ándere sensor bezet → het eerstvolgende vrije gehele ID. */
+fun deriveSensorIdForScannedTag(sensors: List<Sensor>, tagId: Int, sensorTagStartId: Int): String {
+    sensorForSensorTag(sensors, tagId)?.let { return it.id }
+    val derived = (tagId - sensorTagStartId + 1).coerceAtLeast(1).toString()
+    if (sensors.none { it.id == derived }) return derived
+    val used = sensors.mapNotNull { it.id.toIntOrNull() }.toSet()
+    return generateSequence(1) { it + 1 }.first { it !in used }.toString()
+}
 
 fun distanceMm(offset: MmPosition): Int {
     val squared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z

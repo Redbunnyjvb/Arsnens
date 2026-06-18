@@ -1251,11 +1251,18 @@ internal fun WorkflowOverlayToggles(state: WorkflowAppState) {
             onCheckedChange = { state.showMiniAxisOverlay = it }
         )
         WorkflowLayerToggleRow(
+            iconKey = "cube",
+            title = "Box-randen (trafo)",
+            subtitle = "Toon de randen van de trafo-box in AR",
+            checked = state.showBoxEdgesOverlay,
+            onCheckedChange = { state.showBoxEdgesOverlay = it }
+        )
+        WorkflowLayerToggleRow(
             iconKey = "orient",
-            title = "Canon-assen (debug)",
-            subtitle = "ARSensFrameCheck: canonieke box-assen, geen mapper",
-            checked = state.showFrameCheckOverlay,
-            onCheckedChange = { state.showFrameCheckOverlay = it }
+            title = "XYZ + hoek per tag",
+            subtitle = "Toon opgeslagen positie en rotatie per AprilTag",
+            checked = state.showTagPoseLabels,
+            onCheckedChange = { state.showTagPoseLabels = it }
         )
         if (state.project.stlModels.isNotEmpty()) {
             WorkflowLayerToggleRow(

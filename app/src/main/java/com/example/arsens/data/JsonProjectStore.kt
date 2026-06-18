@@ -6,7 +6,9 @@ import org.json.JSONObject
 import java.io.File
 
 object JsonProjectStore {
-    fun projectToJson(project: Project): String =
+    fun projectToJson(project: Project): String = projectJson(project).toString(2)
+
+    private fun projectJson(project: Project): JSONObject =
         JSONObject()
             .put("project_name", project.projectName)
             .put("model_file", project.modelFile)
@@ -16,6 +18,16 @@ object JsonProjectStore {
             .put("sensors", JSONArray(project.sensors.map(::sensorToJson)))
             .put("markers", JSONArray(project.markers.map(::markerToJson)))
             .put("stl_models", JSONArray(project.stlModels.map(::stlModelToJson)))
+
+    /** Volledig, machine-leesbaar exportpakket: alle projectdata (coördinatenframe, afmetingen,
+     *  STL-offsets, sensoren met plaatsings-audit én driftcorrectie, tags) plus de installatielog en
+     *  de export-context. De "bron van waarheid" naast het mensgerichte Excel-rapport. */
+    fun projectReportToJson(project: Project, log: InstallationLog, meta: ReportMeta): String =
+        JSONObject()
+            .put("exported_at", meta.exportedAt)
+            .put("drift_correction_enabled", meta.driftCorrectionEnabled)
+            .put("project", projectJson(project))
+            .put("installation_log", logJson(log))
             .toString(2)
 
     fun projectFromJson(jsonText: String, markersFallback: List<Marker> = emptyList()): Project {
@@ -45,13 +57,14 @@ object JsonProjectStore {
         return json.getJSONArray("markers").mapObjects(::markerFromJson)
     }
 
-    fun logToJson(log: InstallationLog): String =
+    fun logToJson(log: InstallationLog): String = logJson(log).toString(2)
+
+    private fun logJson(log: InstallationLog): JSONObject =
         JSONObject()
             .put("project_name", log.projectName)
             .put("started_at", log.startedAt)
             .put("operator", log.operator)
             .put("results", JSONArray(log.results.map(::resultToJson)))
-            .toString(2)
 
     fun logFromJson(jsonText: String): InstallationLog {
         val json = JSONObject(jsonText)
@@ -135,6 +148,7 @@ object JsonProjectStore {
             .apply {
                 sensor.referenceTagId?.let { put("reference_tag_id", it) }
                 sensor.placement?.let { put("placement", placementToJson(it)) }
+                sensor.driftCorrection?.let { put("drift_correction", driftCorrectionToJson(it)) }
             }
 
     private fun sensorFromJson(json: JSONObject): Sensor =
@@ -149,7 +163,24 @@ object JsonProjectStore {
             instruction = json.optString("instruction"),
             status = statusFromWireName(json.optString("status")),
             referenceTagId = json.optInt("reference_tag_id", -1).takeIf { it >= 0 },
-            placement = json.optJSONObject("placement")?.let(::placementFromJson)
+            placement = json.optJSONObject("placement")?.let(::placementFromJson),
+            driftCorrection = json.optJSONObject("drift_correction")?.let(::driftCorrectionFromJson)
+        )
+
+    private fun driftCorrectionToJson(correction: SensorDriftCorrection): JSONObject =
+        JSONObject()
+            .put("as_placed_position_mm", correction.asPlacedPositionMm.toJsonArray())
+            .put("delta_mm", correction.deltaMm)
+            .put("corrected_at_wall_millis", correction.correctedAtWallMillis)
+            .put("pose_marker_ids", JSONArray(correction.poseMarkerIds))
+
+    private fun driftCorrectionFromJson(json: JSONObject): SensorDriftCorrection =
+        SensorDriftCorrection(
+            asPlacedPositionMm = json.optJSONArray("as_placed_position_mm")?.toMmPosition()
+                ?: MmPosition(0, 0, 0),
+            deltaMm = json.optInt("delta_mm", 0),
+            correctedAtWallMillis = json.optLong("corrected_at_wall_millis", 0L),
+            poseMarkerIds = json.optJSONArray("pose_marker_ids")?.toIntList() ?: emptyList()
         )
 
     private fun placementToJson(audit: SensorPlacementAudit): JSONObject =

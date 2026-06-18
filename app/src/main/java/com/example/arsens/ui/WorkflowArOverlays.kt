@@ -88,6 +88,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -105,6 +106,7 @@ import com.example.arsens.data.triangleFullyOffscreen
 import com.example.arsens.ar.AprilTagCorner
 import com.example.arsens.ar.AprilTagFrameResult
 import com.example.arsens.ar.ArCoreCameraPanel
+import com.example.arsens.ar.ArPerfStats
 import com.example.arsens.ar.ArTrackingStatus
 import com.example.arsens.ar.PlacementQuality
 import com.example.arsens.data.QualityGrade
@@ -164,13 +166,12 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
         onResult = state::updateAprilTagResult,
         modifier = Modifier.fillMaxSize(),
         tagDictionary = state.tagDictionary,
-        tagPoseMode = state.tagPoseMode
+        tagPoseMode = state.tagPoseMode,
+        // Alleen state schrijven (= hercompositie) wanneer de HUD daadwerkelijk getoond wordt.
+        onPerfStats = { if (state.showDebugHud) state.arPerfStats = it }
     )
     if (state.showTagOverlay) {
         WorkflowAprilTagOverlay(state.project, state.overlayAprilTagResult)
-    }
-    if (state.showSensorOverlay) {
-        WorkflowSensorPointOverlay(state.project, state.overlayAprilTagResult)
     }
     if (state.showAxisOverlay) {
         WorkflowAxisOverlay(state.overlayAprilTagResult, state.project)
@@ -182,11 +183,18 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
             onClick = {}
         )
     }
-    if (state.showFrameCheckOverlay) {
-        WorkflowCanonicalFrameCheckOverlay(state.overlayAprilTagResult)
+    if (state.showBoxEdgesOverlay) {
+        WorkflowBoxEdgesOverlay(state.project, state.overlayAprilTagResult)
+    }
+    if (state.showTagPoseLabels) {
+        WorkflowTagPoseLabelOverlay(state.project, state.overlayAprilTagResult)
     }
     if (state.showStlOverlay) {
         WorkflowStlArOverlay(state)
+    }
+    // Sensoren ná het model tekenen, zodat geplaatste sensoren niet achter de AR-assembly wegvallen.
+    if (state.showSensorOverlay) {
+        WorkflowSensorPointOverlay(state.project, state.overlayAprilTagResult)
     }
     if (targetSensor != null) {
         WorkflowCurrentSensorTargetOverlay(targetSensor, state.project, state.overlayAprilTagResult)
@@ -199,6 +207,109 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
         onOffsetChange = { state.arCursorScreenOffset = it }
     )
     WorkflowPlacementQualityIndicator(state.placementQuality, state.correctionSettleProgress)
+    if (state.showDebugHud) {
+        WorkflowDebugHud(state.arPerfStats, state.overlayAprilTagResult)
+    }
+}
+
+/** Trafo-box als wireframe: de 12 ribben van [Project.dimensionsMm] in het canonieke box-frame,
+ *  geprojecteerd via dezelfde gefuseerde tag-pose als de assen. Volgt de camerabeweging en
+ *  verdwijnt pas wanneer er helemaal geen pose is (geen geflikker tussen detecties). */
+@Composable
+internal fun WorkflowBoxEdgesOverlay(project: Project, result: AprilTagFrameResult) {
+    val d = project.dimensionsMm
+    Canvas(Modifier.fillMaxSize()) {
+        val corners = arrayOf(
+            MmPosition(0, 0, 0), MmPosition(d.x, 0, 0), MmPosition(d.x, d.y, 0), MmPosition(0, d.y, 0),
+            MmPosition(0, 0, d.z), MmPosition(d.x, 0, d.z), MmPosition(d.x, d.y, d.z), MmPosition(0, d.y, d.z)
+        )
+        val pts = corners.map { c ->
+            projectPositionToScreen(c, result, preferImagePose = false)?.let { Offset(it.xPx, it.yPx) }
+        }
+        // 12 ribben: ondervlak (z=0), bovenvlak (z=max), verticale verbindingen.
+        val edges = arrayOf(
+            0 to 1, 1 to 2, 2 to 3, 3 to 0,
+            4 to 5, 5 to 6, 6 to 7, 7 to 4,
+            0 to 4, 1 to 5, 2 to 6, 3 to 7
+        )
+        val color = Color(0xFF00E5C8)
+        edges.forEach { (a, b) ->
+            val pa = pts[a] ?: return@forEach
+            val pb = pts[b] ?: return@forEach
+            drawLine(color, pa, pb, strokeWidth = 4f, cap = StrokeCap.Round)
+        }
+        pts.forEach { p -> if (p != null) drawCircle(color, radius = 5f, center = p) }
+    }
+}
+
+/** Per zichtbare/bekende AprilTag een label met de OPGESLAGEN box-positie en rotatie. De positie
+ *  van het label volgt het gefuseerde tag-centrum (zelfde projectie als de tag-overlay). */
+@Composable
+internal fun WorkflowTagPoseLabelOverlay(project: Project, result: AprilTagFrameResult) {
+    Canvas(Modifier.fillMaxSize()) {
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = 26f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(160, 0, 0, 0)
+        }
+        project.markers
+            .filter { it.isAprilTagCalibrationMarker() && it.active }
+            .map { it.asAprilTagCalibrationMarker(project.dimensionsMm) }
+            .forEach { marker ->
+                val corners = projectMarkerCornersCurrentFused(marker, result).toOffsets()
+                if (corners.size != 4) return@forEach
+                val center = corners.centerOffset()
+                val p = marker.positionMm
+                val r = marker.rotationDeg
+                val lines = listOf(
+                    "T${marker.id}",
+                    "X${p.x} Y${p.y} Z${p.z}",
+                    "R ${r.x.roundToInt()},${r.y.roundToInt()},${r.z.roundToInt()}°"
+                )
+                val pad = 6f
+                val lineH = 28f
+                val maxW = lines.maxOf { textPaint.measureText(it) }
+                val boxLeft = center.x + 18f
+                val boxTop = center.y - 6f
+                val nativeCanvas = drawContext.canvas.nativeCanvas
+                nativeCanvas.drawRect(
+                    boxLeft - pad, boxTop - pad,
+                    boxLeft + maxW + pad, boxTop + lines.size * lineH + pad,
+                    bgPaint
+                )
+                lines.forEachIndexed { i, line ->
+                    nativeCanvas.drawText(line, boxLeft, boxTop + (i + 1) * lineH - 6f, textPaint)
+                }
+                drawCircle(Color(0xFFFFD54F), radius = 4f, center = center)
+            }
+    }
+}
+
+/** Compacte, niet-flikkerende debug-HUD linksboven op de camera: live FPS (overlay-cadans) +
+ *  ARCore-Hz (cameraframe-cadans), plus tag-leeftijd en trackingstatus als context. Waarden komen
+ *  uit [ArPerfStats] (~2×/sec ververst) en blijven staan tussen updates. */
+@Composable
+private fun WorkflowDebugHud(stats: ArPerfStats, result: AprilTagFrameResult) {
+    val ageText = if (result.detectionAgeMillis == Long.MAX_VALUE) "—" else "${result.detectionAgeMillis} ms"
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = 12.dp, top = 96.dp)
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text("DEBUG", color = Color(0xFF00E5C8), fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            Text("ARCore  ${stats.arCoreHz.roundToInt()} Hz", color = Color.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            Text("FPS     ${stats.uiHz.roundToInt()}", color = Color.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            Text("tag     $ageText", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            Text("track   ${result.trackingStatus.name}", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        }
+    }
 }
 
 /** Compacte kwaliteits-indicator rechts op het camerabeeld: een klein pilletje in de grade-kleur
@@ -640,9 +751,10 @@ internal fun WorkflowMiniAxisOverlay(
 /** Punten dichter dan dit vóór de camera (mm) worden geclipt. */
 private const val STL_AR_NEAR_MM = 1.0
 
-/** Schermmarge voor zichtbaarheidstests: ruim, zodat een driehoek die het beeld in steekt
- *  nooit te vroeg wegvalt (geen gaten aan de schermrand). */
-private const val STL_AR_SCREEN_MARGIN_PX = 300f
+/** Schermmarge voor zichtbaarheidstests: ruim, zodat een driehoek/rand die het beeld in steekt
+ *  nooit te vroeg wegvalt. Verhoogd (was 300) zodat chunks aan de schermrand minder in/uit beeld
+ *  wippen tijdens pannen — scheelt zichtbaar geflikker bij camerabeweging. */
+private const val STL_AR_SCREEN_MARGIN_PX = 700f
 
 /** Lijnbudgetten per chunk per frame (de featureLines zijn lang→kort gesorteerd). */
 private const val STL_AR_FAST_LINES = 600
@@ -875,11 +987,15 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStlArChunkFeatu
     chunk: StlArChunk,
     maxLines: Int,
     paint: android.graphics.Paint,
-    shadowPaint: android.graphics.Paint?
+    shadowPaint: android.graphics.Paint?,
+    frame: StlArFrame,
+    sm: StlArScreenMap
 ) {
     val lines = chunk.featureLines
     val total = minOf(lines.size / 2, maxLines)
     if (total <= 0) return
+    val p = chunk.positions
+    val m = frame.m
     val view = chunk.scratchView
     val zs = chunk.scratchZ
     val buf = chunk.scratchLines
@@ -889,9 +1005,37 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStlArChunkFeatu
     var out = 0
     for (li in 0 until total) {
         val a = lines[li * 2]; val b = lines[li * 2 + 1]
-        if (zs[a].isNaN() || zs[b].isNaN()) continue
-        val x0 = view[a * 2]; val y0 = view[a * 2 + 1]
-        val x1 = view[b * 2]; val y1 = view[b * 2 + 1]
+        val aBehind = zs[a].isNaN()
+        val bBehind = zs[b].isNaN()
+        if (aBehind && bBehind) continue
+        val x0: Float; val y0: Float; val x1: Float; val y1: Float
+        if (!aBehind && !bBehind) {
+            x0 = view[a * 2]; y0 = view[a * 2 + 1]
+            x1 = view[b * 2]; y1 = view[b * 2 + 1]
+        } else {
+            // Eén eindpunt ligt achter de near-plane: kap het segment af op de near-plane in plaats
+            // van het hele segment te laten vallen — anders verdwijnen randen vlak vóór de camera.
+            val front = if (aBehind) b else a
+            val behind = if (aBehind) a else b
+            val fx = p[front * 3].toDouble(); val fy = p[front * 3 + 1].toDouble(); val fz = p[front * 3 + 2].toDouble()
+            val rx = p[behind * 3].toDouble(); val ry = p[behind * 3 + 1].toDouble(); val rz = p[behind * 3 + 2].toDouble()
+            val fcx = m[0] * fx + m[1] * fy + m[2] * fz + m[3]
+            val fcy = m[4] * fx + m[5] * fy + m[6] * fz + m[7]
+            val fcz = m[8] * fx + m[9] * fy + m[10] * fz + m[11]
+            val rcx = m[0] * rx + m[1] * ry + m[2] * rz + m[3]
+            val rcy = m[4] * rx + m[5] * ry + m[6] * rz + m[7]
+            val rcz = m[8] * rx + m[9] * ry + m[10] * rz + m[11]
+            val denom = rcz - fcz
+            if (denom == 0.0) continue
+            val t = (STL_AR_NEAR_MM - fcz) / denom
+            val clx = fcx + t * (rcx - fcx)
+            val cly = fcy + t * (rcy - fcy)
+            val nxc = (clx / STL_AR_NEAR_MM).toFloat()
+            val nyc = (cly / STL_AR_NEAR_MM).toFloat()
+            x0 = view[front * 2]; y0 = view[front * 2 + 1]
+            x1 = sm.x0 + sm.xx * nxc + sm.xy * nyc
+            y1 = sm.y0 + sm.yx * nxc + sm.yy * nyc
+        }
         if ((x0 < -margin && x1 < -margin) || (x0 > width + margin && x1 > width + margin) ||
             (y0 < -margin && y1 < -margin) || (y0 > height + margin && y1 > height + margin)
         ) {
@@ -1132,7 +1276,7 @@ internal fun WorkflowStlArOverlay(state: WorkflowAppState) {
                         shadowPaint.color = android.graphics.Color.BLACK
                         shadowPaint.alpha = 90
                         shadowPaint.strokeWidth = 5.4f
-                        drawStlArChunkFeatureLines(chunk, STL_AR_FAST_LINES, linePaint, shadowPaint)
+                        drawStlArChunkFeatureLines(chunk, STL_AR_FAST_LINES, linePaint, shadowPaint, frame, sm)
                     }
                     StlArRenderMode.Technical -> {
                         linePaint.color = part.colorArgb
@@ -1141,7 +1285,7 @@ internal fun WorkflowStlArOverlay(state: WorkflowAppState) {
                         shadowPaint.color = android.graphics.Color.BLACK
                         shadowPaint.alpha = 90
                         shadowPaint.strokeWidth = 4.8f
-                        drawStlArChunkFeatureLines(chunk, STL_AR_TECH_LINES, linePaint, shadowPaint)
+                        drawStlArChunkFeatureLines(chunk, STL_AR_TECH_LINES, linePaint, shadowPaint, frame, sm)
                         linePaint.color = android.graphics.Color.WHITE
                         linePaint.alpha = 217
                         linePaint.strokeWidth = 2.2f
@@ -1152,14 +1296,14 @@ internal fun WorkflowStlArOverlay(state: WorkflowAppState) {
                         linePaint.color = android.graphics.Color.WHITE
                         linePaint.alpha = 128
                         linePaint.strokeWidth = 1.8f
-                        drawStlArChunkFeatureLines(chunk, STL_AR_FILL_EDGE_LINES, linePaint, null)
+                        drawStlArChunkFeatureLines(chunk, STL_AR_FILL_EDGE_LINES, linePaint, null, frame, sm)
                     }
                     StlArRenderMode.Detail -> {
                         drawStlArChunkFill(chunk, frame, meshPaint, part.colorArgb, fillAlpha, cullBackfaces)
                         linePaint.color = android.graphics.Color.WHITE
                         linePaint.alpha = 153
                         linePaint.strokeWidth = 2.0f
-                        drawStlArChunkFeatureLines(chunk, STL_AR_TECH_LINES, linePaint, null)
+                        drawStlArChunkFeatureLines(chunk, STL_AR_TECH_LINES, linePaint, null, frame, sm)
                     }
                 }
             }
@@ -1296,18 +1440,32 @@ internal fun WorkflowSensorPointOverlay(
             result.transformerPose == null &&
             (result.detectionAgeMillis > PER_TAG_POSE_FRESH_MILLIS || result.posePerTag.isEmpty())
         ) return@Canvas
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
-            textSize = 24f
+            textSize = 26f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val labelBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(165, 0, 0, 0)
         }
         project.sensors.forEach { sensor ->
             // Vers gezien → via de eigen referentietag (pixel-vast); anders via de gefuseerde
             // ARCore-pose zodat sensoren blijven staan als hun tag even uit beeld is.
             val projected = projectSensorToScreen(sensor, project, result) ?: return@forEach
             val center = Offset(projected.xPx, projected.yPx)
-            drawCircle(Color(0xFF00E5FF), radius = 10f, center = center)
-            drawContext.canvas.nativeCanvas.drawText(sensor.id, center.x + 13f, center.y - 10f, paint)
+            // Duidelijk leesbaar bovenop het (drukke, deels-dekkende) AR-model: donkere contrastrand,
+            // felle kern, witte ring. Sensoren worden ná het model getekend (zie WorkflowCameraLayers).
+            drawCircle(Color.Black.copy(alpha = 0.6f), radius = 12f, center = center)
+            drawCircle(Color(0xFF00E5FF), radius = 8f, center = center)
+            drawCircle(Color.White, radius = 12f, center = center, style = Stroke(width = 2.5f))
+            val label = sensor.id
+            val tw = labelPaint.measureText(label)
+            val lx = center.x + 16f
+            val baseline = center.y - 12f
+            drawContext.canvas.nativeCanvas.drawRoundRect(
+                lx - 6f, baseline - 24f, lx + tw + 6f, baseline + 7f, 7f, 7f, labelBg
+            )
+            drawContext.canvas.nativeCanvas.drawText(label, lx, baseline, labelPaint)
         }
     }
 }

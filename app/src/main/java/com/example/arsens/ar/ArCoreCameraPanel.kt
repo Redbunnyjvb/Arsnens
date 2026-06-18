@@ -61,13 +61,19 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.roundToInt
 
+/** Live perf-telemetrie voor de debug-HUD: [arCoreHz] = nieuwe ARCore-cameraframes per seconde
+ *  (op basis van de frame-timestamp), [uiHz] = resultaten die de overlays bereiken per seconde
+ *  (ná coalescing). Beide worden ~2×/sec op de main thread bijgewerkt. */
+data class ArPerfStats(val arCoreHz: Float = 0f, val uiHz: Float = 0f)
+
 @Composable
 fun ArCoreCameraPanel(
     knownMarkers: List<Marker>,
     onResult: (AprilTagFrameResult) -> Unit,
     modifier: Modifier = Modifier,
     tagDictionary: TagDictionaryOption = TagDictionaryOption.DEFAULT,
-    tagPoseMode: TagPoseMode = TagPoseMode.DEFAULT
+    tagPoseMode: TagPoseMode = TagPoseMode.DEFAULT,
+    onPerfStats: (ArPerfStats) -> Unit = {}
 ) {
     val context = LocalContext.current
     var hasPermission by remember {
@@ -85,13 +91,15 @@ fun ArCoreCameraPanel(
     val latestOnResult by rememberUpdatedState(onResult)
     val latestDictionary by rememberUpdatedState(tagDictionary)
     val latestPoseMode by rememberUpdatedState(tagPoseMode)
+    val latestOnPerfStats by rememberUpdatedState(onPerfStats)
     val renderer = remember {
         ArCoreCameraRenderer(
             context = context,
             knownMarkers = { latestMarkers },
             onResult = { latestOnResult(it) },
             tagDictionaryId = { latestDictionary.openCvId },
-            tagPoseMode = { latestPoseMode }
+            tagPoseMode = { latestPoseMode },
+            onPerfStats = { latestOnPerfStats(it) }
         )
     }
     val surfaceView = remember {
@@ -145,7 +153,8 @@ private class ArCoreCameraRenderer(
     private val knownMarkers: () -> List<Marker>,
     private val onResult: (AprilTagFrameResult) -> Unit,
     private val tagDictionaryId: () -> Int = { Objdetect.DICT_APRILTAG_36h11 },
-    private val tagPoseMode: () -> TagPoseMode = { TagPoseMode.DEFAULT }
+    private val tagPoseMode: () -> TagPoseMode = { TagPoseMode.DEFAULT },
+    private val onPerfStats: (ArPerfStats) -> Unit = {}
 ) : GLSurfaceView.Renderer {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activeDictionaryId = tagDictionaryId()
@@ -179,6 +188,13 @@ private class ArCoreCameraRenderer(
     private var producedFrames = 0L
     private var deliveredResults = 0L
     private var lastPublishLogMillis = 0L
+    // Perf-HUD: nieuwe ARCore-cameraframes (gewijzigde frame-timestamp). Geschreven op de GL-thread
+    // in postFrameResult, gelezen op de main thread in maybePublishPerfStats — daarom onder de lock.
+    private var arCoreFrames = 0L
+    private var lastArCoreTimestampNs = 0L
+    private var perfWindowStartMillis = 0L
+    private var perfWindowArCoreBase = 0L
+    private var perfWindowDeliveredBase = 0L
     private val deliverPendingUiResult = Runnable {
         // uiPostScheduled wordt hier (binnen de lock) op false gezet vóór delivery, zodat een
         // result dat tijdens onResult() binnenkomt een nieuwe post triggert en niet verloren gaat.
@@ -192,6 +208,7 @@ private class ArCoreCameraRenderer(
         if (latest != null) {
             onResult(latest)
             maybeLogPublishStats()
+            maybePublishPerfStats()
         }
     }
 
@@ -288,6 +305,13 @@ private class ArCoreCameraRenderer(
     private fun postFrameResult(frame: Frame) {
         val camera = frame.camera
         val tracking = camera.trackingState == TrackingState.TRACKING
+        // Tel alleen een nieuw ARCore-cameraframe als de timestamp echt veranderde — onDrawFrame
+        // draait continu op de display-refresh, maar ARCore levert vaak op 30 Hz een nieuw beeld.
+        val ts = frame.timestamp
+        if (ts != lastArCoreTimestampNs) {
+            lastArCoreTimestampNs = ts
+            synchronized(resultLock) { arCoreFrames++ }
+        }
         val arPoseMatrix = FloatArray(16)
         val viewMatrix = FloatArray(16)
         val projectionMatrix = FloatArray(16)
@@ -368,6 +392,33 @@ private class ArCoreCameraRenderer(
             "ARSensPublish",
             "producedFrames=$produced deliveredResults=$delivered coalescedResults=${produced - delivered}"
         )
+    }
+
+    /** Berekent ~2×/sec de ARCore-framecadans en overlay-cadans uit de tellers en levert ze aan de
+     *  debug-HUD. Draait op de main thread (vanuit [deliverPendingUiResult]); waarden worden tussen
+     *  vensters vastgehouden zodat de HUD niet flikkert. */
+    private fun maybePublishPerfStats() {
+        val now = SystemClock.elapsedRealtime()
+        val arCore: Long
+        val delivered: Long
+        synchronized(resultLock) {
+            arCore = arCoreFrames
+            delivered = deliveredResults
+        }
+        if (perfWindowStartMillis == 0L) {
+            perfWindowStartMillis = now
+            perfWindowArCoreBase = arCore
+            perfWindowDeliveredBase = delivered
+            return
+        }
+        val elapsed = now - perfWindowStartMillis
+        if (elapsed < PERF_WINDOW_MILLIS) return
+        val arCoreHz = (arCore - perfWindowArCoreBase) * 1000f / elapsed
+        val uiHz = (delivered - perfWindowDeliveredBase) * 1000f / elapsed
+        perfWindowStartMillis = now
+        perfWindowArCoreBase = arCore
+        perfWindowDeliveredBase = delivered
+        onPerfStats(ArPerfStats(arCoreHz, uiHz))
     }
 
     private fun depthHitArFromPoint(frame: Frame): Transform3D? =
@@ -1480,6 +1531,7 @@ private const val TAG_RESET_AFTER_MILLIS = 20_000L
 private const val FUSION_LOG_INTERVAL_MILLIS = 1_000L
 private const val OVERLAY_ROUTE_LOG_INTERVAL_MILLIS = 500L
 private const val PUBLISH_LOG_INTERVAL_MILLIS = 2_000L
+private const val PERF_WINDOW_MILLIS = 500L
 
 private fun Float.shortPx(): String =
     "${((this * 100f).roundToInt() / 100f)}px"

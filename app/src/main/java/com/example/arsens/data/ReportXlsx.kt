@@ -11,8 +11,9 @@ import java.util.zip.ZipOutputStream
 import kotlin.math.roundToInt
 
 object ReportXlsx {
-    fun build(project: Project, log: InstallationLog): ByteArray {
+    fun build(project: Project, log: InstallationLog, meta: ReportMeta = ReportMeta()): ByteArray {
         val sheets = listOf(
+            metaSheet(project, log, meta),
             tableSheet("Samenvatting", summaryRows(project, log)),
             tableSheet("Sensoren", sensorRows(project, log)),
             tableSheet("Tags", tagRows(project)),
@@ -38,20 +39,92 @@ object ReportXlsx {
             row("Sensoren", project.sensors.size),
             row("Tags", project.markers.count { it.isAprilTagCalibrationMarker() }),
             row("OK", okCount),
-            row("Fout", failCount)
+            row("Fout", failCount),
+            row("Met plaatsings-audit", project.sensors.count { it.placement != null }),
+            row("Gecorrigeerd (drift) *", project.sensors.count { it.driftCorrection != null })
         )
+    }
+
+    /** Eerste tabblad: het traceerbare verhaal — herkomst, coördinatenstelsel, STL-offsets en de
+     *  betekenis van de kwaliteitskolommen + de "*"-markering. Puur tekst, geen afbeelding. */
+    private fun metaSheet(project: Project, log: InstallationLog, meta: ReportMeta): XlsxSheet {
+        val cells = SheetCells()
+        val c = 2
+        var r = 1
+        cells.put(r, c, XlsxCell.Text("Toelichting", XlsxStyle.Title)); r += 1
+        cells.put(r, c, XlsxCell.Text("Hoe dit rapport te lezen — herkomst en betekenis van de gegevens.", XlsxStyle.Subtitle)); r += 2
+
+        cells.put(r, c, XlsxCell.Text("Project & sessie", XlsxStyle.Title)); r += 1
+        r = kv(cells, r, c, "Project", project.projectName)
+        r = kv(cells, r, c, "Gestart", log.startedAt.ifBlank { "—" })
+        r = kv(cells, r, c, "Operator", log.operator.ifBlank { "—" })
+        r = kv(cells, r, c, "Geexporteerd op", meta.exportedAt.ifBlank { "—" })
+        r = kv(cells, r, c, "AR-driftcorrectie", if (meta.driftCorrectionEnabled) "Aan" else "Uit")
+        r += 1
+
+        cells.put(r, c, XlsxCell.Text("Coordinatenstelsel", XlsxStyle.Title)); r += 1
+        r = kv(cells, r, c, "Oorsprong & assen", project.coordinateFrame.summary)
+        r = kv(cells, r, c, "Eenheid", "millimeter (mm)")
+        r = kv(cells, r, c, "Afmetingen X/Y/Z", "${project.dimensionsMm.x} / ${project.dimensionsMm.y} / ${project.dimensionsMm.z} mm")
+        r = kv(cells, r, c, "Maten vergrendeld", if (project.dimensionsLocked) "Ja" else "Nee")
+        r += 1
+
+        cells.put(r, c, XlsxCell.Text("STL-assembly (delen & offsets)", XlsxStyle.Title)); r += 1
+        if (project.stlModels.isEmpty()) {
+            cells.put(r, c, XlsxCell.Text("Geen STL-delen geimporteerd.", XlsxStyle.Note)); r += 2
+        } else {
+            val stlRows = listOf(
+                row("Deel", "Rol", "Bestand", "Schaal %", "Offset X", "Offset Y", "Offset Z", "Rotatie X", "Rotatie Y", "Rotatie Z", "Zichtbaar")
+            ) + project.stlModels.map { m ->
+                row(
+                    m.name, m.role.label, m.fileName, m.scalePercent,
+                    m.offsetMm.x, m.offsetMm.y, m.offsetMm.z,
+                    m.rotationDeg.x, m.rotationDeg.y, m.rotationDeg.z,
+                    if (m.visible) "Ja" else "Nee"
+                )
+            }
+            cells.addTable(r, c, stlRows); r += stlRows.size + 1
+        }
+
+        cells.put(r, c, XlsxCell.Text("Legenda", XlsxStyle.Title)); r += 1
+        listOf(
+            "* achter een sensor = positie automatisch bijgesteld na herankering (straal-replay-driftcorrectie). Kolommen 'Drift mm' / 'Gecorrigeerd op' en de JSON-export tonen delta, tijdstip en gebruikte tags.",
+            "Grade (Hoog/Gemiddeld/Laag/Onveilig) = kwaliteitsklasse afgeleid van drempels op onderstaande signalen — bewust geen samengesteld plus-minus-mm-getal.",
+            "Reproj px = reprojectiefout van de tag-fit in pixels. Reproj mm = idem omgerekend op tag-diepte (px x afstand/fx): de FIT-fout van de tag, niet de totale plaatsingsfout.",
+            "Jitter mm = spreiding van de positiesamples. Beweging mm/graden = camerabeweging tijdens detectie. Stabiele lock = voldeed aan dwell/samples/jitter/bewegingscriteria.",
+            "Ref-tag = tag die als referentie geldt voor deze sensor. Pose-tags = tag(s) die de gebruikte pose leverden."
+        ).forEach { cells.put(r, c, XlsxCell.Text(it, XlsxStyle.Note)); r += 1 }
+
+        val widths = mutableMapOf(c to 28.0)
+        for (col in (c + 1) until (c + 11)) widths[col] = 15.0
+        return XlsxSheet(name = "Toelichting", cells = cells.toList(), columnWidths = widths, freezeRows = 0)
+    }
+
+    /** Eén "label : waarde"-regel; label krijgt de header-stijl als gekleurde labelkolom. */
+    private fun kv(cells: SheetCells, row: Int, column: Int, key: String, value: String): Int {
+        cells.put(row, column, XlsxCell.Text(key, XlsxStyle.Header))
+        cells.put(row, column + 1, XlsxCell.Text(value))
+        return row + 1
     }
 
     private fun sensorRows(project: Project, log: InstallationLog): List<List<XlsxCell>> {
         val results = log.results.associateBy { it.sensorId }
         return listOf(
-            row("Order", "Sensor ID", "Naam", "Status", "X mm", "Y mm", "Z mm", "Gemeten X", "Gemeten Y", "Gemeten Z", "Fout mm", "Foto", "Bevestigd")
+            row(
+                "Order", "Sensor ID", "Naam", "Status", "X mm", "Y mm", "Z mm",
+                "Gemeten X", "Gemeten Y", "Gemeten Z", "Fout mm", "Foto", "Bevestigd",
+                "Grade", "Reproj px", "Reproj mm", "Jitter mm", "Beweging mm", "Beweging deg",
+                "Stabiele lock", "Ref-tag", "Pose-tags", "Drift mm", "Gecorrigeerd op"
+            )
         ) + project.sensors.sortedBy { it.order }.map { sensor ->
             val result = results[sensor.id]
             val measured = result?.measuredPositionMm
+            val audit = sensor.placement
+            val drift = sensor.driftCorrection
             row(
                 sensor.order,
-                sensor.id,
+                // "*" achter het ID = automatisch bijgesteld na herankering (zie Toelichting).
+                sensor.id + if (drift != null) " *" else "",
                 sensor.name,
                 (result?.status ?: sensor.status).label,
                 sensor.positionMm.x,
@@ -62,10 +135,31 @@ object ReportXlsx {
                 measured?.z,
                 result?.distanceErrorMm,
                 result?.photoFile.orEmpty(),
-                result?.confirmedAt.orEmpty()
+                result?.confirmedAt.orEmpty(),
+                audit?.grade?.label,
+                audit?.reprojectionErrorPx,
+                audit?.reprojectionErrorMm,
+                audit?.jitterMm,
+                audit?.motionDuringDetectionMm,
+                audit?.motionDuringDetectionDeg,
+                audit?.let { if (it.wasStablePlacementLock) "Ja" else "Nee" },
+                audit?.referenceTagId,
+                audit?.poseMarkerIds?.joinToString(", "),
+                drift?.deltaMm,
+                drift?.let { millisToText(it.correctedAtWallMillis) }
             )
         }
     }
+
+    /** Wall-millis → leesbaar "yyyy-MM-dd HH:mm" in de lokale zone, of leeg bij 0/onbekend. */
+    private fun millisToText(millis: Long): String =
+        if (millis <= 0L) {
+            ""
+        } else {
+            java.time.Instant.ofEpochMilli(millis)
+                .atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        }
 
     private fun tagRows(project: Project): List<List<XlsxCell>> =
         listOf(

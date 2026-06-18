@@ -44,8 +44,27 @@ data class Sensor(
     val referenceTagId: Int? = null,
     /** Onveranderlijke kwaliteits-/audit-snapshot van het LIVE-AR plaatsingsmoment (grade + ruwe
      *  signalen: reproj, jitter, motion, tag-context). Null bij voorbereide/2D-plaatsingen.
-     *  Verandert nooit mee met latere herankering — [positionMm] blijft eveneens immutable. */
-    val placement: SensorPlacementAudit? = null
+     *  Verandert nooit mee met latere herankering — [placement] blijft eveneens immutable. */
+    val placement: SensorPlacementAudit? = null,
+    /** Vastgelegd zodra de straal-replay-driftcorrectie [positionMm] heeft bijgesteld na herankering.
+     *  Null = nooit gecorrigeerd. Maakt de bijstelling traceerbaar (en zet de "*" in het rapport). */
+    val driftCorrection: SensorDriftCorrection? = null
+)
+
+/**
+ * Traceer-record van een toegepaste straal-replay-driftcorrectie. Anders dan [positionMm] (dat de
+ * gecorrigeerde, actuele plek is) bewaart dit de ORIGINELE plaatsing plus de bijstelling, zodat het
+ * rapport kan tonen dát er gecorrigeerd is, met hoeveel en op welk anker.
+ */
+data class SensorDriftCorrection(
+    /** Positie zoals oorspronkelijk LIVE geplaatst, vóór enige correctie. */
+    val asPlacedPositionMm: MmPosition,
+    /** Verplaatsing in mm t.o.v. de oorspronkelijke plaatsing (Euclidische afstand). */
+    val deltaMm: Int,
+    /** System.currentTimeMillis() op het correctiemoment. */
+    val correctedAtWallMillis: Long,
+    /** Tag-ids die in beeld waren toen de correctie werd toegepast. */
+    val poseMarkerIds: List<Int>
 )
 
 data class Marker(

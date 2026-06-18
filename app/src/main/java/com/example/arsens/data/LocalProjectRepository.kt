@@ -138,18 +138,27 @@ class LocalProjectRepository(private val context: Context) {
         return file
     }
 
-    fun exportReportJson(log: InstallationLog): File {
-        val file = JsonProjectStore.exportReportJson(activeProjectDir(), log)
+    /** Volledig machine-leesbaar bundelpakket (project + frame + STL-offsets + sensoren-met-audit +
+     *  driftcorrecties + installatielog). Vervangt het oude log-only JSON-rapport. */
+    fun exportReportJson(project: Project, log: InstallationLog, driftCorrectionEnabled: Boolean): File {
+        val file = File(activeProjectDir(), "arsens_report.json")
+        file.writeText(JsonProjectStore.projectReportToJson(project, log, reportMeta(driftCorrectionEnabled)))
         publishDownload(file.name, "application/json", file.readBytes())
         return file
     }
 
-    fun exportReportXlsx(project: Project, log: InstallationLog): File {
+    fun exportReportXlsx(project: Project, log: InstallationLog, driftCorrectionEnabled: Boolean): File {
         val file = File(activeProjectDir(), "installation_report.xlsx")
-        file.writeBytes(ReportXlsx.build(project, log))
+        file.writeBytes(ReportXlsx.build(project, log, reportMeta(driftCorrectionEnabled)))
         publishDownload(file.name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", file.readBytes())
         return file
     }
+
+    private fun reportMeta(driftCorrectionEnabled: Boolean): ReportMeta =
+        ReportMeta(
+            exportedAt = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
+            driftCorrectionEnabled = driftCorrectionEnabled
+        )
 
     fun displayName(uri: Uri): String {
         val cursor = appContext.contentResolver.query(uri, null, null, null, null)

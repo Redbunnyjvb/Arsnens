@@ -97,6 +97,7 @@ import androidx.compose.ui.unit.sp
 import com.example.arsens.ar.AprilTagCorner
 import com.example.arsens.ar.AprilTagFrameResult
 import com.example.arsens.ar.ArCoreCameraPanel
+import com.example.arsens.ar.ArPerfStats
 import com.example.arsens.ar.ArTrackingStatus
 import com.example.arsens.ar.PlaneHit
 import com.example.arsens.ar.TagAnchor
@@ -135,6 +136,7 @@ import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
 import com.example.arsens.data.SensorStatus
+import com.example.arsens.data.SensorDriftCorrection
 import com.example.arsens.data.SensorPlacementAudit
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -452,10 +454,17 @@ fun setDefaultTagSize(sizeMm: Int) {
     private var correctionSettleTags: List<Int> = emptyList()
     var showAxisOverlay by mutableStateOf(false)
     var showMiniAxisOverlay by mutableStateOf(true)
-    /** Debug (links/rechts-audit): tekent de CANONIEKE box-assen via de tag-pose, zonder
-     *  coordinateMapper, en logt naar [AR_SENS_FRAME_CHECK_TAG]. Los van [showAxisOverlay]
-     *  (die toont de operator-assen). */
-    var showFrameCheckOverlay by mutableStateOf(false)
+    /** Toon de trafo-box (12 ribben van [Project.dimensionsMm]) als wireframe over de camera,
+     *  verankerd via de tag-pose. */
+    var showBoxEdgesOverlay by mutableStateOf(false)
+    /** Toon per AprilTag een label met de OPGESLAGEN box-positie ([Marker.positionMm]) en rotatie
+     *  ([Marker.rotationDeg]). Bediend vanuit de Lagen-sheet én Instellingen → Debug. */
+    var showTagPoseLabels by mutableStateOf(false)
+    /** Debug-HUD linksboven op de camera: live FPS + ARCore-Hz. Bediend vanuit Instellingen → Debug. */
+    var showDebugHud by mutableStateOf(false)
+    /** Laatst gemeten perf-telemetrie voor de debug-HUD (ARCore-cadans + overlay-cadans). Wordt
+     *  alleen bijgewerkt zolang [showDebugHud] aan staat. */
+    var arPerfStats by mutableStateOf(ArPerfStats())
     var showTagOverlay by mutableStateOf(true)
     var showSensorOverlay by mutableStateOf(false)
     /** Toon de STL-assembly in het camerabeeld, verankerd via de tag-pose. */
@@ -858,7 +867,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         // Anker is gesetteld → herprojecteren en toepassen. Stralen worden hoe dan ook verbruikt.
         val dims = project.dimensionsMm
         val markersById = knownAprilTags.associateBy { it.id }
-        val corrections = mutableMapOf<String, MmPosition>()
+        val corrections = mutableMapOf<String, Pair<MmPosition, SensorDriftCorrection>>()
         val handled = mutableListOf<String>()
         var lastId: String? = null
         var lastDelta = 0
@@ -876,7 +885,14 @@ fun setDefaultTagSize(sizeMm: Int) {
             if (!newPos.insideBox(dims)) return@forEach
             val delta = distanceMm(newPos - sensor.positionMm)
             if (delta <= AUTO_CORRECT_MIN_DELTA_MM || delta > AUTO_CORRECT_MAX_DELTA_MM) return@forEach
-            corrections[sensor.id] = newPos
+            corrections[sensor.id] = newPos to SensorDriftCorrection(
+                // Bewaar de écht-oorspronkelijke plaatsing: bij een (theoretische) tweede correctie
+                // blijft de eerste as-placed staan i.p.v. de al-gecorrigeerde positie.
+                asPlacedPositionMm = sensor.driftCorrection?.asPlacedPositionMm ?: sensor.positionMm,
+                deltaMm = delta,
+                correctedAtWallMillis = now,
+                poseMarkerIds = signature
+            )
             lastId = sensor.id
             lastDelta = delta
         }
@@ -885,7 +901,9 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (corrections.isEmpty()) return
         project = project.copy(
             sensors = project.sensors.map { sensor ->
-                corrections[sensor.id]?.let { sensor.copy(positionMm = it) } ?: sensor
+                corrections[sensor.id]?.let { (pos, corr) ->
+                    sensor.copy(positionMm = pos, driftCorrection = corr)
+                } ?: sensor
             }
         )
         saveProject()
@@ -2505,13 +2523,13 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun exportReportJson() {
-        runCatching { repository.exportReportJson(log) }
+        runCatching { repository.exportReportJson(project, log, autoCorrectSensorDrift) }
             .onSuccess { message = "JSON rapport geexporteerd: ${it.absolutePath} en Downloads/ARsens." }
             .onFailure { message = "JSON export mislukt: ${it.message ?: "onbekende fout"}" }
     }
 
     fun exportReportXlsx() {
-        runCatching { repository.exportReportXlsx(project, log) }
+        runCatching { repository.exportReportXlsx(project, log, autoCorrectSensorDrift) }
             .onSuccess { message = "Excel rapport geexporteerd: ${it.absolutePath} en Downloads/ARsens." }
             .onFailure { message = "Excel export mislukt: ${it.message ?: "onbekende fout"}" }
     }
@@ -2520,8 +2538,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         runCatching {
             Triple(
                 repository.exportReportCsv(project, log),
-                repository.exportReportJson(log),
-                repository.exportReportXlsx(project, log)
+                repository.exportReportJson(project, log, autoCorrectSensorDrift),
+                repository.exportReportXlsx(project, log, autoCorrectSensorDrift)
             )
         }.onSuccess { (csv, json, xlsx) ->
             message = "CSV, JSON en Excel geexporteerd: ${csv.absolutePath}, ${json.absolutePath}, ${xlsx.absolutePath} en Downloads/ARsens."

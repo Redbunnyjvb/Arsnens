@@ -524,6 +524,76 @@ internal fun WorkflowSettingsScreen(state: WorkflowAppState) {
                 }
             }
         }
+        item {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = ArSensSurface),
+                border = BorderStroke(1.dp, ArSensLine),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Debug", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(
+                        "Ontwikkelaars-overlays op het camerabeeld. De debug-HUD toont linksboven live " +
+                            "FPS (overlay-cadans) en de ARCore-framecadans; de lagen tekenen de trafo-box " +
+                            "en per-tag XYZ/rotatie. Dezelfde lagen staan ook in de Lagen-sheet.",
+                        color = ArSensMuted,
+                        fontSize = 13.sp
+                    )
+                    WorkflowSettingsToggleRow(
+                        title = "Debug-HUD (FPS + ARCore-Hz)",
+                        subtitle = if (state.showDebugHud) "Aan — HUD linksboven op de camera" else "Uit",
+                        checked = state.showDebugHud
+                    ) { state.showDebugHud = !state.showDebugHud }
+                    WorkflowSettingsToggleRow(
+                        title = "XYZ + hoek per tag",
+                        subtitle = "Label met opgeslagen positie en rotatie per AprilTag",
+                        checked = state.showTagPoseLabels
+                    ) { state.showTagPoseLabels = !state.showTagPoseLabels }
+                    WorkflowSettingsToggleRow(
+                        title = "Box-randen (trafo)",
+                        subtitle = "Wireframe van de trafo-box over de camera",
+                        checked = state.showBoxEdgesOverlay
+                    ) { state.showBoxEdgesOverlay = !state.showBoxEdgesOverlay }
+                }
+            }
+        }
+    }
+}
+
+/** Aan/uit-rij in de stijl van het Instellingen-scherm (zelfde look als de AR-driftcorrectie-rij):
+ *  titel + subtitel links, "Aan"/"Uit" rechts, hele rij klikbaar. */
+@Composable
+private fun WorkflowSettingsToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onToggle: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (checked) ArSensBlue.copy(alpha = 0.10f) else Color.Transparent,
+        border = BorderStroke(1.dp, if (checked) ArSensBlue else ArSensLine),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle() }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(subtitle, color = ArSensMuted, fontSize = 12.sp)
+            }
+            Text(
+                if (checked) "Aan" else "Uit",
+                color = if (checked) ArSensBlue else ArSensMuted,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+        }
     }
 }
 

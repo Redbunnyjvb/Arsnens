@@ -99,13 +99,34 @@ object SensorCsv {
                 "distance_error_mm",
                 "distance_error_cm",
                 "photo_file",
-                "confirmed_at"
+                "confirmed_at",
+                // Plaatsingskwaliteit (audit-snapshot van het live-AR plaatsingsmoment).
+                "corrected",
+                "grade",
+                "reprojection_error_px",
+                "reprojection_error_mm",
+                "jitter_mm",
+                "motion_mm",
+                "motion_deg",
+                "stable_lock",
+                "reference_tag_id",
+                "pose_marker_ids",
+                "placed_at_wall_millis",
+                // Straal-replay-driftcorrectie (leeg = niet gecorrigeerd).
+                "drift_delta_mm",
+                "drift_corrected_at_wall_millis",
+                "drift_pose_marker_ids",
+                "as_placed_x_mm",
+                "as_placed_y_mm",
+                "as_placed_z_mm"
             ).joinToString(",")
         )
         val resultsBySensor = log.results.associateBy { it.sensorId }
         project.sensors.sortedBy { it.order }.forEach { sensor ->
             val result = resultsBySensor[sensor.id]
             val measured = result?.measuredPositionMm
+            val audit = sensor.placement
+            val drift = sensor.driftCorrection
             appendLine(
                 listOf(
                     sensor.order.toString(),
@@ -126,11 +147,32 @@ object SensorCsv {
                         String.format(Locale.US, "%.1f", it / 10f)
                     }.orEmpty(),
                     result?.photoFile.orEmpty(),
-                    result?.confirmedAt.orEmpty()
+                    result?.confirmedAt.orEmpty(),
+                    if (drift != null) "*" else "",
+                    audit?.grade?.wireName.orEmpty(),
+                    audit?.reprojectionErrorPx.fmt2(),
+                    audit?.reprojectionErrorMm.fmt2(),
+                    audit?.jitterMm.fmt2(),
+                    audit?.motionDuringDetectionMm.fmt2(),
+                    audit?.motionDuringDetectionDeg.fmt2(),
+                    audit?.let { if (it.wasStablePlacementLock) "yes" else "no" }.orEmpty(),
+                    audit?.referenceTagId?.toString().orEmpty(),
+                    audit?.poseMarkerIds?.joinToString(";").orEmpty(),
+                    audit?.placedAtWallMillis?.toString().orEmpty(),
+                    drift?.deltaMm?.toString().orEmpty(),
+                    drift?.correctedAtWallMillis?.toString().orEmpty(),
+                    drift?.poseMarkerIds?.joinToString(";").orEmpty(),
+                    drift?.asPlacedPositionMm?.x?.toString().orEmpty(),
+                    drift?.asPlacedPositionMm?.y?.toString().orEmpty(),
+                    drift?.asPlacedPositionMm?.z?.toString().orEmpty()
                 ).joinToString(",") { escapeCsv(it) }
             )
         }
     }
+
+    /** Float? → max. 2 decimalen (US-punt), of leeg bij null/NaN. */
+    private fun Float?.fmt2(): String =
+        this?.takeIf { it.isFinite() }?.let { String.format(Locale.US, "%.2f", it) }.orEmpty()
 
     private fun parseCsvLine(line: String): List<String> {
         val cells = mutableListOf<String>()

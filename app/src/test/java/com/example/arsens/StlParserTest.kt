@@ -9,6 +9,7 @@ import com.example.arsens.data.stlModelTransform
 import com.example.arsens.data.StlMesh
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -73,6 +74,116 @@ class StlParserTest {
             assertEquals(1, mesh.triangleCount)
             assertEquals(4f, mesh.maxX)
             assertEquals(3f, mesh.maxY)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun parseFileReadsObj() {
+        val file = File.createTempFile("test", ".obj")
+        try {
+            file.writeText(
+                """
+                # twee driehoeken (quad opgesplitst)
+                v 0 0 0
+                v 4 0 0
+                v 0 3 0
+                v 4 3 0
+                f 1 2 3
+                f 2 4 3
+                """.trimIndent()
+            )
+            val mesh = StlParser.parseFile(file)
+            assertEquals(2, mesh.triangleCount)
+            assertEquals(0f, mesh.minX)
+            assertEquals(4f, mesh.maxX)
+            assertEquals(3f, mesh.maxY)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun parseFileObjTriangulatesQuadsAndIgnoresSlashes() {
+        // Eén quad met v/vt/vn-tokens → fan-triangulatie geeft 2 driehoeken; '/'-suffix genegeerd.
+        val file = File.createTempFile("quad", ".obj")
+        try {
+            file.writeText(
+                """
+                v 0 0 0
+                v 2 0 0
+                v 2 2 0
+                v 0 2 0
+                f 1/1/1 2/2/2 3/3/3 4/4/4
+                """.trimIndent()
+            )
+            val mesh = StlParser.parseFile(file)
+            assertEquals(2, mesh.triangleCount)
+            assertEquals(2f, mesh.maxX)
+            assertEquals(2f, mesh.maxY)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun parseFileReadsAsciiPly() {
+        val file = File.createTempFile("test", ".ply")
+        try {
+            file.writeText(
+                "ply\n" +
+                    "format ascii 1.0\n" +
+                    "element vertex 3\n" +
+                    "property float x\n" +
+                    "property float y\n" +
+                    "property float z\n" +
+                    "element face 1\n" +
+                    "property list uchar int vertex_indices\n" +
+                    "end_header\n" +
+                    "0 0 0\n" +
+                    "5 0 0\n" +
+                    "0 6 0\n" +
+                    "3 0 1 2\n"
+            )
+            val mesh = StlParser.parseFile(file)
+            assertEquals(1, mesh.triangleCount)
+            assertEquals(5f, mesh.maxX)
+            assertEquals(6f, mesh.maxY)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun parseFileReadsBinaryLittleEndianPly() {
+        val header = "ply\n" +
+            "format binary_little_endian 1.0\n" +
+            "element vertex 3\n" +
+            "property float x\n" +
+            "property float y\n" +
+            "property float z\n" +
+            "element face 1\n" +
+            "property list uchar int vertex_indices\n" +
+            "end_header\n"
+        val body = ByteArrayOutputStream()
+        val vbuf = ByteBuffer.allocate(3 * 12).order(ByteOrder.LITTLE_ENDIAN)
+        floatArrayOf(0f, 0f, 0f, 8f, 0f, 0f, 0f, 9f, 0f).forEach { vbuf.putFloat(it) }
+        body.write(vbuf.array())
+        val fbuf = ByteBuffer.allocate(1 + 3 * 4).order(ByteOrder.LITTLE_ENDIAN)
+        fbuf.put(3.toByte())
+        fbuf.putInt(0); fbuf.putInt(1); fbuf.putInt(2)
+        body.write(fbuf.array())
+        val file = File.createTempFile("bin", ".ply")
+        try {
+            file.outputStream().use {
+                it.write(header.toByteArray(Charsets.US_ASCII))
+                it.write(body.toByteArray())
+            }
+            val mesh = StlParser.parseFile(file)
+            assertEquals(1, mesh.triangleCount)
+            assertEquals(8f, mesh.maxX)
+            assertEquals(9f, mesh.maxY)
         } finally {
             file.delete()
         }

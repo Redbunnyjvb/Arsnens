@@ -69,9 +69,9 @@ object ReportXlsx {
         r = kv(cells, r, c, "Maten vergrendeld", if (project.dimensionsLocked) "Ja" else "Nee")
         r += 1
 
-        cells.put(r, c, XlsxCell.Text("STL-assembly (delen & offsets)", XlsxStyle.Title)); r += 1
+        cells.put(r, c, XlsxCell.Text("3D-assembly (delen & offsets)", XlsxStyle.Title)); r += 1
         if (project.stlModels.isEmpty()) {
-            cells.put(r, c, XlsxCell.Text("Geen STL-delen geimporteerd.", XlsxStyle.Note)); r += 2
+            cells.put(r, c, XlsxCell.Text("Geen 3D-delen geimporteerd.", XlsxStyle.Note)); r += 2
         } else {
             val stlRows = listOf(
                 row("Deel", "Rol", "Bestand", "Schaal %", "Offset X", "Offset Y", "Offset Z", "Rotatie X", "Rotatie Y", "Rotatie Z", "Zichtbaar")

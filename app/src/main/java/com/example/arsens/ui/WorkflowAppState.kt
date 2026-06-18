@@ -144,6 +144,7 @@ import com.example.arsens.data.StlPartRole
 import com.example.arsens.data.StlParser
 import com.example.arsens.data.asAprilTagCalibrationMarker
 import com.example.arsens.data.confirmSensorAtMeasuredPosition
+import com.example.arsens.data.sensorForSensorTag
 import com.example.arsens.data.coordinateMapper
 import com.example.arsens.data.defaultFrameForOrigin
 import com.example.arsens.data.distanceMm
@@ -409,6 +410,8 @@ fun setDefaultTagSize(sizeMm: Int) {
     var sensorZ by mutableStateOf("0")
     var sensorTolerance by mutableStateOf("50")
     var sensorInstruction by mutableStateOf("")
+    /** Formulierveld: AprilTag-ID die fysiek óp de sensor geplakt is (leeg = geen). */
+    var sensorTagId by mutableStateOf("")
     /** ID van de tag die gebruikt werd bij plaatsing van de huidige sensor. */
     var sensorReferenceTagId: Int? = null
     /** Laatst gebruikte verse, bekende referentietag (id + marker). Wordt het plaatsingsvlak zodra
@@ -417,6 +420,12 @@ fun setDefaultTagSize(sizeMm: Int) {
     var lastPlacementReference: PlacementReference? = null
 
     var currentSensorIndex by mutableIntStateOf(0)
+
+    /** Gemeten positie afgeleid uit een gescande sensor-tag, klaargezet voor handmatige bevestiging
+     *  in de Install-flow. Null = geen gescande meting; [confirmInstallation] valt dan terug op de
+     *  geplande positie (bestaand gedrag). */
+    var scannedMeasuredPosition: MmPosition? by mutableStateOf<MmPosition?>(null)
+        private set
     var cursorX by mutableStateOf("0")
     var cursorY by mutableStateOf("0")
     var cursorZ by mutableStateOf("0")
@@ -1249,10 +1258,16 @@ fun setDefaultTagSize(sizeMm: Int) {
         // nooit een pose op zolang de detector hem niet herkent — meestal een tag uit een andere
         // familie dan de ingestelde dictionary. Benoem dat expliciet i.p.v. stil te slagen.
         val savedWithoutDetection = visibleDetection == null && recentlyScannedId == null
+        val inSensorTagRange = id >= sensorTagStartId
         message = "AprilTag $id opgeslagen. Meet-XYZ ${operatorPosition.toReadableMm()} | box ${marker.positionMm.toReadableMm()}." +
             if (savedWithoutDetection) {
                 " Let op: deze tag is nog niet door de camera gedetecteerd — zonder detectie komt er geen pose. " +
                     "Controleer of de print uit de familie ${tagDictionary.label} komt (Instellingen)."
+            } else {
+                ""
+            } +
+            if (inSensorTagRange) {
+                " Let op: ID $id valt in het sensor-tag-bereik (≥ $sensorTagStartId); referentietags horen daaronder."
             } else {
                 ""
             }
@@ -1453,7 +1468,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
         val failed = uris.size - imported.size
         if (imported.isEmpty()) {
-            message = "STL-bestand(en) konden niet geladen worden."
+            message = "3D-bestand(en) konden niet geladen worden."
             return
         }
         val newModels = imported.map { (fileName, displayName) ->
@@ -1467,7 +1482,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         project = project.copy(stlModels = project.stlModels + newModels)
         saveProject()
         message = buildString {
-            append(if (imported.size == 1) "STL toegevoegd: ${newModels.first().name}" else "${imported.size} STL-delen toegevoegd")
+            append(if (imported.size == 1) "3D-model toegevoegd: ${newModels.first().name}" else "${imported.size} 3D-delen toegevoegd")
             if (failed > 0) append(" ($failed mislukt)")
             append(" — mesh wordt geladen…")
         }
@@ -1485,7 +1500,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         confirmRequest = WorkflowConfirmRequest(
             title = "Lijn uit op tank?",
             body = if (project.dimensionsLocked) {
-                "De STL-delen worden op de tankwanden uitgelijnd. De trafo-afmetingen zijn vergrendeld " +
+                "De 3D-delen worden op de tankwanden uitgelijnd. De trafo-afmetingen zijn vergrendeld " +
                     "en blijven ${d.x}×${d.y}×${d.z} mm; tags en sensoren behouden hun mm-positie."
             } else {
                 "Dit HERBEREKENT de trafo-afmetingen (de box) uit de tankwanden en lijnt de delen uit. " +
@@ -1509,7 +1524,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     suspend fun autoAlignAssembly(adoptTankDimensions: Boolean = true) {
         val built = buildTankFrame(adoptTankDimensions)
         if (built == null) {
-            message = "Geen geldige STL-meshes om uit te lijnen."
+            message = "Geen geldige 3D-meshes om uit te lijnen."
             return
         }
         val (frame, withMesh) = built
@@ -1536,7 +1551,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         scope.launch {
             val name = project.stlModels.firstOrNull { it.id == id }?.name ?: "Onderdeel"
             message = when (placePartsInTankFrame(listOf(id))) {
-                -1 -> "Geen geldige STL-meshes om uit te lijnen."
+                -1 -> "Geen geldige 3D-meshes om uit te lijnen."
                 0 -> "$name: geen automatische plaatsing mogelijk (geen gedeeld CAD-frame) — verzet handmatig."
                 else -> "$name uitgelijnd op de tank."
             }
@@ -1553,7 +1568,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             }
             val built = buildTankFrame(adoptTankDimensions = true)
             if (built == null) {
-                message = "Geen geldige STL-meshes om de box te berekenen."
+                message = "Geen geldige 3D-meshes om de box te berekenen."
                 return@launch
             }
             val stl = built.first.dims
@@ -1830,7 +1845,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         project = project.copy(dimensionsLocked = locked)
         saveProject()
         message = if (locked) {
-            "Maten vergrendeld: STL-import overschrijft de trafo-afmetingen niet meer."
+            "Maten vergrendeld: 3D-import overschrijft de trafo-afmetingen niet meer."
         } else {
             "Maten ontgrendeld: \"Lijn uit op tank\" neemt de tankafmetingen weer over."
         }
@@ -1942,7 +1957,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             }
         )
         saveProject()
-        message = if (fitToBox) "STL passend gemaakt en gecentreerd in de trafo-box." else "STL gecentreerd in de trafo-box."
+        message = if (fitToBox) "Model passend gemaakt en gecentreerd in de trafo-box." else "Model gecentreerd in de trafo-box."
     }
 
     fun importSensors(uri: Uri) {
@@ -1994,7 +2009,9 @@ fun setDefaultTagSize(sizeMm: Int) {
                 ?: nearestTagIdForBox(boxPosition),
             // Live-AR plaatsing levert een audit-snapshot; form-/2D-edits (placement == null) behouden
             // de bestaande audit.
-            placement = placement ?: existingSensor?.placement
+            placement = placement ?: existingSensor?.placement,
+            // Sensor-tag uit het formulier; leeg laat de bestaande koppeling staan.
+            sensorTagId = this.sensorTagId.toIntOrNull() ?: existingSensor?.sensorTagId
         )
         val sensors = (project.sensors.filterNot { it.id == sensor.id } + sensor)
             .sortedBy { it.order }
@@ -2266,6 +2283,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         sensorZ = operatorPosition.z.toString()
         sensorTolerance = sensor.toleranceMm.toString()
         sensorInstruction = sensor.instruction
+        sensorTagId = sensor.sensorTagId?.toString() ?: ""
     }
 
     fun moveSensorToBoxPosition(sensorId: String, position: MmPosition) {
@@ -2352,11 +2370,13 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun previousSensor() {
+        scannedMeasuredPosition = null
         currentSensorIndex = (currentSensorIndex - 1).coerceAtLeast(0)
         setCursorFromCurrentSensor()
     }
 
     fun nextSensor() {
+        scannedMeasuredPosition = null
         currentSensorIndex = (currentSensorIndex + 1).coerceAtMost((project.sensors.size - 1).coerceAtLeast(0))
         setCursorFromCurrentSensor()
     }
@@ -2367,9 +2387,47 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
     }
 
+    /** Herkent de sensor-tag (ID ≥ [sensorTagStartId]) bij de cursor, koppelt hem aan de bijbehorende
+     *  sensor en zet diens werkelijke positie op het trafo-vlak klaar als gemeten waarde. Bevestigen
+     *  blijft handmatig (de OK-knop → [confirmInstallation]). Gemodelleerd naar [saveMeasuredTag]. */
+    fun confirmSensorByScannedTag() {
+        val result = aprilTagResult
+        if (!result.hasFreshDetection()) {
+            message = "Geen verse tag-detectie in dit cameraframe. Houd de sensor-tag midden in beeld."
+            return
+        }
+        val detection = bestDetectionAtCursorForSetup(result) { it.id >= sensorTagStartId }
+        if (detection == null) {
+            message = "Geen sensor-tag (ID ≥ $sensorTagStartId) bij de cursor. Richt de cursor op de tag óp de sensor."
+            return
+        }
+        val sensor = sensorForSensorTag(project.sensors, detection.id)
+        if (sensor == null) {
+            message = "Tag ${detection.id} is aan geen enkele sensor gekoppeld. Koppel hem via 'ID-tag' in de sensor-setup."
+            return
+        }
+        val measured = estimateSurfaceAtPixel(
+            result = result,
+            pixelX = detection.centerPx.xPx,
+            pixelY = detection.centerPx.yPx,
+            dimensionsMm = project.dimensionsMm
+        )
+        if (measured == null || !measured.insideBox(project.dimensionsMm)) {
+            message = "Kon de positie van tag ${detection.id} niet op de trafo bepalen. Houd een referentietag in beeld en kom dichter/rechter voor de sensor."
+            return
+        }
+        currentSensorIndex = project.sensors.sortedBy { it.order }
+            .indexOfFirst { it.id == sensor.id }
+            .coerceAtLeast(0)
+        setCursorFieldsFromBox(measured)
+        scannedMeasuredPosition = measured
+        val delta = distanceMm(measured - sensor.positionMm)
+        message = "Sensor ${sensor.id} herkend via tag ${detection.id} — afwijking $delta mm. Druk op OK om te bevestigen."
+    }
+
     fun confirmInstallation() {
         val sensor = currentSensor ?: return
-        val measuredPosition = sensor.positionMm
+        val measuredPosition = scannedMeasuredPosition ?: sensor.positionMm
         setCursorFieldsFromBox(measuredPosition)
         log = confirmSensorAtMeasuredPosition(
             log = log,
@@ -2385,7 +2443,13 @@ fun setDefaultTagSize(sizeMm: Int) {
         )
         repository.saveLog(log)
         saveProject()
-        message = "Sensor ${sensor.id} bevestigd op vaste meet-XYZ ${operatorText(measuredPosition)}."
+        val viaScan = scannedMeasuredPosition != null
+        scannedMeasuredPosition = null
+        message = if (viaScan) {
+            "Sensor ${sensor.id} bevestigd via gescande tag op meet-XYZ ${operatorText(measuredPosition)}."
+        } else {
+            "Sensor ${sensor.id} bevestigd op vaste meet-XYZ ${operatorText(measuredPosition)}."
+        }
     }
 
     /** Verschuift de OPGESLAGEN positie van een tag (mm) — live AR-kalibratie: het hele model
@@ -2431,7 +2495,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         val models = project.stlModels.filter { it.visible }
             .mapNotNull { m -> stlMeshes[m.fileName]?.takeIf { !it.isEmpty }?.let { m to it } }
         if (models.isEmpty()) {
-            if (!quiet) message = "Geen zichtbaar STL-model om de tagdiepte op te bepalen."
+            if (!quiet) message = "Geen zichtbaar 3D-model om de tagdiepte op te bepalen."
             return
         }
         val plane = tagPlaneForMarker(marker)
@@ -2630,8 +2694,11 @@ fun setDefaultTagSize(sizeMm: Int) {
     /** Detectie het dichtst bij de plaatsings-cursor, in BEELDcoördinaten. De gekozen detectie
      *  gaat later naar estimateSurfaceAtPixel (verwacht beeldpixels), dus hier géén
      *  screenDetections gebruiken: die staan in view-px en horen niet bij imageWidth/Height. */
-    private fun bestDetectionAtCursorForSetup(result: AprilTagFrameResult): com.example.arsens.ar.AprilTagDetection? {
-        val detections = result.detections
+    private fun bestDetectionAtCursorForSetup(
+        result: AprilTagFrameResult,
+        filter: (com.example.arsens.ar.AprilTagDetection) -> Boolean = { true }
+    ): com.example.arsens.ar.AprilTagDetection? {
+        val detections = result.detections.filter(filter)
         if (detections.isEmpty()) return null
         val width = result.imageWidth.takeIf { it > 0 } ?: return largestDetectionForSetup(result)
         val height = result.imageHeight.takeIf { it > 0 } ?: return largestDetectionForSetup(result)
@@ -2684,6 +2751,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         sensorZ = "0"
         sensorTolerance = "50"
         sensorInstruction = ""
+        sensorTagId = ""
         // Voorkom dat de referentietag van een vorige (on-the-fly) plaatsing lekt naar de
         // volgende: een voorbereide plaatsing bepaalt zijn tag op basis van nabijheid.
         sensorReferenceTagId = null

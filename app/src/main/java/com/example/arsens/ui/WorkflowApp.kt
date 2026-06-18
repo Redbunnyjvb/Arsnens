@@ -200,7 +200,7 @@ internal fun WorkflowExportDialog(state: WorkflowAppState) {
     AlertDialog(
         onDismissRequest = { state.showExportDialog = false },
         title = { Text("Rapport exporteren?") },
-        text = { Text("Kies welk lokaal rapportbestand je wilt maken voor project '${state.project.projectName}'. Excel bevat een Toelichting-tabblad met coordinaten, STL-offsets en kwaliteitsuitleg; JSON is het volledige pakket met plaatsings-audit en driftcorrecties.") },
+        text = { Text("Kies welk lokaal rapportbestand je wilt maken voor project '${state.project.projectName}'. Excel bevat een Toelichting-tabblad met coordinaten, model-offsets en kwaliteitsuitleg; JSON is het volledige pakket met plaatsings-audit en driftcorrecties.") },
         confirmButton = {
             Button(
                 onClick = {

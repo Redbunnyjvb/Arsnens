@@ -241,7 +241,7 @@ fun StlPreview(
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
             ) {
                 Text(
-                    "Geen zichtbaar 3D-model. Laad een STL of zet er één zichtbaar.",
+                    "Geen zichtbaar 3D-model. Laad een model of zet er één zichtbaar.",
                     modifier = Modifier.padding(14.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

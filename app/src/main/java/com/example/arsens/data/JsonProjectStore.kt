@@ -147,6 +147,7 @@ object JsonProjectStore {
             .put("status", sensor.status.wireName)
             .apply {
                 sensor.referenceTagId?.let { put("reference_tag_id", it) }
+                sensor.sensorTagId?.let { put("sensor_tag_id", it) }
                 sensor.placement?.let { put("placement", placementToJson(it)) }
                 sensor.driftCorrection?.let { put("drift_correction", driftCorrectionToJson(it)) }
             }
@@ -163,6 +164,7 @@ object JsonProjectStore {
             instruction = json.optString("instruction"),
             status = statusFromWireName(json.optString("status")),
             referenceTagId = json.optInt("reference_tag_id", -1).takeIf { it >= 0 },
+            sensorTagId = json.optInt("sensor_tag_id", -1).takeIf { it >= 0 },
             placement = json.optJSONObject("placement")?.let(::placementFromJson),
             driftCorrection = json.optJSONObject("drift_correction")?.let(::driftCorrectionFromJson)
         )

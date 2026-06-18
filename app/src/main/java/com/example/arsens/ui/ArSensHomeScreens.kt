@@ -824,7 +824,7 @@ internal fun ArSensCreateProjectCard(state: WorkflowAppState) {
                 Text("Project aanmaken")
             }
             Text(
-                "Met STL-assembly? Maak het project aan en importeer de delen via de kaart " +
+                "Met een 3D-assembly? Maak het project aan en importeer de delen via de kaart " +
                     "„3D-model (assembly)” — de trafo-afmetingen worden dan van de tank overgenomen, " +
                     "tenzij je ze op het projectscherm vergrendelt.",
                 color = ArSensMuted,
@@ -857,7 +857,7 @@ internal fun WorkflowAssemblyCard(state: WorkflowAppState) {
             WorkflowStlLoadBar(state)
             if (state.project.stlModels.isEmpty()) {
                 Text(
-                    "Importeer de STL-delen (tank, deksel, kern…). De app neemt de tankafmetingen " +
+                    "Importeer de 3D-delen (tank, deksel, kern…). De app neemt de tankafmetingen " +
                         "over als trafo-afmetingen en lijnt de delen automatisch uit.",
                     color = ArSensMuted,
                     fontSize = 13.sp
@@ -918,7 +918,7 @@ internal fun WorkflowAssemblyCard(state: WorkflowAppState) {
                 onClick = { picker.launch(arrayOf("*/*")) },
                 modifier = Modifier.fillMaxWidth().height(46.dp)
             ) {
-                Text("Importeer STL's")
+                Text("Importeer 3D-model (STL/OBJ/PLY)")
             }
         }
     }

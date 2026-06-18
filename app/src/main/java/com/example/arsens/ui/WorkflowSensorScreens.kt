@@ -211,6 +211,12 @@ internal fun WorkflowSensorsScreen(state: WorkflowAppState) {
                         OutlinedTextField(state.sensorId, { state.sensorId = it }, label = { Text("ID") }, singleLine = true, modifier = Modifier.weight(1f))
                         OutlinedTextField(state.sensorName, { state.sensorName = it }, label = { Text("Naam") }, singleLine = true, modifier = Modifier.weight(2f))
                     }
+                    WorkflowNumberField(
+                        "ID-tag (AprilTag op sensor, optioneel)",
+                        state.sensorTagId,
+                        { state.sensorTagId = it },
+                        Modifier.fillMaxWidth()
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         WorkflowNumberField("Meet X", state.sensorX, { state.sensorX = it }, Modifier.weight(1f))
                         WorkflowNumberField("Meet Y", state.sensorY, { state.sensorY = it }, Modifier.weight(1f))
@@ -290,6 +296,12 @@ internal fun WorkflowInstallScreen(state: WorkflowAppState) {
                 onClick = { state.open2DModel(WorkflowScreen.Install) }
             ),
             WorkflowCameraShortcut(
+                key = "scantag",
+                label = "Scan-\ntag",
+                iconKey = "sensor",
+                onClick = state::confirmSensorByScannedTag
+            ),
+            WorkflowCameraShortcut(
                 key = "previous",
                 label = "Vorige",
                 iconKey = "undo",
@@ -347,6 +359,13 @@ internal fun WorkflowInstallSensorPanel(state: WorkflowAppState, sensor: Sensor)
         text = state.nearestTagInstruction(sensor),
         status = SensorStatus.Pending
     )
+    state.scannedMeasuredPosition?.let { measured ->
+        val delta = distanceMm(measured - sensor.positionMm)
+        WorkflowStatusChip(
+            text = "Gescande meting · afwijking $delta mm (tolerantie ${sensor.toleranceMm} mm) — druk OK om te bevestigen",
+            status = if (delta <= sensor.toleranceMm) SensorStatus.Ok else SensorStatus.Fail
+        )
+    }
     Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("${sensor.id} · ${sensor.name}", fontSize = 20.sp, fontWeight = FontWeight.Bold)

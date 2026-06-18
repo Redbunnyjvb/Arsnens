@@ -311,7 +311,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
             WorkflowStlStatusChip(
                 toolLabel = workflowStlToolTitle(openTool),
                 viewMode = viewMode,
-                info = "${state.project.stlModels.count { it.visible }}/${state.project.stlModels.size} STL${if (showWallBox) " · wandbox aan" else ""}",
+                info = "${state.project.stlModels.count { it.visible }}/${state.project.stlModels.size} delen${if (showWallBox) " · wandbox aan" else ""}",
                 measureText = stlMeasureStatusText(measureA, measureB),
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -919,10 +919,10 @@ internal fun WorkflowStlKaderPanel(
     // 2. Onderdelen — importeren en per onderdeel rol/positie aanpassen.
     WorkflowSheetSectionLabel("Onderdelen (${models.size})")
     OutlinedButton(onClick = onLoadStl, modifier = Modifier.fillMaxWidth().height(46.dp)) {
-        Text("Importeer STL's")
+        Text("Importeer 3D-model (STL/OBJ/PLY)")
     }
     if (models.isEmpty()) {
-        Text("Nog geen STL geladen.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Text("Nog geen 3D-model geladen.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
     } else {
         Text(
             "Tik een onderdeel om rol en positie aan te passen.",
@@ -1199,7 +1199,7 @@ internal fun WorkflowStlLayersPanel(
     onShowLabelsChange: (Boolean) -> Unit
 ) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StlLayerToggle("STL", showStlModels) { onShowStlModelsChange(!showStlModels) }
+        StlLayerToggle("Model", showStlModels) { onShowStlModelsChange(!showStlModels) }
         StlLayerToggle("Sensoren", showSensors) { onShowSensorsChange(!showSensors) }
         StlLayerToggle("Tags", showAprilTags) { onShowAprilTagsChange(!showAprilTags) }
         StlLayerToggle("Labels", showLabels) { onShowLabelsChange(!showLabels) }

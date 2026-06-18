@@ -198,7 +198,7 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
             // bounding box × schaal). Tik op een deel om de transform-editor te openen.
             WorkflowReportSectionCard(title = "3D-model", count = state.project.stlModels.size) {
                 if (state.project.stlModels.isEmpty()) {
-                    WorkflowReportEmpty("Geen STL-assembly — importeer delen via Open STL.")
+                    WorkflowReportEmpty("Geen 3D-assembly — importeer delen via Open 3D.")
                 } else {
                     state.project.stlModels.forEachIndexed { index, model ->
                         val mesh = state.stlMeshes[model.fileName]

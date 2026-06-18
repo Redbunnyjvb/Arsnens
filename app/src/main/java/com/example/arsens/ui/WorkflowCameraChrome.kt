@@ -1268,7 +1268,7 @@ internal fun WorkflowOverlayToggles(state: WorkflowAppState) {
             WorkflowLayerToggleRow(
                 iconKey = "stl",
                 title = "3D-model",
-                subtitle = "STL-assembly op de tags",
+                subtitle = "3D-assembly op de tags",
                 checked = state.showStlOverlay,
                 onCheckedChange = { state.showStlOverlay = it }
             )
@@ -1321,7 +1321,7 @@ internal fun WorkflowArOptionsSheet(state: WorkflowAppState) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (state.project.stlModels.isEmpty()) {
             Text(
-                "Geen STL-assembly in dit project. Importeer de delen via de kaart " +
+                "Geen 3D-assembly in dit project. Importeer de delen via de kaart " +
                     "„3D-model (assembly)” op het projectscherm.",
                 color = Color.White.copy(alpha = 0.85f),
                 fontSize = 13.sp

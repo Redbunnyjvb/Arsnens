@@ -48,7 +48,11 @@ data class Sensor(
     val placement: SensorPlacementAudit? = null,
     /** Vastgelegd zodra de straal-replay-driftcorrectie [positionMm] heeft bijgesteld na herankering.
      *  Null = nooit gecorrigeerd. Maakt de bijstelling traceerbaar (en zet de "*" in het rapport). */
-    val driftCorrection: SensorDriftCorrection? = null
+    val driftCorrection: SensorDriftCorrection? = null,
+    /** AprilTag-ID die fysiek óp deze sensor geplakt is (≥ AppSettings.sensorTagStartId). Maakt het
+     *  mogelijk de sensor live te herkennen en zijn werkelijke positie te meten in de Install-flow.
+     *  Null = geen sensor-tag gekoppeld. */
+    val sensorTagId: Int? = null
 )
 
 /**
@@ -215,6 +219,11 @@ data class InstallationLog(
     val operator: String,
     val results: List<InstallationResult>
 )
+
+/** De sensor waaraan een gedetecteerde sensor-tag-ID gekoppeld is, of null als geen enkele sensor
+ *  die tag draagt. Pure mapping (geen AR/Android), zodat de koppeling los te unit-testen is. */
+fun sensorForSensorTag(sensors: List<Sensor>, tagId: Int): Sensor? =
+    sensors.firstOrNull { it.sensorTagId == tagId }
 
 fun distanceMm(offset: MmPosition): Int {
     val squared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z

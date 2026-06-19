@@ -1061,13 +1061,44 @@ private fun DrawScope.drawSceneOverlay(
         }
     }
 
-    // Meting: gemarkeerde eindpunten + lijn met 3D-afstand in mm (zelfde stijl als de 2D-kaart).
+    // Meting: directe (kortste) lijn + de losse X/Y[/Z]-benen langs de box-assen (rechte-hoek-pad),
+    // zodat je per richting ziet hoeveel het is — niet alleen de schuine zijde. In een vast vlak zijn
+    // dat 2 benen (de diepte-as valt eruit), in Free 3.
     if (measureA != null) {
         val ink = Color(0xFF111827)
         val aPos = Offset(px(measureA.x, measureA.y), py(measureA.x, measureA.y, measureA.z))
         drawCircle(ink, radius = 13f, center = aPos, style = Stroke(width = 4f))
         if (measureB != null) {
             val bPos = Offset(px(measureB.x, measureB.y), py(measureB.x, measureB.y, measureB.z))
+            val dist = stlMeasureDistanceMm(measureA, measureB, inPlaneAxes).roundToInt()
+            // De assen waarlangs er echt afstand is. Alleen schuin (>=2) tekenen we de losse benen; ligt
+            // de meting puur langs één as, dan valt dat been op de schuine zijde → één gecombineerd label.
+            val activeAxes = inPlaneAxes.filter { kotlin.math.abs(it.of(measureB) - it.of(measureA)) > 0.5f }
+            if (activeAxes.size >= 2) {
+                val legColor = Color(0xFF2563EB)
+                val legPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.rgb(37, 99, 235)
+                    textSize = 26f
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                // Stap voor stap langs elke vlak-as van A naar B → de losse benen.
+                val cur = floatArrayOf(measureA.x, measureA.y, measureA.z)
+                for (axis in inPlaneAxes) {
+                    val from = Offset(px(cur[0], cur[1]), py(cur[0], cur[1], cur[2]))
+                    val delta = kotlin.math.abs(axis.of(measureB) - cur[axis.ordinal])
+                    cur[axis.ordinal] = axis.of(measureB)
+                    val to = Offset(px(cur[0], cur[1]), py(cur[0], cur[1], cur[2]))
+                    if (delta > 0.5f) {
+                        drawLine(legColor, from, to, strokeWidth = 3f)
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "${axis.label} ${delta.roundToInt()}",
+                            (from.x + to.x) / 2f + 6f,
+                            (from.y + to.y) / 2f - 6f,
+                            legPaint
+                        )
+                    }
+                }
+            }
             drawLine(ink, aPos, bPos, strokeWidth = 4f)
             drawCircle(ink, radius = 13f, center = bPos, style = Stroke(width = 4f))
             val mid = Offset((aPos.x + bPos.x) / 2f, (aPos.y + bPos.y) / 2f)
@@ -1076,8 +1107,9 @@ private fun DrawScope.drawSceneOverlay(
                 textSize = 30f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
+            val distLabel = if (activeAxes.size == 1) "${activeAxes[0].label} $dist mm" else "$dist mm"
             drawContext.canvas.nativeCanvas.drawText(
-                "${stlMeasureDistanceMm(measureA, measureB, inPlaneAxes).roundToInt()} mm",
+                distLabel,
                 mid.x + 12f,
                 mid.y - 12f,
                 measurePaint

@@ -903,10 +903,40 @@ private fun DrawScope.drawTransformerMap(
         drawCircle(Color(0xFF111827), radius = 8f, center = startPx)
         if (measureEnd != null) {
             val endPx = measureEnd.toScreenPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+            val dist = measureStart.distanceTo(measureEnd).roundToInt()
+            val dH = kotlin.math.abs(measureStart.horizontalMm - measureEnd.horizontalMm).roundToInt()
+            val dV = kotlin.math.abs(measureStart.verticalMm - measureEnd.verticalMm).roundToInt()
+            // Alleen bij een schuine meting (beide assen > 0) tekenen we de X- en Y-benen apart. Ligt de
+            // meting puur langs één as, dan vallen been en schuine zijde op elkaar → één gecombineerd
+            // label "X/Y ### mm" i.p.v. twee waarden die over elkaar heen vallen.
+            val diagonal = dH > 0 && dV > 0
+            if (diagonal) {
+                val corner = Offset(endPx.x, startPx.y)
+                val legColor = Color(0xFF2563EB)
+                drawLine(legColor, startPx, corner, strokeWidth = 3f)
+                drawLine(legColor, corner, endPx, strokeWidth = 3f)
+                val legPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.rgb(37, 99, 235)
+                    textSize = 22f
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                drawContext.canvas.nativeCanvas.drawText(
+                    "${selectedView.horizontalAxisLabel()} $dH",
+                    (startPx.x + corner.x) / 2f - 12f, startPx.y - 8f, legPaint
+                )
+                drawContext.canvas.nativeCanvas.drawText(
+                    "${selectedView.verticalAxisLabel()} $dV",
+                    corner.x + 8f, (corner.y + endPx.y) / 2f + 6f, legPaint
+                )
+            }
             drawLine(Color(0xFF111827), startPx, endPx, strokeWidth = 4f, cap = StrokeCap.Round)
             drawCircle(Color(0xFF111827), radius = 8f, center = endPx)
+            val label = when {
+                dH > 0 && dV == 0 -> "${selectedView.horizontalAxisLabel()} $dist mm"
+                dV > 0 && dH == 0 -> "${selectedView.verticalAxisLabel()} $dist mm"
+                else -> "$dist mm"
+            }
             val mid = Offset((startPx.x + endPx.x) / 2f, (startPx.y + endPx.y) / 2f)
-            val label = "${measureStart.distanceTo(measureEnd).roundToInt()} mm"
             drawContext.canvas.nativeCanvas.drawText(label, mid.x + 10f, mid.y - 10f, paint)
         }
     }

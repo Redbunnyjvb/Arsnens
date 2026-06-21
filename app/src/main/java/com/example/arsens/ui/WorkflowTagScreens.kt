@@ -99,6 +99,7 @@ import com.example.arsens.ar.ArCoreCameraPanel
 import com.example.arsens.ar.ArTrackingStatus
 import com.example.arsens.ar.PlaneHit
 import com.example.arsens.ar.TagAnchor
+import com.example.arsens.ar.TagMeasurementAnchor
 import com.example.arsens.ar.TagPlane
 import com.example.arsens.ar.estimateCursorOnReferenceSurface
 import com.example.arsens.ar.estimateSurfaceAtPixel
@@ -307,6 +308,32 @@ internal fun WorkflowTagSetupPanel(state: WorkflowAppState) {
             WorkflowSheetSectionLabel(
                 if (state.tagPlacementManual) "Coördinaten (mm)" else "Coördinaten (mm) — uit grid"
             )
+            // Gemeten-punt-keuze: alleen bij handmatige invoer. Grid/AR leveren al een center.
+            if (state.tagPlacementManual) {
+                Text("Gemeten punt", color = Color.White.copy(alpha = 0.66f), fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    WorkflowToggleButton(
+                        selected = state.tagMeasurementAnchor == TagMeasurementAnchor.Center,
+                        text = "Midden",
+                        onClick = { state.chooseTagMeasurementAnchor(TagMeasurementAnchor.Center) },
+                        modifier = Modifier.weight(1f).height(40.dp)
+                    )
+                    WorkflowToggleButton(
+                        selected = state.tagMeasurementAnchor == TagMeasurementAnchor.BottomLeftEdge,
+                        text = "Linksonder rand",
+                        onClick = { state.chooseTagMeasurementAnchor(TagMeasurementAnchor.BottomLeftEdge) },
+                        modifier = Modifier.weight(1f).height(40.dp)
+                    )
+                }
+                if (state.tagMeasurementAnchor == TagMeasurementAnchor.BottomLeftEdge) {
+                    Text(
+                        "X/Y/Z = buitenste hoek linksonder van de tag; het opgeslagen midden ligt een halve " +
+                            "tag naar binnen langs beide vlak-assen.",
+                        color = Color.White.copy(alpha = 0.66f),
+                        fontSize = 12.sp
+                    )
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 WorkflowNumberField("X (mm)", state.tagX, { state.tagX = it }, Modifier.weight(1f))
                 WorkflowNumberField("Y (mm)", state.tagY, { state.tagY = it }, Modifier.weight(1f))

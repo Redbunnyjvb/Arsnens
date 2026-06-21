@@ -56,6 +56,9 @@ dependencies {
     implementation(libs.opencv)
     implementation(libs.google.ar.core)
     testImplementation(libs.junit)
+    // Echte org.json op het unit-test-classpath (de Android-stub gooit anders "not mocked"),
+    // zodat JsonProjectStore (project ⇄ JSON) puur op de JVM getest kan worden.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

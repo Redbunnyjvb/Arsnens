@@ -101,9 +101,11 @@ import com.example.arsens.ar.ArPerfStats
 import com.example.arsens.ar.ArTrackingStatus
 import com.example.arsens.ar.PlaneHit
 import com.example.arsens.ar.TagAnchor
+import com.example.arsens.ar.TagMeasurementAnchor
 import com.example.arsens.ar.TagPlane
 import com.example.arsens.ar.estimateCursorOnReferenceSurface
 import com.example.arsens.ar.estimateSurfaceAtPixel
+import com.example.arsens.ar.estimateSurfaceAtPixelOnPlane
 import com.example.arsens.ar.markerCornersInProjectFrame
 import com.example.arsens.ar.projectPointToScreen
 import com.example.arsens.ar.ProjectPointMm
@@ -121,6 +123,7 @@ import com.example.arsens.ar.RayMm
 import com.example.arsens.ar.Transform3D
 import com.example.arsens.ar.cameraRayInTransformer
 import com.example.arsens.ar.reprojectPlacementRay
+import com.example.arsens.ar.tagMeasuredPointToCenter
 import com.example.arsens.ar.tagPlacementFor
 import com.example.arsens.ar.tagPositionFor
 import com.example.arsens.ar.tagRotationFor
@@ -130,6 +133,7 @@ import com.example.arsens.data.FloatVector
 import com.example.arsens.data.InstallationResult
 import com.example.arsens.data.LocalProjectRepository
 import com.example.arsens.data.Marker
+import com.example.arsens.data.PlacementOrigin
 import com.example.arsens.data.MmPosition
 import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
@@ -409,6 +413,15 @@ fun setDefaultTagSize(sizeMm: Int) {
     var tagCoordinateFieldsExpanded by mutableStateOf(false)
     var selectedTagPlane by mutableStateOf(TagPlane.Front)
     var selectedTagAnchor by mutableStateOf(TagAnchor.Center)
+    /** Herkomst van de huidige tag-coördinaten voor de ARSensFrameAudit-log: "grid" (rastercel),
+     *  "manual" (handmatig getypt) of "raycast-selected-plane" (afgeleid op het gekozen vlak). */
+    private var lastTagPlacementSource: String = "grid"
+    /** Welk punt van de tag de operator in de X/Y/Z-velden invoert. Alleen relevant bij HANDMATIGE
+     *  invoer: grid- en AR-afgeleide posities zijn al een center. [Marker.positionMm] blijft altijd het
+     *  center (de conversie gebeurt in [saveMeasuredTag] via [tagMeasuredPointToCenter]). Default Center
+     *  = onveranderd gedrag. */
+    var tagMeasurementAnchor by mutableStateOf(TagMeasurementAnchor.Center)
+        private set
     /** Tagsheet-invoermodus: false = het raster stuurt de coördinaten, true = handmatig getypte
      *  X/Y/Z blijven staan (een vlakwissel zet dan alleen de rotatie, niet de positie). */
     var tagPlacementManual by mutableStateOf(false)
@@ -462,6 +475,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         private set
     private var lastCursorLogKey: String = ""
     private var lastCursorLogMillis: Long = 0L
+    private var lastFrameAuditOverlayKey: String = ""
+    private var lastFrameAuditOverlayMillis: Long = 0L
     private val cursorJitterSamples = ArrayDeque<MmPosition>()
     private var lockTagSignature: List<Int> = emptyList()
     private var lockSinceMillis: Long = 0L
@@ -696,6 +711,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         // STL-model én cursor) lezen daardoor hetzelfde rustige beeld.
         val result = smoothArPoses(rawResult, now)
         aprilTagResult = result
+        logFrameAuditOverlay(now, result)
         if (result.hasOverlayPose()) {
             heldAprilTagResult = result
             heldAprilTagAtMillis = now
@@ -1023,7 +1039,14 @@ fun setDefaultTagSize(sizeMm: Int) {
     fun chooseTagPlacementManual(manual: Boolean) {
         if (tagPlacementManual == manual) return
         tagPlacementManual = manual
-        if (!manual) applyTagCellPlacement()
+        if (manual) lastTagPlacementSource = "manual" else applyTagCellPlacement()
+    }
+
+    /** Kiest of de handmatig ingevoerde X/Y/Z het midden of de hoek linksonder van de tag is.
+     *  Werkt alleen door in handmatige modus; grid/AR-posities blijven center (zie [saveMeasuredTag]).
+     *  Naam `choose…` i.p.v. `set…` om de JVM-clash met de gegenereerde property-setter te vermijden. */
+    fun chooseTagMeasurementAnchor(anchor: TagMeasurementAnchor) {
+        tagMeasurementAnchor = anchor
     }
 
     /** Herleidt de invoervelden uit vlak + laatst gekozen rastercel. In handmatige modus blijven de
@@ -1041,6 +1064,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     /** Expliciete rastercel-/ankerkeuze: zet altijd zowel de coördinaten als de rotatie. */
     private fun applyTagCellPlacement() {
         val (u, v) = selectedTagGridUv
+        lastTagPlacementSource = "grid"
         setTagFieldsFromBox(tagPositionFor(selectedTagPlane, u, v, project.dimensionsMm))
         applySelectedTagRotation()
     }
@@ -1152,46 +1176,58 @@ fun setDefaultTagSize(sizeMm: Int) {
             tagPoseWeight = "1"
             // Als de huidige pose van een andere bekende tag afkomstig is, bereken de positie
             // van de nieuwe tag via ray-casting zodat beide in hetzelfde coördinatenstelsel vallen.
+            // Snijd met EXACT het gekozen vlak (selectedTagPlane), niet met de hele box: zo kan een
+            // Rechts-tag nooit stilletjes op Voor belanden doordat de straal onder een scherende hoek
+            // eerst het voorvlak raakt.
             val poseFromOtherTag = result.transformerPose != null && detection.id !in result.poseMarkerIds
             if (poseFromOtherTag) {
-                val derivedPos = estimateSurfaceAtPixel(
+                val derivedPos = estimateSurfaceAtPixelOnPlane(
                     result = result,
                     pixelX = detection.centerPx.xPx,
                     pixelY = detection.centerPx.yPx,
+                    plane = selectedTagPlane,
                     dimensionsMm = project.dimensionsMm
                 )
                 if (derivedPos != null) {
+                    lastTagPlacementSource = "raycast-selected-plane"
+                    // AR-afgeleide positie is het tag-CENTER (uit centerPx) → forceer Center zodat een
+                    // per ongeluk aanstaande edge-modus de positie niet met een halve tag verschuift.
+                    tagMeasurementAnchor = TagMeasurementAnchor.Center
                     setTagFieldsFromBox(derivedPos)
-                    message = "AprilTag ${detection.id} gelezen — positie afgeleid van actief referentiekader. Controleer en pas aan indien nodig."
+                    logFrameAudit(
+                        "raycast plane=${selectedTagPlane.name} hit=(${derivedPos.x},${derivedPos.y},${derivedPos.z}) " +
+                            "tag=${detection.id} poseSource=${frameAuditPoseSource(result)}"
+                    )
+                    message = "AprilTag ${detection.id} gelezen — positie afgeleid op vlak ${selectedTagPlane.shortLabel}. Controleer en pas aan indien nodig."
                     return
                 }
+                // Straal raakt het gekozen vlak niet binnen zijn rechthoek: NIET stil terugvallen op
+                // een ander vlak. Laat de operator het vlak corrigeren of de cursor op de tag richten.
+                logFrameAudit(
+                    "raycast plane=${selectedTagPlane.name} rejected=ray-misses-selected-plane " +
+                        "tag=${detection.id} poseSource=${frameAuditPoseSource(result)}"
+                )
+                tagScanArmed = true
+                message = "Tag niet geplaatst: de straal raakt het gekozen vlak ${selectedTagPlane.shortLabel} niet. " +
+                    "Kies het juiste vlak of richt de cursor op de tag."
+                return
             }
         }
         message = "AprilTag ${detection.id} gelezen. Controleer meet-XYZ, rotatie en druk op Tag opslaan."
     }
 
-    /** Bepaalt het tagvlak voor een box-positie: het [preferred] vlak (de vlak-keuze) als de positie
-     *  daar daadwerkelijk op ligt, anders het vlak waar de positie wél exact op valt. Zo volgt de
-     *  rotatie altijd het vlak van de positie en kunnen rotatie/positie niet mismatchen — de oorzaak
-     *  van een gespiegelde/inverted pose bij handmatig getypte coördinaten. */
-    private fun planeForBoxPosition(position: MmPosition, dims: MmPosition, preferred: TagPlane): TagPlane {
-        fun onFace(plane: TagPlane): Boolean = when (plane) {
+    /** Of [position] exact op het vaste-vlak-component van [plane] ligt (canonieke conventie, gelijk
+     *  aan [tagPositionFor] en [estimateSurfaceAtPixelOnPlane]). Harde poort vóór het opslaan van een
+     *  referentietag: de positie MOET op het gekozen vlak liggen, anders kan rotatie/positie
+     *  mismatchen → een gespiegelde/inverted pose. De UI kiest nooit stilletjes een ander vlak. */
+    private fun isPositionOnPlane(position: MmPosition, dims: MmPosition, plane: TagPlane): Boolean =
+        when (plane) {
             TagPlane.Front -> position.y == 0
             TagPlane.Back -> position.y == dims.y
             TagPlane.Left -> position.x == 0
             TagPlane.Right -> position.x == dims.x
             TagPlane.Top -> position.z == dims.z
         }
-        if (onFace(preferred)) return preferred
-        return when {
-            position.z == dims.z -> TagPlane.Top
-            position.y == 0 -> TagPlane.Front
-            position.y == dims.y -> TagPlane.Back
-            position.x == 0 -> TagPlane.Left
-            position.x == dims.x -> TagPlane.Right
-            else -> preferred
-        }
-    }
 
     fun saveMeasuredTag() {
         val inputResult = aprilTagResult
@@ -1228,18 +1264,38 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (visibleDetection != null && tagId.toIntOrNull() != visibleDetection.id) {
             tagId = visibleDetection.id.toString()
         }
-        val boxPosition = project.coordinateMapper().operatorToBox(operatorPosition)
-        if (!boxPosition.insideBox(project.dimensionsMm)) {
+        val measuredBox = project.coordinateMapper().operatorToBox(operatorPosition)
+        if (!measuredBox.insideBox(project.dimensionsMm)) {
             message = "Tagpositie valt buiten de trafo-box. Controleer origin/asrichting of meet-XYZ."
             return
         }
+        // Harde poort op het GEMETEN punt: het MOET exact op het gekozen vlak liggen. Zo kan een
+        // Rechts-tag nooit stilletjes als Voor worden opgeslagen (verkeerde rotatie → gespiegelde pose).
+        // De rotatie volgt dan eenduidig selectedTagPlane; geen stille vlak-herleiding uit de positie.
+        if (!isPositionOnPlane(measuredBox, project.dimensionsMm, selectedTagPlane)) {
+            logFrameAudit(
+                "save rejected=position-not-on-selected-plane selectedPlane=${selectedTagPlane.name} " +
+                    "box=(${measuredBox.x},${measuredBox.y},${measuredBox.z}) tag=$id"
+            )
+            message = "Tag niet opgeslagen: meet-XYZ ${operatorPosition.toReadableMm()} ligt niet op het " +
+                "gekozen vlak ${selectedTagPlane.shortLabel}. Kies het juiste vlak of corrigeer de meet-XYZ."
+            return
+        }
+        // Edge-naar-center: alleen bij HANDMATIGE invoer kan het gemeten punt de hoek linksonder zijn.
+        // Grid- en AR-afgeleide posities zijn al een center → forceer dan Center (geen dubbele offset).
+        // [Marker.positionMm] blijft zo altijd het tag-center; markerCornersInProjectFrame ongewijzigd.
+        val measurementAnchor = if (tagPlacementManual) tagMeasurementAnchor else TagMeasurementAnchor.Center
+        val boxPosition = tagMeasuredPointToCenter(
+            measured = measuredBox,
+            plane = selectedTagPlane,
+            sizeMm = size,
+            anchor = measurementAnchor,
+            dimensionsMm = project.dimensionsMm
+        )
         val existing = project.markers.firstOrNull {
             it.id == id && it.isAprilTagCalibrationMarker()
         }
-        // Rotatie volgt het VLAK waar de positie op valt (niet zomaar de vlak-keuze): zo kunnen
-        // rotatie en positie nooit mismatchen, ook bij handmatig getypte coördinaten — dat
-        // veroorzaakte een gespiegelde/inverted pose.
-        val rotation = tagRotationFor(planeForBoxPosition(boxPosition, project.dimensionsMm, selectedTagPlane))
+        val rotation = tagRotationFor(selectedTagPlane)
         setTagRotation(rotation.x.toInt(), rotation.y.toInt(), rotation.z.toInt())
         val marker = Marker(
             id = id,
@@ -1248,7 +1304,9 @@ fun setDefaultTagSize(sizeMm: Int) {
             positionMm = boxPosition,
             rotationDeg = rotation,
             active = existing?.active ?: true,
-            poseWeight = poseWeight
+            poseWeight = poseWeight,
+            // Live in AR vastgelegde tag. Bestaande (voorbereide) tag behoudt zijn herkomst.
+            origin = existing?.origin ?: PlacementOrigin.OnTheFly
         )
         if (existing != null && existing.positionMm != boxPosition) {
             val oldOperatorPosition = project.coordinateMapper().boxToOperator(existing.positionMm)
@@ -1270,6 +1328,17 @@ fun setDefaultTagSize(sizeMm: Int) {
         saveProject()
         // Diagnose links/rechts-audit: log de rauwe box-positie van elke opgeslagen tag.
         logArSensRawTagCheck(project)
+        val savedPlane = markerSurfaceLabel(marker, project.dimensionsMm)
+        val saveSource = when {
+            tagPlacementManual -> "manual"
+            visibleDetection != null && lastTagPlacementSource == "raycast-selected-plane" -> "raycast-selected-plane"
+            else -> lastTagPlacementSource
+        }
+        logFrameAudit(
+            "save selectedPlane=${selectedTagPlane.name} savedPlane=$savedPlane " +
+                "box=(${marker.positionMm.x},${marker.positionMm.y},${marker.positionMm.z}) " +
+                "rot=(${rotation.x.toInt()},${rotation.y.toInt()},${rotation.z.toInt()}) tag=$id source=$saveSource"
+        )
         // Opslaan zonder dat de camera de tag ooit gezien heeft kan (handmatig ID), maar levert
         // nooit een pose op zolang de detector hem niet herkent — meestal een tag uit een andere
         // familie dan de ingestelde dictionary. Benoem dat expliciet i.p.v. stil te slagen.
@@ -2027,7 +2096,11 @@ fun setDefaultTagSize(sizeMm: Int) {
             // de bestaande audit.
             placement = placement ?: existingSensor?.placement,
             // Sensor-tag uit het formulier; leeg laat de bestaande koppeling staan.
-            sensorTagId = this.sensorTagId.toIntOrNull() ?: existingSensor?.sensorTagId
+            sensorTagId = this.sensorTagId.toIntOrNull() ?: existingSensor?.sensorTagId,
+            // Herkomst: een bestaande sensor behoudt zijn herkomst; een NIEUWE sensor is OnTheFly als
+            // hij live is vastgelegd (markInstalled), anders Voorbereid (formulier/2D).
+            origin = existingSensor?.origin
+                ?: if (markInstalled) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
         )
         val sensors = (project.sensors.filterNot { it.id == sensor.id } + sensor)
             .sortedBy { it.order }
@@ -2246,7 +2319,9 @@ fun setDefaultTagSize(sizeMm: Int) {
             positionMm = position,
             rotationDeg = rotation,
             active = existing?.active ?: true,
-            poseWeight = poseWeight ?: existing?.poseWeight ?: 1f
+            poseWeight = poseWeight ?: existing?.poseWeight ?: 1f,
+            // Voorbereide tag (2D/plan). Bestaande tag behoudt zijn herkomst.
+            origin = existing?.origin ?: PlacementOrigin.Prepared
         )
         project = project.copy(markers = project.markers.filterNot { it.id == id && it.isAprilTagCalibrationMarker() } + marker)
         setTagFieldsFromBox(position)
@@ -2359,6 +2434,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         tagSize = normalized.sizeMm.toString()
         tagPoseWeight = normalized.poseWeight.toString()
         setTagFieldsFromBox(normalized.positionMm)
+        // De opgeslagen positie is het tag-center → bewerken vertrekt vanaf Center (geen edge-offset).
+        tagMeasurementAnchor = TagMeasurementAnchor.Center
         setTagRotation(
             normalized.rotationDeg.x.toInt(),
             normalized.rotationDeg.y.toInt(),
@@ -2891,6 +2968,37 @@ fun setDefaultTagSize(sizeMm: Int) {
         Log.i("ARsensCursor", "source=$source pos=$positionText inside=$inside")
     }
 
+    /** Canoniek-frame audittrail (tag "ARSensFrameAudit"): tagopslag, raycast-setup en (throttled)
+     *  overlay-posebron. Bewijst dat posities/vlakken consistent zijn vóórdat aan rotatie/corners
+     *  gesleuteld wordt. */
+    private fun logFrameAudit(message: String) {
+        Log.i("ARSensFrameAudit", message)
+    }
+
+    /** Korte beschrijving van de actieve posebron voor de frame-audit. */
+    private fun frameAuditPoseSource(result: AprilTagFrameResult): String {
+        val source = when {
+            result.displayProjection != null -> "fused-display"
+            result.imageProjectionPose != null || result.transformerPose != null -> "tag-solvepnp"
+            else -> "none"
+        }
+        return "$source/poseTags=${result.poseMarkerIds}"
+    }
+
+    /** Throttled overlay-posebron audit: welke bron de overlays nu gebruiken, plus de zichtbare
+     *  posetags en per-tag keys. Eén regel per ~1,5 s zolang de bron-signatuur gelijk blijft. */
+    private fun logFrameAuditOverlay(now: Long, result: AprilTagFrameResult) {
+        val key = "${frameAuditPoseSource(result)}|perTag=${result.posePerTag.keys.sorted()}|" +
+            "transformer=${result.transformerPose != null}|display=${result.displayProjection != null}"
+        if (key == lastFrameAuditOverlayKey && now - lastFrameAuditOverlayMillis < CURSOR_LOG_INTERVAL_MILLIS) return
+        lastFrameAuditOverlayKey = key
+        lastFrameAuditOverlayMillis = now
+        logFrameAudit(
+            "overlay poseSource=${frameAuditPoseSource(result)} posePerTag=${result.posePerTag.keys.sorted()} " +
+                "transformerPose=${result.transformerPose != null} displayProjection=${result.displayProjection != null}"
+        )
+    }
+
     /** Dempt per-tag en gefuseerde poses tegen trillen; zie [TagPoseSmoother] voor de tunables. */
     private val tagPoseSmoother = TagPoseSmoother()
 
@@ -2939,6 +3047,8 @@ private fun smoothArPoses(result: AprilTagFrameResult, now: Long): AprilTagFrame
         lastPlacementReference = null
         lastCursorLogKey = ""
         lastCursorLogMillis = 0L
+        lastFrameAuditOverlayKey = ""
+        lastFrameAuditOverlayMillis = 0L
         cursorJitterSamples.clear()
         cursorJitterMm = null
         lockTagSignature = emptyList()

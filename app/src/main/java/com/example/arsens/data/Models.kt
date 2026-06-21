@@ -8,6 +8,15 @@ enum class SensorStatus(val wireName: String, val label: String) {
     Fail("fail", "Fout")
 }
 
+/** Hoe een sensor of tag in het project terecht is gekomen — LOS van de plaatsings-[SensorStatus].
+ *  Prepared = vooraf gepland (2D/3D of geïmporteerd); OnTheFly = live in AR vastgelegd. Het rapport
+ *  toont dit als "Herkomst" (Voorbereid/On the fly); de KLEUR van de stip komt daarentegen uit de
+ *  status (oranje = nog te plaatsen, blauw = geplaatst). Twee onafhankelijke assen. */
+enum class PlacementOrigin(val wireName: String, val label: String) {
+    Prepared("prepared", "Voorbereid"),
+    OnTheFly("on_the_fly", "On the fly")
+}
+
 data class MmPosition(
     val x: Int,
     val y: Int,
@@ -52,7 +61,12 @@ data class Sensor(
     /** AprilTag-ID die fysiek óp deze sensor geplakt is (≥ AppSettings.sensorTagStartId). Maakt het
      *  mogelijk de sensor live te herkennen en zijn werkelijke positie te meten in de Install-flow.
      *  Null = geen sensor-tag gekoppeld. */
-    val sensorTagId: Int? = null
+    val sensorTagId: Int? = null,
+    /** Hoe deze sensor in het project kwam: vooraf gepland/geïmporteerd of live geplaatst. Bepaalt
+     *  het "Herkomst"-label in het rapport (NIET de kleur — die komt uit [status]). Een voorbereide
+     *  sensor die later live bevestigd wordt blijft [PlacementOrigin.Prepared]: herkomst = hoe hij
+     *  ontstond, niet of hij al geplaatst is. */
+    val origin: PlacementOrigin = PlacementOrigin.Prepared
 )
 
 /**
@@ -78,7 +92,9 @@ data class Marker(
     val positionMm: MmPosition,
     val rotationDeg: FloatVector,
     val active: Boolean = true,
-    val poseWeight: Float = 1f
+    val poseWeight: Float = 1f,
+    /** Vooraf gepland/geïmporteerd of live ontdekt — parallel aan [Sensor.origin]. */
+    val origin: PlacementOrigin = PlacementOrigin.Prepared
 )
 
 fun Marker.isAprilTagCalibrationMarker(): Boolean =
@@ -250,6 +266,9 @@ fun distanceMm(offset: MmPosition): Int {
 
 fun statusFromWireName(value: String?): SensorStatus =
     SensorStatus.entries.firstOrNull { it.wireName == value } ?: SensorStatus.Pending
+
+fun originFromWireName(value: String?): PlacementOrigin =
+    PlacementOrigin.entries.firstOrNull { it.wireName == value } ?: PlacementOrigin.Prepared
 
 fun originCornerFromWireName(value: String?): OriginCorner =
     OriginCorner.entries.firstOrNull { it.wireName == value } ?: OriginCorner.FrontLeftBottom

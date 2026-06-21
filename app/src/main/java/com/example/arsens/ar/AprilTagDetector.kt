@@ -902,6 +902,43 @@ fun estimateSurfaceAtPixel(
     pixelY: Float,
     dimensionsMm: MmPosition
 ): MmPosition? {
+    val ray = imagePoseRayForPixel(result, pixelX, pixelY) ?: return null
+    return intersectTransformerBox(ray, dimensionsMm)?.position
+}
+
+/**
+ * Als [estimateSurfaceAtPixel], maar snijdt de camerastraal met EXACT het opgegeven [plane]-vlak in
+ * plaats van met de hele trafo-box. Voor referentietag-setup: de operator kiest het vlak (Voor,
+ * Rechts, …) en de afgeleide tagpositie krijgt gegarandeerd het bijbehorende vaste-vlak-component
+ * (Front→Y=0, Right→X=lengte, …). Zo kan een Rechts-tag nooit stilletjes op Voor terechtkomen
+ * doordat de straal onder een scherende hoek eerst een ander box-vlak raakt.
+ *
+ * Geeft null als er geen pose is, of als de straal het gekozen vlak niet binnen zijn rechthoek raakt
+ * — de aanroeper moet dat als "geen plaatsing op dit vlak" behandelen (niet stil terugvallen op een
+ * ander vlak). [estimateSurfaceAtPixel] blijft bestaan voor sensor-op-oppervlak / algemene box-hits.
+ */
+fun estimateSurfaceAtPixelOnPlane(
+    result: AprilTagFrameResult,
+    pixelX: Float,
+    pixelY: Float,
+    plane: TagPlane,
+    dimensionsMm: MmPosition
+): MmPosition? {
+    val ray = imagePoseRayForPixel(result, pixelX, pixelY) ?: return null
+    return intersectTagPlaneExact(ray, plane, dimensionsMm)
+}
+
+/**
+ * Bouwt de camerastraal (transformerframe) door beeldpixel [pixelX],[pixelY] vanuit de image-pose.
+ * Cameraoorsprong C = -R^T·t; richting d_world = R^T·[(px-cx)/fx, (py-cy)/fy, 1]. Gedeeld door
+ * [estimateSurfaceAtPixel] en [estimateSurfaceAtPixelOnPlane] zodat beide exact dezelfde straal
+ * gebruiken — alleen het te snijden vlak verschilt.
+ */
+private fun imagePoseRayForPixel(
+    result: AprilTagFrameResult,
+    pixelX: Float,
+    pixelY: Float
+): RayMm? {
     val pose = result.imageProjectionPose ?: result.transformerPose ?: return null
     if (!OpenCvRuntime.ensureLoaded()) return null
 
@@ -939,11 +976,10 @@ fun estimateSurfaceAtPixel(
     rotation.release()
 
     if (len < 1e-9) return null
-    val ray = RayMm(
+    return RayMm(
         origin = cameraOriginWorld,
         direction = DoubleArray(3) { rayWorld[it] / len }
     )
-    return intersectTransformerBox(ray, dimensionsMm)?.position
 }
 
 fun estimateCursorOnReferenceSurface(

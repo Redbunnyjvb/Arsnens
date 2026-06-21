@@ -145,6 +145,7 @@ object JsonProjectStore {
             .put("tolerance_mm", sensor.toleranceMm)
             .put("instruction", sensor.instruction)
             .put("status", sensor.status.wireName)
+            .put("origin", sensor.origin.wireName)
             .apply {
                 sensor.referenceTagId?.let { put("reference_tag_id", it) }
                 sensor.sensorTagId?.let { put("sensor_tag_id", it) }
@@ -166,7 +167,11 @@ object JsonProjectStore {
             referenceTagId = json.optInt("reference_tag_id", -1).takeIf { it >= 0 },
             sensorTagId = json.optInt("sensor_tag_id", -1).takeIf { it >= 0 },
             placement = json.optJSONObject("placement")?.let(::placementFromJson),
-            driftCorrection = json.optJSONObject("drift_correction")?.let(::driftCorrectionFromJson)
+            driftCorrection = json.optJSONObject("drift_correction")?.let(::driftCorrectionFromJson),
+            // Herkomst: expliciet veld. Ontbreekt het (oude projecten) → afleiden uit placement
+            // (live-audit ⇒ on-the-fly, anders voorbereid), zodat bestaande data correct labelt.
+            origin = json.optString("origin").ifBlank { null }?.let(::originFromWireName)
+                ?: if (json.optJSONObject("placement") != null) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
         )
 
     private fun driftCorrectionToJson(correction: SensorDriftCorrection): JSONObject =
@@ -235,6 +240,7 @@ object JsonProjectStore {
             .put("rotation_deg", marker.rotationDeg.toJsonArray())
             .put("active", marker.active)
             .put("pose_weight", marker.poseWeight)
+            .put("origin", marker.origin.wireName)
 
     private fun markerFromJson(json: JSONObject): Marker =
         Marker(
@@ -245,7 +251,9 @@ object JsonProjectStore {
             rotationDeg = json.optJSONArray("rotation_deg")?.toFloatVector()
                 ?: FloatVector(0f, 0f, 0f),
             active = json.optBoolean("active", true),
-            poseWeight = json.optDouble("pose_weight", 1.0).toFloat()
+            poseWeight = json.optDouble("pose_weight", 1.0).toFloat(),
+            origin = json.optString("origin").ifBlank { null }?.let(::originFromWireName)
+                ?: PlacementOrigin.Prepared
         )
 
     private fun stlModelToJson(model: StlModel): JSONObject =

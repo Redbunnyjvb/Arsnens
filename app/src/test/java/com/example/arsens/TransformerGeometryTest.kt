@@ -4,6 +4,7 @@ import com.example.arsens.ar.RayMm
 import com.example.arsens.ar.ProjectPointMm
 import com.example.arsens.ar.TagPlane
 import com.example.arsens.ar.TransformerPlane
+import com.example.arsens.ar.intersectTagPlaneExact
 import com.example.arsens.ar.intersectTransformerBox
 import com.example.arsens.ar.markerCornersInProjectFrame
 import com.example.arsens.ar.intersectTransformerPlane
@@ -100,6 +101,30 @@ class TransformerGeometryTest {
         )
 
         assertNull(hit)
+    }
+
+    @Test
+    fun tagPlaneExactForcesSelectedPlaneNotNearestFace() {
+        // Eén straal recht naar binnen (+Y). intersectTransformerBox kiest het dichtste vlak (Voor);
+        // intersectTagPlaneExact dwingt het GEKOZEN vlak af: Voor → voorvlak, Achter → achtervlak
+        // (de verre snit), Rechts (evenwijdig) → null. Dit is de kern-fix tegen "Rechts wordt Voor".
+        val ray = RayMm(origin = doubleArrayOf(5_000.0, -1_000.0, 1_000.0), direction = doubleArrayOf(0.0, 1.0, 0.0))
+        assertEquals(MmPosition(5_000, 0, 1_000), intersectTagPlaneExact(ray, TagPlane.Front, dimensions))
+        assertEquals(MmPosition(5_000, 5_000, 1_000), intersectTagPlaneExact(ray, TagPlane.Back, dimensions))
+        assertNull(intersectTagPlaneExact(ray, TagPlane.Right, dimensions))
+    }
+
+    @Test
+    fun tagPlaneExactSnapsFixedComponentAndRejectsOffRectangle() {
+        // Rechtervlak: vaste component exact op X=lengte, ook al rondt de straalrekenkunde net af.
+        val rightRay = RayMm(origin = doubleArrayOf(11_000.0, 2_500.0, 1_600.0), direction = doubleArrayOf(-1.0, 0.0, 0.0))
+        val right = intersectTagPlaneExact(rightRay, TagPlane.Right, dimensions)
+        assertEquals(MmPosition(10_000, 2_500, 1_600), right)
+        assertEquals(10_000, right!!.x)
+
+        // Snit ligt op X=lengte maar BUITEN de Z-rechthoek (z=5000 > hoogte 3200) → afgewezen.
+        val offRectRay = RayMm(origin = doubleArrayOf(9_000.0, 2_500.0, 5_000.0), direction = doubleArrayOf(1.0, 0.0, 0.0))
+        assertNull(intersectTagPlaneExact(offRectRay, TagPlane.Right, dimensions))
     }
 
     @Test

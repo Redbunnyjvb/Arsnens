@@ -112,6 +112,57 @@ fun intersectTransformerPlane(
     )
 }
 
+/**
+ * Snijdt [ray] met EXACT het [plane]-vlak van de trafo-box, in de canonieke [TagPlane]-conventie
+ * (gelijk aan [tagPositionFor]): Front→Y=0, Back→Y=diepte, Left→X=0, Right→X=lengte, Top→Z=hoogte.
+ *
+ * Anders dan [intersectTransformerBox] kiest dit NIET het dichtstbijzijnde box-vlak, maar dwingt het
+ * geselecteerde vlak af — zo kan een referentietag-setup op Rechts nooit stilletjes op Voor belanden
+ * doordat de straal onder een scherende hoek eerst het voorvlak raakt. Het vaste-vlak-component
+ * wordt exact op 0 of de maximale dimensie gezet; de twee vrije assen worden afgerond. Geeft null als
+ * de straal evenwijdig aan het vlak loopt, het achter de camera snijdt, of het snijpunt buiten de
+ * rechthoek van dat vlak valt (Front/Back: X∈0..lengte, Z∈0..hoogte; Left/Right: Y∈0..diepte,
+ * Z∈0..hoogte; Top: X∈0..lengte, Y∈0..diepte).
+ */
+fun intersectTagPlaneExact(
+    ray: RayMm,
+    plane: TagPlane,
+    dimensionsMm: MmPosition
+): MmPosition? {
+    val axis = when (plane) {
+        TagPlane.Front, TagPlane.Back -> 1
+        TagPlane.Left, TagPlane.Right -> 0
+        TagPlane.Top -> 2
+    }
+    val planeMm = when (plane) {
+        TagPlane.Front -> 0
+        TagPlane.Back -> dimensionsMm.y
+        TagPlane.Left -> 0
+        TagPlane.Right -> dimensionsMm.x
+        TagPlane.Top -> dimensionsMm.z
+    }
+    val directionOnAxis = ray.direction[axis]
+    if (kotlin.math.abs(directionOnAxis) < 1e-6) return null
+    val distanceAlongRay = (planeMm.toDouble() - ray.origin[axis]) / directionOnAxis
+    if (distanceAlongRay <= 0.0) return null
+
+    val raw = IntArray(3) { index ->
+        (ray.origin[index] + distanceAlongRay * ray.direction[index]).roundToInt()
+    }
+    // Vaste-vlak-component exact op 0 of max; de vrije assen afgerond.
+    raw[axis] = planeMm
+    val position = MmPosition(x = raw[0], y = raw[1], z = raw[2])
+    val insideRect = when (plane) {
+        TagPlane.Front, TagPlane.Back ->
+            position.x in 0..dimensionsMm.x && position.z in 0..dimensionsMm.z
+        TagPlane.Left, TagPlane.Right ->
+            position.y in 0..dimensionsMm.y && position.z in 0..dimensionsMm.z
+        TagPlane.Top ->
+            position.x in 0..dimensionsMm.x && position.y in 0..dimensionsMm.y
+    }
+    return if (insideRect) position else null
+}
+
 fun markerCornersInProjectFrame(marker: Marker): List<ProjectPointMm> {
     val half = marker.sizeMm / 2.0
     val center = marker.positionMm

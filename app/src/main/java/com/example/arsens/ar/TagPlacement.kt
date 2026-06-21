@@ -12,6 +12,15 @@ enum class TagPlane(val label: String, val shortLabel: String) {
     Top("Boven Z=hoogte", "Boven")
 }
 
+/** Welk punt van de geprinte tag de operator op [MmPosition] gemeten heeft. Puur een INVOER-conventie:
+ *  [Marker.positionMm] blijft intern altijd het CENTER (zie [tagMeasuredPointToCenter]). */
+enum class TagMeasurementAnchor(val label: String) {
+    /** De ingevoerde X/Y/Z is het midden van de tag (oud gedrag, default). */
+    Center("Midden"),
+    /** De ingevoerde X/Y/Z is de buitenste hoek linksonder van de tag (in vlak-assen U/V). */
+    BottomLeftEdge("Linksonder rand")
+}
+
 enum class TagAnchor(val label: String, val u: Float, val v: Float) {
     BottomLeft("Linksonder", 0f, 0f),
     BottomQuarterLeft("Onder 25%", 0.25f, 0f),
@@ -74,22 +83,57 @@ fun tagPositionFor(
     v: Float,
     dimensionsMm: MmPosition
 ): MmPosition {
+    // u/v zijn ALTIJD canonieke box-frame assen, NIET operator-view per vlak. Eén canoniek
+    // transformerframe: origin = voor-links-onder (van buiten vóór de trafo gezien), X+ naar rechts,
+    // Y+ naar binnen/achter, Z+ omhoog. Op ELK vlak loopt u langs de eerste vrije box-as in +richting
+    // en v langs de tweede; geen enkel vlak spiegelt u (de oude xFromOutsideBackU/yFromOutsideLeftU
+    // voor Back/Left maakten die twee vlakken inconsistent met Front/Right/Top en met elkaar in een
+    // multi-tag solve). Het vaste-vlak-component staat exact op 0 of op de maximale dimensie.
     fun xFromU() = (dimensionsMm.x * u).roundToInt()
-    fun xFromOutsideBackU() = (dimensionsMm.x * (1f - u)).roundToInt()
     fun yFromU() = (dimensionsMm.y * u).roundToInt()
-    fun yFromOutsideLeftU() = (dimensionsMm.y * (1f - u)).roundToInt()
     fun yFromV() = (dimensionsMm.y * v).roundToInt()
     fun zFromV() = (dimensionsMm.z * v).roundToInt()
     return when (plane) {
-        // Van buitenaf gezien: u=0 (UI-links) → X=0 (linker-hoek), net als Left/Right/Back/Top. Een
-        // gespiegelde Front maakte de tag inconsistent met die vlakken én met de zijtags in een
-        // multi-tag solve; hou daarom dezelfde niet-gespiegelde conventie aan.
         TagPlane.Front -> MmPosition(x = xFromU(), y = 0, z = zFromV())
-        TagPlane.Back -> MmPosition(x = xFromOutsideBackU(), y = dimensionsMm.y, z = zFromV())
-        TagPlane.Left -> MmPosition(x = 0, y = yFromOutsideLeftU(), z = zFromV())
+        TagPlane.Back -> MmPosition(x = xFromU(), y = dimensionsMm.y, z = zFromV())
+        TagPlane.Left -> MmPosition(x = 0, y = yFromU(), z = zFromV())
         TagPlane.Right -> MmPosition(x = dimensionsMm.x, y = yFromU(), z = zFromV())
         TagPlane.Top -> MmPosition(x = xFromU(), y = yFromV(), z = dimensionsMm.z)
     }
+}
+
+/**
+ * Zet een door de operator GEMETEN punt op een tagvlak om naar het tag-CENTER dat in
+ * [Marker.positionMm] hoort. [markerCornersInProjectFrame] blijft het center ± sizeMm/2 gebruiken; deze
+ * helper verschuift dus enkel het meetpunt → center vóór opslaan en raakt de corner-generatie niet.
+ *
+ * Canoniek frame (origin voor-links-onder; X+ rechts, Y+ naar binnen, Z+ omhoog). Vlak-assen:
+ * Front/Back U=+X, V=+Z; Left/Right U=+Y, V=+Z; Top U=+X, V=+Y.
+ * [TagMeasurementAnchor.BottomLeftEdge]: de operator mat de buitenste hoek linksonder, dus het center
+ * ligt +half langs U én +half langs V naar binnen (half = sizeMm/2). [TagMeasurementAnchor.Center]
+ * laat de in-vlak-coördinaten staan. In beide gevallen wordt het vaste vlak-component exact op het
+ * vlak gezet (Front Y=0, Right X=lengte, …) en het resultaat in de trafo-grenzen geklemd.
+ */
+fun tagMeasuredPointToCenter(
+    measured: MmPosition,
+    plane: TagPlane,
+    sizeMm: Int,
+    anchor: TagMeasurementAnchor,
+    dimensionsMm: MmPosition
+): MmPosition {
+    val half = if (anchor == TagMeasurementAnchor.BottomLeftEdge) sizeMm / 2 else 0
+    val center = when (plane) {
+        TagPlane.Front -> MmPosition(x = measured.x + half, y = 0, z = measured.z + half)
+        TagPlane.Back -> MmPosition(x = measured.x + half, y = dimensionsMm.y, z = measured.z + half)
+        TagPlane.Left -> MmPosition(x = 0, y = measured.y + half, z = measured.z + half)
+        TagPlane.Right -> MmPosition(x = dimensionsMm.x, y = measured.y + half, z = measured.z + half)
+        TagPlane.Top -> MmPosition(x = measured.x + half, y = measured.y + half, z = dimensionsMm.z)
+    }
+    return MmPosition(
+        x = center.x.coerceIn(0, dimensionsMm.x),
+        y = center.y.coerceIn(0, dimensionsMm.y),
+        z = center.z.coerceIn(0, dimensionsMm.z)
+    )
 }
 
 /** Tagrotatie per vlak. De marker-corners moeten op hun ECHTE box-positie staan, gepaard met de

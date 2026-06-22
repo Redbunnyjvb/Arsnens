@@ -123,6 +123,10 @@ import com.example.arsens.ar.RayMm
 import com.example.arsens.ar.Transform3D
 import com.example.arsens.ar.cameraRayInTransformer
 import com.example.arsens.ar.reprojectPlacementRay
+import com.example.arsens.ar.TagAxisReference
+import com.example.arsens.ar.applyTagOutwardOffset
+import com.example.arsens.ar.tagEdgeOffsetToCenter
+import com.example.arsens.ar.tagGridDisplayUvToCanonicalUv
 import com.example.arsens.ar.tagMeasuredPointToCenter
 import com.example.arsens.ar.tagPlacementFor
 import com.example.arsens.ar.tagPositionFor
@@ -426,6 +430,29 @@ fun setDefaultTagSize(sizeMm: Int) {
      *  X/Y/Z blijven staan (een vlakwissel zet dan alleen de rotatie, niet de positie). */
     var tagPlacementManual by mutableStateOf(false)
         private set
+    /** Handmatige offset-assistent: false = anker-modus (gemeten X/Y/Z + welk tag-punt), true =
+     *  box-rand-offset-modus (per as vanaf min/max-rand of handmatig). Alleen in handmatige modus. */
+    var tagEdgeOffsetMode by mutableStateOf(false)
+        private set
+    /** Box-rand-offset: referentie + waarde (mm) per vrije vlak-as (U = eerste, V = tweede). De waarde
+     *  is in mm op het CENTER van de tag. Zie [tagEdgeOffsetToCenter]. */
+    var tagEdgeURef by mutableStateOf(TagAxisReference.FromMin)
+        private set
+    var tagEdgeU by mutableStateOf("0")
+    var tagEdgeVRef by mutableStateOf(TagAxisReference.FromMin)
+        private set
+    var tagEdgeV by mutableStateOf("0")
+    /** Of in "Meet vanaf rand" naar de PAPIER-hoek/rand is gemeten (i.p.v. de tag zelf) — dan telt de
+     *  papier/witruimte-marge mee. False = gemeten tot de tag (midden of hoek), marge genegeerd. */
+    var tagMeasuredToPaper by mutableStateOf(false)
+        private set
+    /** Optionele papier/tag-marge (mm) langs de rand(en) waar het anker op ligt — meten tot de
+     *  papier-rand i.p.v. de tag-rand. Alleen relevant als [tagMeasuredToPaper]. */
+    var tagPaperMarginU by mutableStateOf("0")
+    var tagPaperMarginV by mutableStateOf("0")
+    /** Optionele buitenwaartse offset (mm) langs de vlak-normaal — tag op rib/pijp/dik papier buiten
+     *  het nominale vlak. Mag negatief (naar binnen). Niet geklemd. Zie [applyTagOutwardOffset]. */
+    var tagOutwardOffset by mutableStateOf("0")
     /** Laatst gekozen rasterpunt (u,v elk 0..1) op het tagvlak; bepaalt bij een vlakwissel de
      *  positie in gridmodus. */
     var selectedTagGridUv by mutableStateOf(0.5f to 0.5f)
@@ -1026,10 +1053,12 @@ fun setDefaultTagSize(sizeMm: Int) {
         message = "Taganker gekozen: ${anchor.label}."
     }
 
-    /** Tik op een rastercel ([u],[v] elk 0..1) in de tagsheet: zet de coördinaten op dat punt van
-     *  het huidige vlak en de rotatie op die van het vlak. */
-    fun selectTagGridCell(u: Float, v: Float) {
-        selectedTagGridUv = u to v
+    /** Tik op een rastercel ([displayU],[displayV] elk 0..1, OPERATOR-VIEW: links→rechts / onder→boven)
+     *  in de tagsheet: zet de coördinaten op dat punt van het huidige vlak en de rotatie op die van het
+     *  vlak. De cel is operator-view (alsof je vóór het gekozen vlak staat); converteer naar canonieke
+     *  box-u/v vóór opslag zodat het 7×7-raster met de 2D-kaart overeenkomt (Achter/Links spiegelen U). */
+    fun selectTagGridCell(displayU: Float, displayV: Float) {
+        selectedTagGridUv = tagGridDisplayUvToCanonicalUv(selectedTagPlane, displayU, displayV)
         clearScannedTagSelection()
         applyTagCellPlacement()
     }
@@ -1042,11 +1071,32 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (manual) lastTagPlacementSource = "manual" else applyTagCellPlacement()
     }
 
-    /** Kiest of de handmatig ingevoerde X/Y/Z het midden of de hoek linksonder van de tag is.
-     *  Werkt alleen door in handmatige modus; grid/AR-posities blijven center (zie [saveMeasuredTag]).
-     *  Naam `choose…` i.p.v. `set…` om de JVM-clash met de gegenereerde property-setter te vermijden. */
+    /** Kiest welk punt van de tag de handmatig ingevoerde X/Y/Z is (operator-view anker, zie
+     *  [TagMeasurementAnchor]). Werkt alleen door in handmatige anker-modus; grid/AR-posities blijven
+     *  center (zie [saveMeasuredTag]). Naam `choose…` i.p.v. `set…` om de JVM-clash met de gegenereerde
+     *  property-setter te vermijden. */
     fun chooseTagMeasurementAnchor(anchor: TagMeasurementAnchor) {
         tagMeasurementAnchor = anchor
+    }
+
+    /** Wisselt de handmatige invoer tussen anker-modus (false) en box-rand-offset-modus (true). */
+    fun chooseTagEdgeOffsetMode(edge: Boolean) {
+        tagEdgeOffsetMode = edge
+    }
+
+    /** Referentie (min-rand/max-rand/handmatig) voor de eerste resp. tweede vrije vlak-as in de
+     *  box-rand-offset-modus. `choose…` om de JVM-clash met de property-setter te vermijden. */
+    fun chooseTagEdgeURef(reference: TagAxisReference) {
+        tagEdgeURef = reference
+    }
+
+    fun chooseTagEdgeVRef(reference: TagAxisReference) {
+        tagEdgeVRef = reference
+    }
+
+    /** Of in "Meet vanaf rand" tot de PAPIER-rand/hoek is gemeten (papier/witruimte-marge telt mee). */
+    fun chooseTagMeasuredToPaper(paper: Boolean) {
+        tagMeasuredToPaper = paper
     }
 
     /** Herleidt de invoervelden uit vlak + laatst gekozen rastercel. In handmatige modus blijven de
@@ -1074,13 +1124,54 @@ fun setDefaultTagSize(sizeMm: Int) {
         setTagRotation(rotation.x.toInt(), rotation.y.toInt(), rotation.z.toInt())
     }
 
-    /** Box-positie van een rastercel op het huidige vlak — voor het oplichten van de gekozen cel. */
-    fun tagCellBoxPosition(u: Float, v: Float): MmPosition =
-        tagPositionFor(selectedTagPlane, u, v, project.dimensionsMm)
+    /** Box-positie van een operator-view rastercel — voor het oplichten van de gekozen cel. Converteert
+     *  display→canoniek (zelfde mapping als [selectTagGridCell]) zodat de oplichtende cel en de
+     *  opgeslagen coördinaten exact overeenkomen. */
+    fun tagCellBoxPosition(displayU: Float, displayV: Float): MmPosition {
+        val (u, v) = tagGridDisplayUvToCanonicalUv(selectedTagPlane, displayU, displayV)
+        return tagPositionFor(selectedTagPlane, u, v, project.dimensionsMm)
+    }
 
     /** Huidige (getypte) tag-coördinaten omgezet naar box-mm, of null bij ongeldige invoer. */
     fun currentTagBoxPositionOrNull(): MmPosition? =
         operatorPositionOrNull(tagX, tagY, tagZ)?.let { project.coordinateMapper().operatorToBox(it) }
+
+    /** Preview van het tag-CENTER dat [saveMeasuredTag] zou opslaan, langs exact hetzelfde rekenpad
+     *  (anker-/box-rand-modus, papier-marge, buitenwaartse offset) — zonder de detectie/ID-poorten. Voor
+     *  de offset-assistent in de tagsheet. Null bij ongeldige invoer. */
+    fun tagPlacementPreview(): WorkflowTagCenterPreview? {
+        val size = tagSize.toIntOrNull()?.takeIf { it > 0 } ?: return null
+        val dims = project.dimensionsMm
+        val outwardOffsetMm = if (tagPlacementManual) (tagOutwardOffset.toIntOrNull() ?: 0) else 0
+        val inPlaneCenter: MmPosition
+        val reference: String
+        if (tagPlacementManual && tagEdgeOffsetMode) {
+            // Meet vanaf rand: de rand-afstanden geven het GEMETEN punt op het vlak; daarna corrigeert
+            // het anker (tag-midden/hoek) + optionele papier-marge dat naar het tag-center.
+            val uVal = tagEdgeU.toIntOrNull() ?: return null
+            val vVal = tagEdgeV.toIntOrNull() ?: return null
+            val measuredPoint = tagEdgeOffsetToCenter(selectedTagPlane, tagEdgeURef, uVal, tagEdgeVRef, vVal, dims)
+            val marginU = if (tagMeasuredToPaper) (tagPaperMarginU.toIntOrNull() ?: 0) else 0
+            val marginV = if (tagMeasuredToPaper) (tagPaperMarginV.toIntOrNull() ?: 0) else 0
+            inPlaneCenter = tagMeasuredPointToCenter(measuredPoint, selectedTagPlane, size, tagMeasurementAnchor, dims, marginU, marginV)
+            reference = "rand U ${tagEdgeURef.label} $uVal · V ${tagEdgeVRef.label} $vVal · ${tagMeasurementAnchor.label}" +
+                if (tagMeasuredToPaper && (marginU != 0 || marginV != 0)) " · papier U$marginU V$marginV" else ""
+        } else {
+            val operatorPosition = operatorPositionOrNull(tagX, tagY, tagZ) ?: return null
+            val measuredBox = project.coordinateMapper().operatorToBox(operatorPosition)
+            val anchor = if (tagPlacementManual) tagMeasurementAnchor else TagMeasurementAnchor.Center
+            inPlaneCenter = tagMeasuredPointToCenter(measuredBox, selectedTagPlane, size, anchor, dims)
+            reference = "gemeten ${anchor.label}"
+        }
+        val center = applyTagOutwardOffset(inPlaneCenter, selectedTagPlane, outwardOffsetMm)
+        val summary = reference + if (outwardOffsetMm != 0) " · buitenwaarts $outwardOffsetMm" else ""
+        return WorkflowTagCenterPreview(
+            center = center,
+            operator = project.coordinateMapper().boxToOperator(center),
+            inPlane = inPlaneCenter.insideBox(dims),
+            summary = summary
+        )
+    }
 
     fun requestSetOriginCorner(originCorner: OriginCorner) {
         if (project.markers.isEmpty() && project.sensors.isEmpty()) {
@@ -1250,11 +1341,10 @@ fun setDefaultTagSize(sizeMm: Int) {
             return
         }
         val id = visibleDetection?.id ?: recentlyScannedId ?: typedId
-        val operatorPosition = operatorPositionOrNull(tagX, tagY, tagZ)
         val size = tagSize.toIntOrNull()
         val poseWeight = tagPoseWeight.toFloatOrNull()?.coerceAtLeast(0.01f) ?: 1f
-        if (id == null || operatorPosition == null || size == null) {
-            message = "Tag-ID, positie en formaat moeten getallen zijn."
+        if (id == null || size == null) {
+            message = "Tag-ID en formaat moeten getallen zijn."
             return
         }
         if (size <= 0) {
@@ -1264,34 +1354,85 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (visibleDetection != null && tagId.toIntOrNull() != visibleDetection.id) {
             tagId = visibleDetection.id.toString()
         }
-        val measuredBox = project.coordinateMapper().operatorToBox(operatorPosition)
-        if (!measuredBox.insideBox(project.dimensionsMm)) {
-            message = "Tagpositie valt buiten de trafo-box. Controleer origin/asrichting of meet-XYZ."
-            return
-        }
-        // Harde poort op het GEMETEN punt: het MOET exact op het gekozen vlak liggen. Zo kan een
-        // Rechts-tag nooit stilletjes als Voor worden opgeslagen (verkeerde rotatie → gespiegelde pose).
-        // De rotatie volgt dan eenduidig selectedTagPlane; geen stille vlak-herleiding uit de positie.
-        if (!isPositionOnPlane(measuredBox, project.dimensionsMm, selectedTagPlane)) {
-            logFrameAudit(
-                "save rejected=position-not-on-selected-plane selectedPlane=${selectedTagPlane.name} " +
-                    "box=(${measuredBox.x},${measuredBox.y},${measuredBox.z}) tag=$id"
+        // Buitenwaartse offset (rib/pijp/dik papier) geldt alleen bij handmatige invoer; wordt NA de
+        // on-plane-poort toegepast zodat het in-vlak deel netjes op het vlak gevalideerd blijft.
+        val outwardOffsetMm = if (tagPlacementManual) (tagOutwardOffset.toIntOrNull() ?: 0) else 0
+        // Het in-vlak tag-CENTER (outward=0), via twee invoerwegen. [Marker.positionMm] blijft het
+        // tag-center; markerCornersInProjectFrame ongewijzigd.
+        val inPlaneCenter: MmPosition
+        if (tagPlacementManual && tagEdgeOffsetMode) {
+            // Meet vanaf rand: geen vrij gemeten X/Y/Z, dus geen on-plane-poort nodig — het GEMETEN punt
+            // ligt per constructie op het gekozen vlak. De rand-afstanden geven dat meetpunt; het anker
+            // (tag-midden/hoek) + optionele papier-marge corrigeren dan naar het tag-center.
+            val uVal = tagEdgeU.toIntOrNull()
+            val vVal = tagEdgeV.toIntOrNull()
+            if (uVal == null || vVal == null) {
+                message = "Meet vanaf rand: vul geldige mm-afstanden in voor beide randen."
+                return
+            }
+            val measuredPoint = tagEdgeOffsetToCenter(
+                plane = selectedTagPlane,
+                uReference = tagEdgeURef,
+                uValueMm = uVal,
+                vReference = tagEdgeVRef,
+                vValueMm = vVal,
+                dimensionsMm = project.dimensionsMm
             )
-            message = "Tag niet opgeslagen: meet-XYZ ${operatorPosition.toReadableMm()} ligt niet op het " +
-                "gekozen vlak ${selectedTagPlane.shortLabel}. Kies het juiste vlak of corrigeer de meet-XYZ."
+            val marginU = if (tagMeasuredToPaper) (tagPaperMarginU.toIntOrNull() ?: 0) else 0
+            val marginV = if (tagMeasuredToPaper) (tagPaperMarginV.toIntOrNull() ?: 0) else 0
+            inPlaneCenter = tagMeasuredPointToCenter(
+                measured = measuredPoint,
+                plane = selectedTagPlane,
+                sizeMm = size,
+                anchor = tagMeasurementAnchor,
+                dimensionsMm = project.dimensionsMm,
+                paperMarginUMm = marginU,
+                paperMarginVMm = marginV
+            )
+        } else {
+            // Anker-modus (handmatig) of grid/AR: het GEMETEN punt moet op het gekozen vlak liggen.
+            val operatorPosition = operatorPositionOrNull(tagX, tagY, tagZ)
+            if (operatorPosition == null) {
+                message = "Tag-ID, positie en formaat moeten getallen zijn."
+                return
+            }
+            val measuredBox = project.coordinateMapper().operatorToBox(operatorPosition)
+            if (!measuredBox.insideBox(project.dimensionsMm)) {
+                message = "Tagpositie valt buiten de trafo-box. Controleer origin/asrichting of meet-XYZ."
+                return
+            }
+            // Harde poort op het GEMETEN punt: het MOET exact op het gekozen vlak liggen. Zo kan een
+            // Rechts-tag nooit stilletjes als Voor worden opgeslagen (verkeerde rotatie → gespiegelde
+            // pose). De rotatie volgt dan eenduidig selectedTagPlane; geen stille vlak-herleiding.
+            if (!isPositionOnPlane(measuredBox, project.dimensionsMm, selectedTagPlane)) {
+                logFrameAudit(
+                    "save rejected=position-not-on-selected-plane selectedPlane=${selectedTagPlane.name} " +
+                        "box=(${measuredBox.x},${measuredBox.y},${measuredBox.z}) tag=$id"
+                )
+                message = "Tag niet opgeslagen: meet-XYZ ${operatorPosition.toReadableMm()} ligt niet op " +
+                    "het gekozen vlak ${selectedTagPlane.shortLabel}. Kies het juiste vlak of corrigeer de meet-XYZ."
+                return
+            }
+            // XYZ-handmatig (of grid/AR): operator-view anker → center. Papier-marge hoort alleen bij
+            // "Meet vanaf rand"; grid/AR forceren Center (geen dubbele offset).
+            val measurementAnchor = if (tagPlacementManual) tagMeasurementAnchor else TagMeasurementAnchor.Center
+            inPlaneCenter = tagMeasuredPointToCenter(
+                measured = measuredBox,
+                plane = selectedTagPlane,
+                sizeMm = size,
+                anchor = measurementAnchor,
+                dimensionsMm = project.dimensionsMm
+            )
+        }
+        // De tag-footprint (in-vlak center) moet binnen het vlak vallen; de buitenwaartse offset mag het
+        // normaal-component bewust buiten de box duwen en wordt daarom NA deze check toegepast.
+        if (!inPlaneCenter.insideBox(project.dimensionsMm)) {
+            message = "Tagpositie valt buiten de trafo-box. Controleer origin/asrichting of de offsets."
             return
         }
-        // Edge-naar-center: alleen bij HANDMATIGE invoer kan het gemeten punt de hoek linksonder zijn.
-        // Grid- en AR-afgeleide posities zijn al een center → forceer dan Center (geen dubbele offset).
-        // [Marker.positionMm] blijft zo altijd het tag-center; markerCornersInProjectFrame ongewijzigd.
-        val measurementAnchor = if (tagPlacementManual) tagMeasurementAnchor else TagMeasurementAnchor.Center
-        val boxPosition = tagMeasuredPointToCenter(
-            measured = measuredBox,
-            plane = selectedTagPlane,
-            sizeMm = size,
-            anchor = measurementAnchor,
-            dimensionsMm = project.dimensionsMm
-        )
+        val boxPosition = applyTagOutwardOffset(inPlaneCenter, selectedTagPlane, outwardOffsetMm)
+        // Voor meldingen: de meet-XYZ van het uiteindelijke center (werkt voor beide invoerwegen).
+        val operatorPosition = project.coordinateMapper().boxToOperator(boxPosition)
         val existing = project.markers.firstOrNull {
             it.id == id && it.isAprilTagCalibrationMarker()
         }
@@ -3078,6 +3219,15 @@ private data class StoredPlacementRay(
     val anchorAtPlacement: Transform3D,
     val referenceTagId: Int?,
     val placedAtMillis: Long
+)
+
+/** Resultaat van [WorkflowAppState.tagPlacementPreview]: het berekende tag-center (box + meet-XYZ),
+ *  of het in-vlak deel binnen het vlak valt, en een korte omschrijving van de toegepaste offsets. */
+internal data class WorkflowTagCenterPreview(
+    val center: MmPosition,
+    val operator: MmPosition,
+    val inPlane: Boolean,
+    val summary: String
 )
 
 internal fun MmPosition.insideBox(dimensions: MmPosition): Boolean =

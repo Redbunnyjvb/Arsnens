@@ -1,8 +1,12 @@
 package com.example.arsens
 
 import com.example.arsens.ar.TagAnchor
+import com.example.arsens.ar.TagAxisReference
 import com.example.arsens.ar.TagMeasurementAnchor
 import com.example.arsens.ar.TagPlane
+import com.example.arsens.ar.applyTagOutwardOffset
+import com.example.arsens.ar.tagEdgeOffsetToCenter
+import com.example.arsens.ar.tagGridDisplayUvToCanonicalUv
 import com.example.arsens.ar.tagMeasuredPointToCenter
 import com.example.arsens.ar.tagPositionFor
 import com.example.arsens.ar.tagRotationFor
@@ -109,18 +113,60 @@ class TagPlacementTest {
     }
 
     @Test
-    fun bottomLeftEdgeMeasurementMapsToCenterOffsetByHalfTag() {
-        // sizeMm=100 → half=50; gemeten = buitenste hoek linksonder → center +50 langs U én V.
+    fun bottomLeftAnchorMeasurementMapsToCenterOperatorView() {
+        // sizeMm=100 → half=50. "Linksonder" is OPERATOR-VIEW: de operator-linker-onder hoek. Op
+        // Front/Right/Top is scherm-links de canonieke −U, dus center = gemeten +50 langs U (en +50 V).
+        // Op Back/Left spiegelt U (scherm-links = canonieke +U), dus center = gemeten −50 langs U.
         val dims = MmPosition(1_640, 930, 940)
         val size = 100
-        fun edge(plane: TagPlane, measured: MmPosition) =
-            tagMeasuredPointToCenter(measured, plane, size, TagMeasurementAnchor.BottomLeftEdge, dims)
+        fun bottomLeft(plane: TagPlane, measured: MmPosition) =
+            tagMeasuredPointToCenter(measured, plane, size, TagMeasurementAnchor.BottomLeft, dims)
 
-        assertEquals(MmPosition(50, 0, 50), edge(TagPlane.Front, MmPosition(0, 0, 0)))
-        assertEquals(MmPosition(1_640, 50, 50), edge(TagPlane.Right, MmPosition(1_640, 0, 0)))
-        assertEquals(MmPosition(0, 50, 50), edge(TagPlane.Left, MmPosition(0, 0, 0)))
-        assertEquals(MmPosition(50, 50, 940), edge(TagPlane.Top, MmPosition(0, 0, 940)))
-        assertEquals(MmPosition(50, 930, 50), edge(TagPlane.Back, MmPosition(0, 930, 0)))
+        // Niet-gespiegeld: operator-linksonder = canonieke min-U, min-V hoek.
+        assertEquals(MmPosition(50, 0, 50), bottomLeft(TagPlane.Front, MmPosition(0, 0, 0)))
+        assertEquals(MmPosition(1_640, 50, 50), bottomLeft(TagPlane.Right, MmPosition(1_640, 0, 0)))
+        assertEquals(MmPosition(50, 50, 940), bottomLeft(TagPlane.Top, MmPosition(0, 0, 940)))
+        // Gespiegeld (Back/Left): operator-links = canonieke MAX-U → gemeten op hoge X resp. Y, center −50.
+        assertEquals(MmPosition(1_590, 930, 50), bottomLeft(TagPlane.Back, MmPosition(1_640, 930, 0)))
+        assertEquals(MmPosition(0, 880, 50), bottomLeft(TagPlane.Left, MmPosition(0, 930, 0)))
+    }
+
+    @Test
+    fun everyOperatorAnchorRecoversTheSameTagCenter() {
+        // Audit acceptatietest 6: dezelfde fysieke tag, gemeten op vier verschillende hoeken/randen,
+        // levert exact hetzelfde center. Front (niet-gespiegeld), size 100, center (500,0,300).
+        val dims = MmPosition(1_640, 930, 940)
+        val size = 100
+        fun c(plane: TagPlane, measured: MmPosition, anchor: TagMeasurementAnchor) =
+            tagMeasuredPointToCenter(measured, plane, size, anchor, dims)
+        val front = MmPosition(500, 0, 300)
+        assertEquals(front, c(TagPlane.Front, MmPosition(450, 0, 250), TagMeasurementAnchor.BottomLeft))
+        assertEquals(front, c(TagPlane.Front, MmPosition(550, 0, 250), TagMeasurementAnchor.BottomRight))
+        assertEquals(front, c(TagPlane.Front, MmPosition(450, 0, 350), TagMeasurementAnchor.TopLeft))
+        assertEquals(front, c(TagPlane.Front, MmPosition(550, 0, 350), TagMeasurementAnchor.TopRight))
+        assertEquals(front, c(TagPlane.Front, MmPosition(500, 0, 300), TagMeasurementAnchor.Center))
+        // Back (gespiegeld): operator-links = canonieke +X. Center (500,930,300).
+        val back = MmPosition(500, 930, 300)
+        assertEquals(back, c(TagPlane.Back, MmPosition(550, 930, 250), TagMeasurementAnchor.BottomLeft))
+        assertEquals(back, c(TagPlane.Back, MmPosition(450, 930, 250), TagMeasurementAnchor.BottomRight))
+        assertEquals(back, c(TagPlane.Back, MmPosition(550, 930, 350), TagMeasurementAnchor.TopLeft))
+        assertEquals(back, c(TagPlane.Back, MmPosition(450, 930, 350), TagMeasurementAnchor.TopRight))
+    }
+
+    @Test
+    fun paperMarginExtendsInwardAlongAnchorEdgesOnly() {
+        val dims = MmPosition(1_640, 930, 940)
+        val size = 100
+        // BottomLeft op Front: corrU=+50,corrV=+50 → marge +10/+5 in dezelfde (+U,+V) richting.
+        assertEquals(
+            MmPosition(510, 0, 305),
+            tagMeasuredPointToCenter(MmPosition(450, 0, 250), TagPlane.Front, size, TagMeasurementAnchor.BottomLeft, dims, 10, 5)
+        )
+        // BottomMiddle: op U gecentreerd (corrU=0) → marge-U genegeerd; alleen V-marge telt.
+        assertEquals(
+            MmPosition(500, 0, 305),
+            tagMeasuredPointToCenter(MmPosition(500, 0, 250), TagPlane.Front, size, TagMeasurementAnchor.BottomMiddle, dims, 10, 5)
+        )
     }
 
     @Test
@@ -138,13 +184,76 @@ class TagPlacementTest {
     }
 
     @Test
-    fun edgeMeasurementClampsCenterIntoTransformerBounds() {
-        // Tag in de uiterste hoek: het +half center valt buiten de box → geklemd op de rand.
+    fun anchorMeasurementClampsCenterIntoTransformerBounds() {
+        // Tag in de uiterste hoek: het +half center valt buiten de box → in-vlak geklemd op de rand.
         val dims = MmPosition(1_640, 930, 940)
         assertEquals(
             MmPosition(1_640, 0, 940),
-            tagMeasuredPointToCenter(MmPosition(1_640, 0, 940), TagPlane.Front, 100, TagMeasurementAnchor.BottomLeftEdge, dims)
+            tagMeasuredPointToCenter(MmPosition(1_640, 0, 940), TagPlane.Front, 100, TagMeasurementAnchor.BottomLeft, dims)
         )
+    }
+
+    @Test
+    fun gridDisplayUvMirrorsBackAndLeftOnlyMatchingTheTwoDMap() {
+        // Front/Right/Top 1-op-1; Back/Left spiegelen de horizontale (U) as; V nooit.
+        assertEquals(0.2f to 0.7f, tagGridDisplayUvToCanonicalUv(TagPlane.Front, 0.2f, 0.7f))
+        assertEquals(0.2f to 0.7f, tagGridDisplayUvToCanonicalUv(TagPlane.Right, 0.2f, 0.7f))
+        assertEquals(0.2f to 0.7f, tagGridDisplayUvToCanonicalUv(TagPlane.Top, 0.2f, 0.7f))
+        assertEquals(0.8f to 0.7f, tagGridDisplayUvToCanonicalUv(TagPlane.Back, 0.2f, 0.7f))
+        assertEquals(0.8f to 0.7f, tagGridDisplayUvToCanonicalUv(TagPlane.Left, 0.2f, 0.7f))
+    }
+
+    @Test
+    fun gridScreenLeftRightSavesPerOperatorView() {
+        // Audit acceptatietests 1–5: scherm-links/rechts → de juiste box-rand per vlak (operator-view).
+        fun cell(plane: TagPlane, displayU: Float): MmPosition {
+            val (u, v) = tagGridDisplayUvToCanonicalUv(plane, displayU, 0.5f)
+            return tagPositionFor(plane, u, v, dimensions)
+        }
+        // Front: links→X=0, rechts→X=max.
+        assertEquals(0, cell(TagPlane.Front, 0f).x)
+        assertEquals(10_000, cell(TagPlane.Front, 1f).x)
+        // Back: links→X=max, rechts→X=0.
+        assertEquals(10_000, cell(TagPlane.Back, 0f).x)
+        assertEquals(0, cell(TagPlane.Back, 1f).x)
+        // Left: links→Y=max (achter), rechts→Y=0 (voor).
+        assertEquals(5_000, cell(TagPlane.Left, 0f).y)
+        assertEquals(0, cell(TagPlane.Left, 1f).y)
+        // Right: links→Y=0 (voor), rechts→Y=max (achter).
+        assertEquals(0, cell(TagPlane.Right, 0f).y)
+        assertEquals(5_000, cell(TagPlane.Right, 1f).y)
+    }
+
+    @Test
+    fun edgeOffsetModeAddsFromMinSubtractsFromMaxAndPassesManual() {
+        val dims = MmPosition(1_640, 930, 940)
+        // Front U=X(max1640) V=Z(max940): vanaf min X=200, vanaf max Z=940−100=840, vast Y=0.
+        assertEquals(
+            MmPosition(200, 0, 840),
+            tagEdgeOffsetToCenter(TagPlane.Front, TagAxisReference.FromMin, 200, TagAxisReference.FromMax, 100, dims)
+        )
+        // Left U=Y(max930) V=Z: vanaf max Y=930−300=630, vanaf min Z=200, vast X=0.
+        assertEquals(
+            MmPosition(0, 630, 200),
+            tagEdgeOffsetToCenter(TagPlane.Left, TagAxisReference.FromMax, 300, TagAxisReference.FromMin, 200, dims)
+        )
+        // Right U=Y handmatig=400, V=Z handmatig=500, vast X=1640.
+        assertEquals(
+            MmPosition(1_640, 400, 500),
+            tagEdgeOffsetToCenter(TagPlane.Right, TagAxisReference.Manual, 400, TagAxisReference.Manual, 500, dims)
+        )
+    }
+
+    @Test
+    fun outwardOffsetShiftsOnlyTheNormalAxisAndIsNotClamped() {
+        // Buitenwaarts: Front −Y, Back +Y, Links −X, Rechts +X, Boven +Z. Mag buiten de box (rib/pijp).
+        assertEquals(MmPosition(500, -30, 300), applyTagOutwardOffset(MmPosition(500, 0, 300), TagPlane.Front, 30))
+        assertEquals(MmPosition(500, 960, 300), applyTagOutwardOffset(MmPosition(500, 930, 300), TagPlane.Back, 30))
+        assertEquals(MmPosition(-30, 400, 300), applyTagOutwardOffset(MmPosition(0, 400, 300), TagPlane.Left, 30))
+        assertEquals(MmPosition(1_670, 400, 300), applyTagOutwardOffset(MmPosition(1_640, 400, 300), TagPlane.Right, 30))
+        assertEquals(MmPosition(500, 400, 970), applyTagOutwardOffset(MmPosition(500, 400, 940), TagPlane.Top, 30))
+        // Negatief = naar binnen.
+        assertEquals(MmPosition(500, 30, 300), applyTagOutwardOffset(MmPosition(500, 0, 300), TagPlane.Front, -30))
     }
 
     @Test

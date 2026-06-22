@@ -99,6 +99,7 @@ import com.example.arsens.ar.ArCoreCameraPanel
 import com.example.arsens.ar.ArTrackingStatus
 import com.example.arsens.ar.PlaneHit
 import com.example.arsens.ar.TagAnchor
+import com.example.arsens.ar.TagAxisReference
 import com.example.arsens.ar.TagMeasurementAnchor
 import com.example.arsens.ar.TagPlane
 import com.example.arsens.ar.estimateCursorOnReferenceSurface
@@ -110,6 +111,7 @@ import com.example.arsens.ar.projectPointToImage
 import com.example.arsens.ar.projectPositionToScreen
 import com.example.arsens.ar.ScreenPointPx
 import com.example.arsens.ar.tagPlacementFor
+import com.example.arsens.ar.tagPlaneMirrorsOperatorU
 import com.example.arsens.ar.tagRotationFor
 import com.example.arsens.data.CoordinateFrameSettings
 import com.example.arsens.data.FloatVector
@@ -263,83 +265,85 @@ internal fun WorkflowTagSetupPanel(state: WorkflowAppState) {
                 else -> SensorStatus.Pending
             }
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                WorkflowSheetSectionLabel("Vlak selecteren")
-                WorkflowPlaneCross(
-                    selectedPlane = state.selectedTagPlane,
-                    onPlaneSelected = state::selectTagPlane,
-                    compact = true
+        // Vlak selecteren — ongewijzigd component (het knoppen-kruis), nu op een eigen volle rij.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            WorkflowSheetSectionLabel("Vlak selecteren")
+            WorkflowPlaneCross(
+                selectedPlane = state.selectedTagPlane,
+                onPlaneSelected = state::selectTagPlane,
+                compact = true
+            )
+        }
+        // Plaatsing methode — 3-weg. Grid en XYZ blijven precies wat ze waren; "Meet vanaf rand" is de
+        // nieuwe veldvriendelijke flow. Mapt op de bestaande (manual, edge)-vlaggen.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            WorkflowSheetSectionLabel("Plaatsing methode")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                WorkflowToggleButton(
+                    selected = !state.tagPlacementManual,
+                    text = "Grid 7×7",
+                    onClick = { state.chooseTagPlacementManual(false) },
+                    modifier = Modifier.weight(1f).height(40.dp)
+                )
+                WorkflowToggleButton(
+                    selected = state.tagPlacementManual && state.tagEdgeOffsetMode,
+                    text = "Vanaf rand",
+                    onClick = {
+                        state.chooseTagPlacementManual(true)
+                        state.chooseTagEdgeOffsetMode(true)
+                    },
+                    modifier = Modifier.weight(1f).height(40.dp)
+                )
+                WorkflowToggleButton(
+                    selected = state.tagPlacementManual && !state.tagEdgeOffsetMode,
+                    text = "XYZ",
+                    onClick = {
+                        state.chooseTagPlacementManual(true)
+                        state.chooseTagEdgeOffsetMode(false)
+                    },
+                    modifier = Modifier.weight(1f).height(40.dp)
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Toggle in dezelfde knopstijl: raster stuurt de coördinaten, óf handmatige invoer
-                // blijft staan. Eén tonig — zelfde WorkflowToggleButton als elders.
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    WorkflowToggleButton(
-                        selected = !state.tagPlacementManual,
-                        text = "Grid",
-                        onClick = { state.chooseTagPlacementManual(false) },
-                        modifier = Modifier.weight(1f).height(40.dp)
-                    )
-                    WorkflowToggleButton(
-                        selected = state.tagPlacementManual,
-                        text = "Handmatig",
-                        onClick = { state.chooseTagPlacementManual(true) },
-                        modifier = Modifier.weight(1f).height(40.dp)
-                    )
-                }
-                if (state.tagPlacementManual) {
-                    Text(
-                        "Handmatig: vul X/Y/Z hieronder in. Het vlak links bepaalt alleen de rotatie.",
-                        color = Color.White.copy(alpha = 0.66f),
-                        fontSize = 12.sp
-                    )
-                } else {
+        }
+        when {
+            // GRID — onveranderd: het 7×7-raster + de X/Y/Z-velden eronder (werkt goed, blijft staan).
+            !state.tagPlacementManual -> {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val currentBox = state.currentTagBoxPositionOrNull()
                     WorkflowTagPlacementGrid(
                         cellSelected = { u, v -> currentBox != null && currentBox == state.tagCellBoxPosition(u, v) },
                         onCellSelected = state::selectTagGridCell
                     )
+                    WorkflowSheetSectionLabel("Coördinaten (mm) — uit grid")
+                    WorkflowTagXyzFields(state)
                 }
             }
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            WorkflowSheetSectionLabel(
-                if (state.tagPlacementManual) "Coördinaten (mm)" else "Coördinaten (mm) — uit grid"
-            )
-            // Gemeten-punt-keuze: alleen bij handmatige invoer. Grid/AR leveren al een center.
-            if (state.tagPlacementManual) {
-                Text("Gemeten punt", color = Color.White.copy(alpha = 0.66f), fontSize = 12.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    WorkflowToggleButton(
-                        selected = state.tagMeasurementAnchor == TagMeasurementAnchor.Center,
-                        text = "Midden",
-                        onClick = { state.chooseTagMeasurementAnchor(TagMeasurementAnchor.Center) },
-                        modifier = Modifier.weight(1f).height(40.dp)
-                    )
-                    WorkflowToggleButton(
-                        selected = state.tagMeasurementAnchor == TagMeasurementAnchor.BottomLeftEdge,
-                        text = "Linksonder rand",
-                        onClick = { state.chooseTagMeasurementAnchor(TagMeasurementAnchor.BottomLeftEdge) },
-                        modifier = Modifier.weight(1f).height(40.dp)
-                    )
-                }
-                if (state.tagMeasurementAnchor == TagMeasurementAnchor.BottomLeftEdge) {
+            // MEET VANAF RAND — de nieuwe veldvriendelijke flow (fysieke randnamen + 2D-vlakpreview).
+            state.tagEdgeOffsetMode -> WorkflowTagMeasureFromEdges(state)
+            // XYZ HANDMATIG / debug — vrije X/Y/Z + operator-view anker + buitenwaartse offset.
+            else -> {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "X/Y/Z = buitenste hoek linksonder van de tag; het opgeslagen midden ligt een halve " +
-                            "tag naar binnen langs beide vlak-assen.",
+                        "Welk punt van de tag is je X/Y/Z? (scherm-aanzicht, alsof je vóór het vlak staat)",
                         color = Color.White.copy(alpha = 0.66f),
                         fontSize = 12.sp
                     )
+                    WorkflowTagMeasurementAnchorPad(
+                        selected = state.tagMeasurementAnchor,
+                        onSelected = state::chooseTagMeasurementAnchor
+                    )
+                    WorkflowSheetSectionLabel("Coördinaten (mm)")
+                    WorkflowTagXyzFields(state)
+                    WorkflowNumberField(
+                        "Buiten oppervlak (mm)",
+                        state.tagOutwardOffset,
+                        { state.tagOutwardOffset = it },
+                        Modifier.fillMaxWidth()
+                    )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                WorkflowNumberField("X (mm)", state.tagX, { state.tagX = it }, Modifier.weight(1f))
-                WorkflowNumberField("Y (mm)", state.tagY, { state.tagY = it }, Modifier.weight(1f))
-                WorkflowNumberField("Z (mm)", state.tagZ, { state.tagZ = it }, Modifier.weight(1f))
-            }
         }
+        WorkflowTagOffsetPreview(state)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             WorkflowSheetSectionLabel("Gerelateerde tags (${tags.size})")
             if (tags.isEmpty()) {
@@ -408,6 +412,328 @@ internal fun WorkflowTagPlacementGrid(
                 }
             }
         }
+    }
+}
+
+/** De drie meet-X/Y/Z-velden (operatorframe) — gedeeld door grid- en XYZ-handmatig-modus. */
+@Composable
+internal fun WorkflowTagXyzFields(state: WorkflowAppState) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        WorkflowNumberField("X (mm)", state.tagX, { state.tagX = it }, Modifier.weight(1f))
+        WorkflowNumberField("Y (mm)", state.tagY, { state.tagY = it }, Modifier.weight(1f))
+        WorkflowNumberField("Z (mm)", state.tagZ, { state.tagZ = it }, Modifier.weight(1f))
+    }
+}
+
+/** 3×3 operator-view ankerpad: waar op de tag de operator de X/Y/Z mat (scherm-aanzicht). De
+ *  links/rechts-spiegeling op Achter/Links zit in [tagMeasuredPointToCenter]. */
+@Composable
+internal fun WorkflowTagMeasurementAnchorPad(
+    selected: TagMeasurementAnchor,
+    onSelected: (TagMeasurementAnchor) -> Unit
+) {
+    val rows = listOf(
+        listOf(TagMeasurementAnchor.TopLeft, TagMeasurementAnchor.TopMiddle, TagMeasurementAnchor.TopRight),
+        listOf(TagMeasurementAnchor.LeftMiddle, TagMeasurementAnchor.Center, TagMeasurementAnchor.RightMiddle),
+        listOf(TagMeasurementAnchor.BottomLeft, TagMeasurementAnchor.BottomMiddle, TagMeasurementAnchor.BottomRight)
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        rows.forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                row.forEach { anchor ->
+                    WorkflowToggleButton(
+                        selected = selected == anchor,
+                        text = anchor.shortUiLabel(),
+                        onClick = { onSelected(anchor) },
+                        modifier = Modifier.weight(1f).height(40.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+internal fun TagMeasurementAnchor.shortUiLabel(): String = when (this) {
+    TagMeasurementAnchor.TopLeft -> "LB"
+    TagMeasurementAnchor.TopMiddle -> "B"
+    TagMeasurementAnchor.TopRight -> "RB"
+    TagMeasurementAnchor.LeftMiddle -> "L"
+    TagMeasurementAnchor.Center -> "M"
+    TagMeasurementAnchor.RightMiddle -> "R"
+    TagMeasurementAnchor.BottomLeft -> "LO"
+    TagMeasurementAnchor.BottomMiddle -> "O"
+    TagMeasurementAnchor.BottomRight -> "RO"
+}
+
+/** Eén fysieke rand-keuze op het gekozen vlak (operator-view label) en de canonieke as-referentie
+ *  ([TagAxisReference]) die erbij hoort. */
+private data class TagEdgeOption(val label: String, val reference: TagAxisReference)
+
+/** De twee horizontale rand-keuzes (operator-view: eerste = scherm-links) per vlak. */
+private fun tagFaceHorizontalEdges(plane: TagPlane): Pair<TagEdgeOption, TagEdgeOption> = when (plane) {
+    TagPlane.Front -> TagEdgeOption("Links", TagAxisReference.FromMin) to TagEdgeOption("Rechts", TagAxisReference.FromMax)
+    TagPlane.Back -> TagEdgeOption("Links", TagAxisReference.FromMax) to TagEdgeOption("Rechts", TagAxisReference.FromMin)
+    TagPlane.Left, TagPlane.Right -> TagEdgeOption("Voor", TagAxisReference.FromMin) to TagEdgeOption("Achter", TagAxisReference.FromMax)
+    TagPlane.Top -> TagEdgeOption("Links", TagAxisReference.FromMin) to TagEdgeOption("Rechts", TagAxisReference.FromMax)
+}
+
+/** De twee verticale (of diepte, op Boven) rand-keuzes (eerste = onder/voor) per vlak. */
+private fun tagFaceVerticalEdges(plane: TagPlane): Pair<TagEdgeOption, TagEdgeOption> = when (plane) {
+    TagPlane.Top -> TagEdgeOption("Voor", TagAxisReference.FromMin) to TagEdgeOption("Achter", TagAxisReference.FromMax)
+    else -> TagEdgeOption("Onder", TagAxisReference.FromMin) to TagEdgeOption("Boven", TagAxisReference.FromMax)
+}
+
+private fun tagFaceHorizontalLabel(plane: TagPlane): String = when (plane) {
+    TagPlane.Front, TagPlane.Back, TagPlane.Top -> "Horizontaal (X)"
+    TagPlane.Left, TagPlane.Right -> "Horizontaal (Y)"
+}
+
+private fun tagFaceVerticalLabel(plane: TagPlane): String =
+    if (plane == TagPlane.Top) "Diepte (Y)" else "Verticaal (Z)"
+
+/** Korte oriëntatie-hint per vlak (zoals in de mockup): waar de operator staat. */
+internal fun tagFaceOrientationHint(plane: TagPlane): String = when (plane) {
+    TagPlane.Front -> "Je staat vóór de transformator en kijkt naar het voorvlak."
+    TagPlane.Back -> "Je staat achter de transformator en kijkt naar het achtervlak."
+    TagPlane.Left -> "Je kijkt naar de linker zijkant van de transformator."
+    TagPlane.Right -> "Je kijkt naar de rechter zijkant van de transformator."
+    TagPlane.Top -> "Je kijkt van boven op de transformator."
+}
+
+/** De uit de gekozen randen afgeleide tag-hoek (operator-view): scherm-links+onder = Linksonder, enz.
+ *  Default voor "Tag hoek"/"Papier hoek" zodat de operator niet apart hoeft te kiezen. */
+private fun inferredCornerAnchor(state: WorkflowAppState): TagMeasurementAnchor {
+    val plane = state.selectedTagPlane
+    val leftIsSelected = state.tagEdgeURef == tagFaceHorizontalEdges(plane).first.reference
+    val bottomIsSelected = state.tagEdgeVRef == tagFaceVerticalEdges(plane).first.reference
+    return when {
+        leftIsSelected && bottomIsSelected -> TagMeasurementAnchor.BottomLeft
+        !leftIsSelected && bottomIsSelected -> TagMeasurementAnchor.BottomRight
+        leftIsSelected && !bottomIsSelected -> TagMeasurementAnchor.TopLeft
+        else -> TagMeasurementAnchor.TopRight
+    }
+}
+
+/**
+ * "Meet vanaf rand" — veldvriendelijke plaatsing: fysieke randnamen + afstanden + 2D-vlakpreview +
+ * wat-heb-je-gemeten + optionele papier/buitenwaartse offset. Rekent via dezelfde pure helpers als het
+ * opslaan ([tagEdgeOffsetToCenter] → [tagMeasuredPointToCenter] → [applyTagOutwardOffset]); het
+ * canonieke frame en de AR-pose-keten blijven ongemoeid.
+ */
+@Composable
+internal fun WorkflowTagMeasureFromEdges(state: WorkflowAppState) {
+    val plane = state.selectedTagPlane
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(tagFaceOrientationHint(plane), color = Color.White.copy(alpha = 0.66f), fontSize = 12.sp)
+        WorkflowTagFacePreview(state)
+        val (hFirst, hSecond) = tagFaceHorizontalEdges(plane)
+        WorkflowTagEdgeRow(
+            title = tagFaceHorizontalLabel(plane),
+            first = hFirst,
+            second = hSecond,
+            selected = state.tagEdgeURef,
+            onSelected = state::chooseTagEdgeURef,
+            value = state.tagEdgeU,
+            onValue = { state.tagEdgeU = it }
+        )
+        val (vFirst, vSecond) = tagFaceVerticalEdges(plane)
+        WorkflowTagEdgeRow(
+            title = tagFaceVerticalLabel(plane),
+            first = vFirst,
+            second = vSecond,
+            selected = state.tagEdgeVRef,
+            onSelected = state::chooseTagEdgeVRef,
+            value = state.tagEdgeV,
+            onValue = { state.tagEdgeV = it }
+        )
+        WorkflowSheetSectionLabel("Wat heb je gemeten?")
+        val inferred = inferredCornerAnchor(state)
+        val isCenter = state.tagMeasurementAnchor == TagMeasurementAnchor.Center
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            WorkflowToggleButton(
+                selected = isCenter,
+                text = "Midden",
+                onClick = {
+                    state.chooseTagMeasurementAnchor(TagMeasurementAnchor.Center)
+                    state.chooseTagMeasuredToPaper(false)
+                },
+                modifier = Modifier.weight(1f).height(40.dp)
+            )
+            WorkflowToggleButton(
+                selected = !isCenter && !state.tagMeasuredToPaper,
+                text = "Tag hoek",
+                onClick = {
+                    if (state.tagMeasurementAnchor == TagMeasurementAnchor.Center) state.chooseTagMeasurementAnchor(inferred)
+                    state.chooseTagMeasuredToPaper(false)
+                },
+                modifier = Modifier.weight(1f).height(40.dp)
+            )
+            WorkflowToggleButton(
+                selected = !isCenter && state.tagMeasuredToPaper,
+                text = "Papier",
+                onClick = {
+                    if (state.tagMeasurementAnchor == TagMeasurementAnchor.Center) state.chooseTagMeasurementAnchor(inferred)
+                    state.chooseTagMeasuredToPaper(true)
+                },
+                modifier = Modifier.weight(1f).height(40.dp)
+            )
+        }
+        if (!isCenter) {
+            Text("Kies de hoek op dit vlak (scherm-aanzicht)", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+            WorkflowTagMeasurementAnchorPad(
+                selected = state.tagMeasurementAnchor,
+                onSelected = state::chooseTagMeasurementAnchor
+            )
+        }
+        if (!isCenter && state.tagMeasuredToPaper) {
+            WorkflowSheetSectionLabel("Papier / witruimte tot tag")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                WorkflowNumberField("Horizontaal (mm)", state.tagPaperMarginU, { state.tagPaperMarginU = it }, Modifier.weight(1f))
+                WorkflowNumberField("Verticaal (mm)", state.tagPaperMarginV, { state.tagPaperMarginV = it }, Modifier.weight(1f))
+            }
+        }
+        WorkflowNumberField(
+            "Buiten oppervlak (mm)",
+            state.tagOutwardOffset,
+            { state.tagOutwardOffset = it },
+            Modifier.fillMaxWidth()
+        )
+    }
+}
+
+/** Eén as-rij in "Meet vanaf rand": titel + twee fysieke randknoppen ("Vanaf …") + afstandsveld. */
+@Composable
+private fun WorkflowTagEdgeRow(
+    title: String,
+    first: TagEdgeOption,
+    second: TagEdgeOption,
+    selected: TagAxisReference,
+    onSelected: (TagAxisReference) -> Unit,
+    value: String,
+    onValue: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Vanaf", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+            WorkflowToggleButton(
+                selected = selected == first.reference,
+                text = first.label,
+                onClick = { onSelected(first.reference) },
+                modifier = Modifier.weight(1f).height(38.dp)
+            )
+            WorkflowToggleButton(
+                selected = selected == second.reference,
+                text = second.label,
+                onClick = { onSelected(second.reference) },
+                modifier = Modifier.weight(1f).height(38.dp)
+            )
+        }
+        WorkflowNumberField("Afstand (mm)", value, onValue, Modifier.fillMaxWidth())
+    }
+}
+
+private data class TagFaceLabels(val top: String, val bottom: String, val left: String, val right: String)
+
+private fun tagFacePreviewLabels(plane: TagPlane): TagFaceLabels = when (plane) {
+    TagPlane.Front -> TagFaceLabels("Boven (Z max)", "Onder (Z 0)", "Links (X 0)", "Rechts (X max)")
+    TagPlane.Back -> TagFaceLabels("Boven (Z max)", "Onder (Z 0)", "Links (X max)", "Rechts (X 0)")
+    TagPlane.Left -> TagFaceLabels("Boven (Z max)", "Onder (Z 0)", "Achter (Y max)", "Voor (Y 0)")
+    TagPlane.Right -> TagFaceLabels("Boven (Z max)", "Onder (Z 0)", "Voor (Y 0)", "Achter (Y max)")
+    TagPlane.Top -> TagFaceLabels("Achter (Y max)", "Voor (Y 0)", "Links (X 0)", "Rechts (X max)")
+}
+
+/** Eenvoudige 2D-vlakpreview (GEEN camera): rechthoek met fysieke randlabels + een dradenkruis op de
+ *  berekende tag-positie. Operator-view, gelijk aan het 7×7-raster en de 2D-kaart. */
+@Composable
+internal fun WorkflowTagFacePreview(state: WorkflowAppState) {
+    val plane = state.selectedTagPlane
+    val dims = state.project.dimensionsMm
+    val labels = tagFacePreviewLabels(plane)
+    val center = state.tagPlacementPreview()?.center
+    val uMax = (if (plane == TagPlane.Left || plane == TagPlane.Right) dims.y else dims.x).coerceAtLeast(1)
+    val vMax = (if (plane == TagPlane.Top) dims.y else dims.z).coerceAtLeast(1)
+    val uCoord = when (plane) {
+        TagPlane.Left, TagPlane.Right -> center?.y
+        else -> center?.x
+    }
+    val vCoord = if (plane == TagPlane.Top) center?.y else center?.z
+    val uFrac = ((uCoord ?: (uMax / 2)).toFloat() / uMax).coerceIn(0f, 1f)
+    val vFrac = ((vCoord ?: (vMax / 2)).toFloat() / vMax).coerceIn(0f, 1f)
+    val screenX = if (tagPlaneMirrorsOperatorU(plane)) 1f - uFrac else uFrac
+    val screenY = 1f - vFrac
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 54.dp, vertical = 18.dp)
+        ) {
+            drawRoundRect(
+                color = ArSensBlue.copy(alpha = 0.85f),
+                cornerRadius = CornerRadius(10f, 10f),
+                style = Stroke(width = 2.5f)
+            )
+            val cx = screenX * size.width
+            val cy = screenY * size.height
+            drawLine(Color.White.copy(alpha = 0.25f), Offset(0f, cy), Offset(size.width, cy), strokeWidth = 1.2f)
+            drawLine(Color.White.copy(alpha = 0.25f), Offset(cx, 0f), Offset(cx, size.height), strokeWidth = 1.2f)
+            drawCircle(ArSensBlue, radius = 7f, center = Offset(cx, cy))
+            drawCircle(Color.White, radius = 3f, center = Offset(cx, cy))
+        }
+        Text(labels.top, Modifier.align(Alignment.TopCenter), color = ArSensBlue, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+        Text(labels.bottom, Modifier.align(Alignment.BottomCenter), color = ArSensBlue, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+        Text(labels.left, Modifier.align(Alignment.CenterStart), color = ArSensBlue, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+        Text(labels.right, Modifier.align(Alignment.CenterEnd), color = ArSensBlue, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+/** Resultaat-kaart: het berekende tag-MIDDEN als X/Y/Z (box-mm) + de toegepaste offsets. Zelfde
+ *  rekenpad als opslaan ([WorkflowAppState.tagPlacementPreview]). */
+@Composable
+internal fun WorkflowTagOffsetPreview(state: WorkflowAppState) {
+    val preview = state.tagPlacementPreview() ?: return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Resultaat — tag-midden", color = Color.White.copy(alpha = 0.66f), fontSize = 12.sp)
+        Row(modifier = Modifier.fillMaxWidth()) {
+            WorkflowTagResultAxis("X", preview.center.x, Modifier.weight(1f))
+            WorkflowTagResultAxis("Y", preview.center.y, Modifier.weight(1f))
+            WorkflowTagResultAxis("Z", preview.center.z, Modifier.weight(1f))
+        }
+        Text(
+            "${state.selectedTagPlane.shortLabel} · ${preview.summary}",
+            color = Color.White.copy(alpha = 0.6f),
+            fontSize = 11.sp
+        )
+        if (!preview.inPlane) {
+            Text(
+                "Let op: het in-vlak midden valt buiten dit vlak — controleer de waarden.",
+                color = Color(0xFFE6A23C),
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun WorkflowTagResultAxis(axis: String, valueMm: Int, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(axis, color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("$valueMm mm", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
     }
 }
 

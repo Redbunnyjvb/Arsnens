@@ -19,6 +19,14 @@ data class ProjectSummary(
     val updatedAtMillis: Long
 )
 
+/** Uitkomst van [LocalProjectRepository.importProjectPackage]: het aangemaakte project plus hoeveel
+ *  3D-modellen werden uitgepakt en welke gerefereerde modellen ontbraken in het bestand. */
+data class ImportResult(
+    val project: Project,
+    val modelsWritten: Int,
+    val missingModels: List<String>
+)
+
 class LocalProjectRepository(private val context: Context) {
     private val appContext = context.applicationContext
     private var activeProjectId: String = loadActiveProjectId()
@@ -83,6 +91,60 @@ class LocalProjectRepository(private val context: Context) {
             )
         )
         return project
+    }
+
+    /**
+     * Importeert een door de PC-editor geëxporteerd pakket (.zip met `project.json` + `models/`) of
+     * een los `project.json` als NIEUW project, en maakt het actief. Pakt de modellen uit naar de
+     * projectmap (`models/`), schrijft `project.json` + een lege installatielog. Overschrijft nooit
+     * een bestaand project — [uniqueProjectId] geeft bij naambotsing "naam-2", enz. Zwaar werk
+     * (uitpakken, modellen wegschrijven): roep dit op een achtergrond-dispatcher aan.
+     *
+     * Modellen worden eerst naar een tijdelijke map gestreamd omdat `project.json` (en dus de
+     * projectnaam/-map) pas ná de model-entries in de zip komt; daarna verhuizen ze naar de projectmap.
+     */
+    fun importProjectPackage(uri: Uri): ImportResult {
+        val tmpDir = File(JsonProjectStore.arsensDir(appContext), ".import_tmp_${System.currentTimeMillis()}")
+        tmpDir.mkdirs()
+        try {
+            val parsed = appContext.contentResolver.openInputStream(uri)?.use { input ->
+                ProjectPackageImporter.parse(input) { fileName, entryStream ->
+                    File(tmpDir, fileName).outputStream().use { output -> entryStream.copyTo(output) }
+                }
+            } ?: error("Bestand kon niet geopend worden.")
+
+            val project = parsed.project
+            val id = uniqueProjectId(project.projectName)
+            activeProjectId = id
+            saveActiveProjectId(id)
+
+            val dir = projectDir(id).also { it.mkdirs() }
+            JsonProjectStore.saveProjectToJson(dir, project)
+            JsonProjectStore.saveInstallationLog(
+                dir,
+                InstallationLog(
+                    projectName = project.projectName,
+                    startedAt = nowIso(),
+                    operator = "Operator naam",
+                    results = emptyList()
+                )
+            )
+
+            val modelsDir = File(dir, MODELS_SUBDIR).also { it.mkdirs() }
+            var written = 0
+            tmpDir.listFiles()?.forEach { src ->
+                val dest = File(modelsDir, src.name)
+                val moved = src.renameTo(dest) || runCatching {
+                    src.copyTo(dest, overwrite = true)
+                    src.delete()
+                    true
+                }.getOrDefault(false)
+                if (moved) written++
+            }
+            return ImportResult(project, written, parsed.missingModels)
+        } finally {
+            tmpDir.deleteRecursively()
+        }
     }
 
     fun selectProject(id: String): Project? {

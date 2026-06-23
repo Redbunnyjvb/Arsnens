@@ -171,6 +171,13 @@ internal fun WorkflowProjectPickerScreen(state: WorkflowAppState) {
     var showCreateForm by remember { mutableStateOf(state.projects.isEmpty()) }
     var showAllProjects by remember { mutableStateOf(false) }
     val visibleProjects = if (showAllProjects) state.projects else state.projects.take(4)
+    val scope = rememberCoroutineScope()
+    // "Project openen" → SAF-bestandskiezer: importeert een PC-export (.zip-pakket of project.json)
+    // als nieuw project. MIME's ruim gehouden (sommige bestandsmanagers labelen .zip verkeerd);
+    // de importer herkent het type aan de inhoud, niet aan extensie/MIME.
+    val importPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { state.importProjectFromUri(it, scope) } }
 
     Box(
         modifier = Modifier
@@ -215,12 +222,14 @@ internal fun WorkflowProjectPickerScreen(state: WorkflowAppState) {
             item {
                 ArSensActionCard(
                     title = "Project openen",
-                    body = "Open een bestaand project",
+                    body = "Open een project uit een bestand (.zip / .json)",
                     icon = ArSensGlyph.Folder,
                     brush = Brush.linearGradient(listOf(ArSensTeal, Color(0xFF42C8C7))),
                     onClick = {
                         showCreateForm = false
-                        showAllProjects = true
+                        importPicker.launch(
+                            arrayOf("application/zip", "application/json", "application/octet-stream", "*/*")
+                        )
                     }
                 )
             }

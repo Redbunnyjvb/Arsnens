@@ -618,6 +618,44 @@ fun setDefaultTagSize(sizeMm: Int) {
         screen = WorkflowScreen.Start
     }
 
+    /** Importeert een PC-export (.zip-pakket of los project.json) als NIEUW project en opent het.
+     *  Zwaar werk (uitpakken + modellen wegschrijven) op de IO-dispatcher; daarna dezelfde nazorg als
+     *  [openProject]. Faalt zacht met een melding; een mislukte import laat het actieve project ongemoeid. */
+    fun importProjectFromUri(uri: Uri, scope: CoroutineScope) {
+        scope.launch {
+            message = "Project importeren…"
+            val result = runCatching {
+                withContext(Dispatchers.IO) { repository.importProjectPackage(uri) }
+            }.getOrElse { error ->
+                Log.w("ARSensImport", "Project-import mislukt", error)
+                message = "Importeren mislukt: ${error.message ?: "onbekende fout"}"
+                return@launch
+            }
+            project = result.project
+            syncDimensionsFromProject()
+            log = repository.loadLog(project.projectName)
+            // Verse meshes voor het nieuwe project: oude mesh-/AR-cache (op bestandsnaam) ongeldig maken.
+            stlMeshes = emptyMap()
+            stlArParts = null
+            stlArPartsKey = null
+            stlArDetailKey = null
+            resetArPoseState()
+            refreshProjects()
+            activeProjectUpdatedAtMillis = repository.activeProjectSummary()?.updatedAtMillis
+                ?: System.currentTimeMillis()
+            navHistory.clear()
+            screen = WorkflowScreen.Start
+            val summary = "Project geïmporteerd: ${project.projectName} — " +
+                "${project.sensors.size} sensoren, ${project.markers.size} tags, ${result.modelsWritten} 3D-delen"
+            message = if (result.missingModels.isEmpty()) {
+                summary
+            } else {
+                "$summary. Let op: ${result.missingModels.size} 3D-deel(en) ontbreken in het bestand " +
+                    "(${result.missingModels.joinToString()})."
+            }
+        }
+    }
+
     fun requestDeleteProject(summary: ProjectSummary) {
         confirmRequest = WorkflowConfirmRequest(
             title = "Project verwijderen?",

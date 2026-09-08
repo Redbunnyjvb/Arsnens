@@ -147,10 +147,19 @@ import kotlin.math.sin
 internal fun WorkflowSensorSheet(state: WorkflowAppState) {
     // Sensoren-paneel zoals de afbeelding: lijst van geplaatste sensoren met vlak + coördinaten en
     // bewerk/verwijder-knoppen, daaronder de teal "Plaats sensor"-knop.
-    val cursorReady = state.arCursorPosition != null &&
+    val cursorReady = state.sensorPlacementReady && state.arCursorPosition != null &&
         (state.arCursorSource == "surface" || state.arCursorSource == "depth")
     val sensors = state.project.sensors.sortedBy { it.order }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Hier komt een sensor", modifier = Modifier.weight(1f), color = Color.White)
+            Switch(checked = state.planSensorAtCursor, onCheckedChange = { state.planSensorAtCursor = it })
+        }
+        Text(
+            if (state.planSensorAtCursor) "Geplande plek: cirkel met straal ${state.sensorTolerance} mm."
+            else "Leg vast waar de sensor zit; een zichtbare sensor-tag wordt gekoppeld.",
+            color = Color.White.copy(alpha = 0.66f), fontSize = 13.sp
+        )
         if (sensors.isEmpty()) {
             Text(
                 "Nog geen sensoren geplaatst. Richt de cursor op het vlak en tik 'Plaats sensor'.",
@@ -163,14 +172,14 @@ internal fun WorkflowSensorSheet(state: WorkflowAppState) {
                     name = sensor.id.ifBlank { "Sensor ${sensor.order.toString().padStart(3, '0')}" },
                     plane = sensor.side.ifBlank { state.selectedTagPlane.cameraPlaneLabel() },
                     coords = workflowSheetCoords(sensor.positionMm),
-                    dotColor = ArSensTeal,
+                    dotColor = workflowStatusColor(sensor.status),
                     onEdit = { state.selectSensorForEdit(sensor) },
                     onDelete = { state.requestRemoveSensor(sensor) }
                 )
             }
         }
         WorkflowSheetPlaceButton(
-            label = "Plaats sensor",
+            label = if (state.planSensorAtCursor) "Hier komt de sensor" else "Sensor zit hier",
             color = ArSensTeal,
             enabled = cursorReady,
             onClick = {

@@ -47,9 +47,7 @@ data class Sensor(
     val toleranceMm: Int,
     val instruction: String,
     val status: SensorStatus = SensorStatus.Pending,
-    /** ID van de AprilTag die als referentie gebruikt werd bij plaatsing van deze sensor.
-     *  Als deze tag zichtbaar is, wordt ALLEEN deze pose gebruikt voor overlay-projectie —
-     *  zodat de sensor nooit verschuift wanneer een andere tag actief wordt. */
+    /** Referentietag bij plaatsing, voor traceerbaarheid. Alle overlays delen het wereldanker. */
     val referenceTagId: Int? = null,
     /** Onveranderlijke kwaliteits-/audit-snapshot van het LIVE-AR plaatsingsmoment (grade + ruwe
      *  signalen: reproj, jitter, motion, tag-context). Null bij voorbereide/2D-plaatsingen.

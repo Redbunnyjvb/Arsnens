@@ -116,6 +116,9 @@ import com.example.arsens.ar.TagPlane
 import com.example.arsens.ar.estimateCursorOnReferenceSurface
 import com.example.arsens.ar.estimateSurfaceAtPixel
 import com.example.arsens.ar.markerCornersInProjectFrame
+import com.example.arsens.ar.sensorTargetRing
+import com.example.arsens.ar.tagPlaneOutwardNormal
+import com.example.arsens.ar.nearestTankPlane
 import com.example.arsens.ar.projectPointToScreen
 import com.example.arsens.ar.projectPointWithFusedPoseToScreen
 import com.example.arsens.ar.ProjectPointMm
@@ -194,7 +197,13 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
     }
     // Sensoren ná het model tekenen, zodat geplaatste sensoren niet achter de AR-assembly wegvallen.
     if (state.showSensorOverlay) {
-        WorkflowSensorPointOverlay(state.project, state.overlayAprilTagResult)
+        val measuredById = state.log.results.associateBy { it.sensorId }
+        val displayedProject = state.project.copy(sensors = state.project.sensors.map { sensor ->
+            measuredById[sensor.id]?.takeIf { sensor.status != SensorStatus.Pending }?.let {
+                sensor.copy(positionMm = it.measuredPositionMm ?: sensor.positionMm)
+            } ?: sensor
+        })
+        WorkflowSensorPointOverlay(displayedProject, state.overlayAprilTagResult)
     }
     if (targetSensor != null) {
         WorkflowCurrentSensorTargetOverlay(targetSensor, state.project, state.overlayAprilTagResult)
@@ -1463,10 +1472,11 @@ internal fun WorkflowSensorPointOverlay(
             // ARCore-pose zodat sensoren blijven staan als hun tag even uit beeld is.
             val projected = projectSensorToScreen(sensor, project, result) ?: return@forEach
             val center = Offset(projected.xPx, projected.yPx)
+            if (sensor.status == SensorStatus.Pending) drawPlannedSensorRing(sensor, project, result)
             // Duidelijk leesbaar bovenop het (drukke, deels-dekkende) AR-model: donkere contrastrand,
             // felle kern, witte ring. Sensoren worden ná het model getekend (zie WorkflowCameraLayers).
             drawCircle(Color.Black.copy(alpha = 0.6f), radius = 12f, center = center)
-            drawCircle(Color(0xFF00E5FF), radius = 8f, center = center)
+            drawCircle(workflowStatusColor(sensor.status), radius = 8f, center = center)
             drawCircle(Color.White, radius = 12f, center = center, style = Stroke(width = 2.5f))
             val label = sensor.id
             val tw = labelPaint.measureText(label)
@@ -1478,6 +1488,24 @@ internal fun WorkflowSensorPointOverlay(
             drawContext.canvas.nativeCanvas.drawText(label, lx, baseline, labelPaint)
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlannedSensorRing(
+    sensor: Sensor, project: Project, result: AprilTagFrameResult
+) {
+    val plane = com.example.arsens.ar.TagPlane.entries.firstOrNull { it.name.equals(sensor.side, true) }
+        ?: nearestTankPlane(sensor.positionMm, project.dimensionsMm)
+    val points = sensorTargetRing(sensor.positionMm, tagPlaneOutwardNormal(plane), sensor.toleranceMm)
+        .map { projectPointViaTag(it, sensor.referenceTagId, result) }
+    if (points.isEmpty() || points.any { it == null }) return
+    val path = androidx.compose.ui.graphics.Path().apply {
+        points.forEachIndexed { i, p ->
+            if (i == 0) moveTo(p!!.xPx, p.yPx) else lineTo(p!!.xPx, p.yPx)
+        }
+        close()
+    }
+    drawPath(path, Color(0xFFFFB020).copy(alpha = 0.15f))
+    drawPath(path, Color(0xFFFFB020), style = Stroke(width = 3f))
 }
 
 @Composable
@@ -1494,7 +1522,8 @@ internal fun WorkflowCurrentSensorTargetOverlay(
             SensorStatus.Pending -> Color(0xFFFFB020)
             SensorStatus.Fail -> Color(0xFFD32F2F)
         }
-        drawCircle(color, radius = 34f, center = center, style = Stroke(width = 6f))
+        if (sensor.status == SensorStatus.Pending) drawPlannedSensorRing(sensor, project, result)
+        drawCircle(color, radius = 12f, center = center, style = Stroke(width = 3f))
         drawLine(color, Offset(center.x - 48f, center.y), Offset(center.x + 48f, center.y), strokeWidth = 5f, cap = StrokeCap.Round)
         drawLine(color, Offset(center.x, center.y - 48f), Offset(center.x, center.y + 48f), strokeWidth = 5f, cap = StrokeCap.Round)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1502,7 +1531,7 @@ internal fun WorkflowCurrentSensorTargetOverlay(
             textSize = 28f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        drawContext.canvas.nativeCanvas.drawText(sensor.id, center.x + 42f, center.y - 20f, paint)
+        drawContext.canvas.nativeCanvas.drawText(if (sensor.status == SensorStatus.Pending) "${sensor.id} · straal ${sensor.toleranceMm} mm" else sensor.id, center.x + 42f, center.y - 20f, paint)
     }
 }
 

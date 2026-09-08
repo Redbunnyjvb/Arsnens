@@ -492,7 +492,9 @@ private class ArCoreCameraRenderer(
                 ),
                 arFromCameraGlAtCapture = arFromCameraGlAtCapture,
                 imageToViewMapper = imageToViewMapper,
-                markerSignatures = markerSignatures
+                markerSignatures = markerSignatures,
+                capturedAtElapsedMillis = nowElapsed,
+                detectionSequence = frame.timestamp
             )
         } finally {
             image.close()
@@ -544,7 +546,10 @@ private class ArCoreCameraRenderer(
                 knownMarkers = frame.markers,
                 cameraIntrinsics = frame.intrinsics,
                 poseMode = tagPoseMode()
-            ).withScreenDetections(frame.imageToViewMapper)
+            ).withScreenDetections(frame.imageToViewMapper).copy(
+                capturedAtElapsedMillis = frame.capturedAtElapsedMillis,
+                detectionSequence = frame.detectionSequence
+            )
         } catch (error: Throwable) {
             AprilTagFrameResult(
                 imageWidth = frame.width,
@@ -604,7 +609,8 @@ private class ArCoreCameraRenderer(
             marker.rotationDeg.y,
             marker.rotationDeg.z,
             marker.active,
-            marker.poseWeight
+            marker.poseWeight,
+            tagPoseMode().name
         ).joinToString(",")
 
     private fun currentDisplayRotation(): Int {
@@ -625,69 +631,32 @@ private tailrec fun Context.findActivity(): Activity? =
         else -> null
     }
 
-private class ArCoreAprilTagFusion {
-    private var arFromTransformer: Transform3D? = null
-    private var lastTagCalibrationMillis: Long = 0
-    private var lastDetectionsMillis: Long = 0
-    private var lastDetections: List<AprilTagDetection> = emptyList()
-    private var lastScreenDetections: List<AprilTagDetection> = emptyList()
-    /** Laatst bekende individuele pose per tag, plus de bijbehorende beeld→scherm mapper.
-     *  Hiermee tekenen we sensoren/tags ELK frame via de EIGEN referentietag — ook tussen
-     *  (asynchrone) detecties door. Puur detectie-gedreven, geen ARCore-wereldfusie → geen drift
-     *  en geen verschuiving wanneer een andere tag in beeld komt. */
-    private var lastPosePerTag: Map<Int, TransformerPose> = emptyMap()
-    private var lastPoseMarkerIds: List<Int> = emptyList()
-    private var lastImageToViewMapper: ImageToViewMapper? = null
-    private var lastCameraIntrinsics: CameraIntrinsics? = null
-    private var lastReprojectionErrorPx: Float = 0f
-    private var previousArFromCameraGl: Transform3D? = null
-    private var wasArTracking: Boolean = false
-    private var needsFreshCalibration: Boolean = false
-    private var lastSingleCorrectionMarkerId: Int? = null
-    private var singleCorrectionStreak: Int = 0
-    private var pendingSingleReanchor: PendingSingleReanchor? = null
-    private var lastFusionLogKey: String = ""
-    private var lastFusionLogMillis: Long = 0L
-    // Stap 2: throttle-state voor de ARSensOverlayRoute debug-log.
-    private var lastOverlayRouteLogKey: String = ""
-    private var lastOverlayRouteLogMillis: Long = 0L
-    private val fallbackCameraGlFromCameraCv = Transform3D.cameraGlFromCameraCv()
-
-    private data class PendingSingleReanchor(
-        val markerIds: List<Int>,
-        val candidate: Transform3D,
-        val stableFrames: Int
-    )
-
-    private data class SingleReanchorUpdate(
-        val pendingFrames: Int? = null,
-        val candidateDeltaMm: Double? = null,
-        val candidateDeltaAngleDeg: Double? = null,
-        val confirmed: Boolean = false,
-        val rejected: Boolean = false
-    )
+internal class ArCoreAprilTagFusion {
+    private val anchorFilter = AnchorPoseFilter()
+    private var lastDetection = AprilTagFrameResult()
+    private var lastCalibrationMillis = 0L
+    private var lastReprojectionErrorPx = 0f
+    private var previousCamera: Transform3D? = null
+    private var wasTracking = false
+    private var relocalizing = false
+    private var anchorSettled = false
+    private var lastEvent: String? = null
+    private var lastReason: String? = null
+    private var lastProcessedSequence = 0L
+    private var captureArFromCameraCv: Transform3D? = null
 
     fun reset() {
-        arFromTransformer = null
-        lastTagCalibrationMillis = 0
-        lastDetectionsMillis = 0
-        lastDetections = emptyList()
-        lastScreenDetections = emptyList()
-        lastPosePerTag = emptyMap()
-        lastPoseMarkerIds = emptyList()
-        lastImageToViewMapper = null
-        lastCameraIntrinsics = null
-        lastReprojectionErrorPx = 0f
-        previousArFromCameraGl = null
-        wasArTracking = false
-        needsFreshCalibration = false
-        lastSingleCorrectionMarkerId = null
-        singleCorrectionStreak = 0
-        pendingSingleReanchor = null
-        lastFusionLogKey = ""
-        lastFusionLogMillis = 0L
-        lastOverlayRouteLogKey = ""
-        lastOverlayRouteLogMillis = 0L
+        anchorFilter.reset()
+        lastDetection = AprilTagFrameResult()
+        lastCalibrationMillis = 0L
+        previousCamera = null
+        wasTracking = false
+        relocalizing = false
+        anchorSettled = false
+        lastEvent = null
+        lastReason = null
+        lastProcessedSequence = 0L
+        captureArFromCameraCv = null
     }
 
     fun fuse(
@@ -699,560 +668,135 @@ private class ArCoreAprilTagFusion {
         projectionMatrixColumnMajor: FloatArray,
         arTracking: Boolean,
         displayWidth: Int,
-        displayHeight: Int
+        displayHeight: Int,
+        nowMillis: Long = SystemClock.elapsedRealtime()
     ): AprilTagFrameResult {
-        val now = SystemClock.elapsedRealtime()
-        // Beweging-tijdens-detectie: hoeveel de ARCore-camerapose verschoof tussen het grijpen van
-        // het camerabeeld (capture) en nu (verwerking/fusion). Voedt de plaatsingskwaliteit.
-        val motionDuringDetectionMm = tagArFromCameraGl?.distanceTo(currentArFromCameraGl)?.toFloat()
-        val motionDuringDetectionDeg = tagArFromCameraGl?.rotationAngleDegreesTo(currentArFromCameraGl)?.toFloat()
-        var fusionEvent: String? = null
-        var fusionReason: String? = null
-        fun recordFusionDecision(event: String, reason: String): String {
-            fusionEvent = event
-            fusionReason = reason
-            return reason
+        val previous = previousCamera
+        if (anchorFilter.anchor != null && ((!arTracking && wasTracking) ||
+                (arTracking && previous != null &&
+                    (previous.distanceTo(currentArFromCameraGl) > MAX_ARCORE_FRAME_JUMP_MM ||
+                        previous.rotationAngleDegreesTo(currentArFromCameraGl) > MAX_ARCORE_FRAME_JUMP_ANGLE_DEG)))) {
+            relocalizing = true
+            anchorSettled = false
+            anchorFilter.clearPending()
         }
-        updateArTrackingContinuity(arTracking, currentArFromCameraGl)
-        val currentCameraGlFromCameraCv = cameraGlFromCameraCvFor(tagResult.imageToViewMapper ?: lastImageToViewMapper)
-        val tagCameraGlFromCameraCv = cameraGlFromCameraCvFor(tagResult.imageToViewMapper ?: lastImageToViewMapper)
-        val currentArFromCameraCv = currentArFromCameraGl * currentCameraGlFromCameraCv
-        val tagArFromCameraCv = (tagArFromCameraGl ?: currentArFromCameraGl) * tagCameraGlFromCameraCv
-        val tagPose = tagResult.transformerPose
-        var usedTagPose: TransformerPose? = null
-        var candidateDisplayProjection: ArDisplayProjection? = null
-        tagResult.imageToViewMapper?.let { lastImageToViewMapper = it }
-        tagResult.cameraIntrinsics?.let { lastCameraIntrinsics = it }
-        if (tagResult.detections.isNotEmpty()) {
-            lastDetections = tagResult.detections
-            lastScreenDetections = tagResult.screenDetections
-            lastDetectionsMillis = now
-            // Per-tag poses mogen alleen kort na de detectie als verse tag-fallback bestaan.
-            // Een nieuwe detectie zonder bruikbare pose wist daarom de vorige pose expliciet.
-            lastPosePerTag = tagResult.posePerTag
-            lastPoseMarkerIds = tagResult.poseMarkerIds
-        }
-        if (tagPose != null) {
-            val poseMarkerIds = tagResult.poseMarkerIds.distinct()
-            val hasMultipleVisibleKnownTags = poseMarkerIds.size >= 2
-            val maxReprojectionErrorPx = if (hasMultipleVisibleKnownTags) {
-                MAX_MULTI_TAG_REPROJECTION_ERROR_PX
-            } else {
-                MAX_REPROJECTION_ERROR_PX
-            }
-            if (tagPose.reprojectionErrorPx <= maxReprojectionErrorPx) {
-                val candidate = tagArFromCameraCv * Transform3D.cameraCvFromTransformerPose(tagPose)
-                candidateDisplayProjection = if (arTracking) {
-                    ArDisplayProjection.fromOpenGlCamera(
-                        displayWidthPx = displayWidth,
-                        displayHeightPx = displayHeight,
-                        projectionMatrixColumnMajor = projectionMatrixColumnMajor,
-                        cameraGlFromTransformer = currentCameraGlFromAr * candidate
-                    )
-                } else {
-                    null
-                }
-                val current = arFromTransformer
-                val correctionMm = current?.distanceTo(candidate) ?: 0.0
-                val correctionAngleDeg = current?.rotationAngleDegreesTo(candidate) ?: 0.0
-                val calibrationIsStale = now - lastTagCalibrationMillis > TAG_RESET_AFTER_MILLIS
-                val hasMultipleSavedKnownTags = tagResult.knownMarkerCount >= 2
-                val correctionWithinMultiTagLimits =
-                    correctionMm <= MAX_TAG_CORRECTION_JUMP_MM &&
-                        correctionAngleDeg <= MAX_TAG_CORRECTION_ANGLE_DEG
-                val correctionWithinSingleTagLimits =
-                    correctionMm <= MAX_SINGLE_TAG_CORRECTION_JUMP_MM &&
-                        correctionAngleDeg <= MAX_SINGLE_TAG_CORRECTION_ANGLE_DEG
-                val correctionWithinMultiReferenceSingleTagLimits =
-                    correctionMm <= MAX_MULTI_REFERENCE_SINGLE_TAG_CORRECTION_JUMP_MM &&
-                        correctionAngleDeg <= MAX_MULTI_REFERENCE_SINGLE_TAG_CORRECTION_ANGLE_DEG
-                val isSingleVisibleTagInMultiReferenceProject =
-                    hasMultipleSavedKnownTags && !hasMultipleVisibleKnownTags
-                val singleVisibleMarkerId = poseMarkerIds.singleOrNull()
-                val isSingleVisibleTag = poseMarkerIds.size == 1
-                val singleTagStable = if (isSingleVisibleTag && singleVisibleMarkerId != null) {
-                    if (singleVisibleMarkerId == lastSingleCorrectionMarkerId) {
-                        singleCorrectionStreak += 1
-                    } else {
-                        lastSingleCorrectionMarkerId = singleVisibleMarkerId
-                        singleCorrectionStreak = 1
-                    }
-                    singleCorrectionStreak >= MIN_STABLE_SINGLE_TAG_CORRECTION_FRAMES
-                } else {
-                    lastSingleCorrectionMarkerId = null
-                    singleCorrectionStreak = 0
-                    true
-                }
-                val correctionWithinVisibleSingleTagLimits =
-                    if (isSingleVisibleTagInMultiReferenceProject) {
-                        correctionWithinMultiReferenceSingleTagLimits
-                    } else {
-                        correctionWithinSingleTagLimits
-                    }
-                val singleTagExceedsNormalLimits =
-                    isSingleVisibleTag && !correctionWithinVisibleSingleTagLimits
-                val singleTagNeedsReplacement =
-                    isSingleVisibleTag &&
-                        (current == null || needsFreshCalibration || calibrationIsStale)
-                val eligibleForSingleReanchor =
-                    isSingleVisibleTag &&
-                        singleVisibleMarkerId != null &&
-                        tagPose.reprojectionErrorPx <= SINGLE_TAG_REANCHOR_REPROJECTION_PX &&
-                        (singleTagExceedsNormalLimits || singleTagNeedsReplacement)
-                val pendingReanchorUpdate = if (eligibleForSingleReanchor) {
-                    updatePendingSingleReanchor(
-                        markerIds = poseMarkerIds,
-                        candidate = candidate,
-                        reprojectionErrorPx = tagPose.reprojectionErrorPx
-                    )
-                } else {
-                    resetPendingSingleReanchor()
-                    SingleReanchorUpdate()
-                }
-                val singleTagReplacementReady =
-                    isSingleVisibleTag &&
-                        singleTagNeedsReplacement &&
-                        pendingReanchorUpdate.confirmed
-                val canAcceptCorrection = when {
-                    pendingReanchorUpdate.confirmed -> true
-                    current == null -> if (isSingleVisibleTag) singleTagReplacementReady else true
-                    needsFreshCalibration -> if (isSingleVisibleTag) singleTagReplacementReady else true
-                    calibrationIsStale -> if (isSingleVisibleTag) singleTagReplacementReady else true
-                    hasMultipleVisibleKnownTags -> correctionWithinMultiTagLimits
-                    isSingleVisibleTagInMultiReferenceProject -> singleTagStable && correctionWithinMultiReferenceSingleTagLimits
-                    isSingleVisibleTag -> singleTagStable && correctionWithinSingleTagLimits
-                    else -> correctionWithinSingleTagLimits
-                }
-
-                if (canAcceptCorrection) {
-                    val shouldReplaceTransform =
-                        current == null ||
-                            calibrationIsStale ||
-                            needsFreshCalibration ||
-                            pendingReanchorUpdate.confirmed
-                    var appliedAlpha = 1.0
-                    arFromTransformer = when {
-                        shouldReplaceTransform -> {
-                            candidate
-                        }
-                        else -> {
-                            val alpha = when {
-                                hasMultipleVisibleKnownTags -> multiTagCorrectionAlpha(tagPose.reprojectionErrorPx)
-                                poseMarkerIds.size == 1 -> SINGLE_TAG_LOCAL_CORRECTION_ALPHA
-                                else -> correctionAlpha(correctionMm, tagPose.reprojectionErrorPx)
-                            }
-                            appliedAlpha = alpha
-                            current?.blendRigidToward(
-                                target = candidate,
-                                alpha = alpha
-                            ) ?: candidate
-                        }
-                    }
-                    logFusionDecision(
-                        now = now,
-                        event = "ACCEPT",
-                        markerIds = poseMarkerIds,
-                        knownMarkerCount = tagResult.knownMarkerCount,
-                        reprojectionErrorPx = tagPose.reprojectionErrorPx,
-                        maxReprojectionErrorPx = maxReprojectionErrorPx,
-                        correctionMm = correctionMm,
-                        correctionAngleDeg = correctionAngleDeg,
-                        alpha = appliedAlpha,
-                        depthHit = depthArFromPoint != null,
-                        pendingFrames = pendingReanchorUpdate.pendingFrames,
-                        candidateDeltaMm = pendingReanchorUpdate.candidateDeltaMm,
-                        candidateDeltaAngleDeg = pendingReanchorUpdate.candidateDeltaAngleDeg,
-                        eligibleForReanchor = eligibleForSingleReanchor,
-                        reason = recordFusionDecision(
-                            "ACCEPT",
-                            when {
-                                pendingReanchorUpdate.confirmed -> "confirmed-single-reanchor"
-                                shouldReplaceTransform && needsFreshCalibration -> "fresh-needed"
-                                shouldReplaceTransform && calibrationIsStale -> "stale-recalibration"
-                                shouldReplaceTransform -> "fresh"
-                                hasMultipleVisibleKnownTags -> "multi"
-                                else -> "single"
-                            }
-                        )
-                    )
-                    lastTagCalibrationMillis = now
-                    lastReprojectionErrorPx = tagPose.reprojectionErrorPx
-                    needsFreshCalibration = false
-                    if (pendingReanchorUpdate.confirmed) {
-                        resetPendingSingleReanchor()
-                    }
-                    usedTagPose = tagPose
-                } else if (eligibleForSingleReanchor && !pendingReanchorUpdate.rejected) {
-                    logFusionDecision(
-                        now = now,
-                        event = "PENDING",
-                        markerIds = poseMarkerIds,
-                        knownMarkerCount = tagResult.knownMarkerCount,
-                        reprojectionErrorPx = tagPose.reprojectionErrorPx,
-                        maxReprojectionErrorPx = maxReprojectionErrorPx,
-                        correctionMm = correctionMm,
-                        correctionAngleDeg = correctionAngleDeg,
-                        alpha = null,
-                        depthHit = depthArFromPoint != null,
-                        pendingFrames = pendingReanchorUpdate.pendingFrames,
-                        candidateDeltaMm = pendingReanchorUpdate.candidateDeltaMm,
-                        candidateDeltaAngleDeg = pendingReanchorUpdate.candidateDeltaAngleDeg,
-                        eligibleForReanchor = eligibleForSingleReanchor,
-                        reason = recordFusionDecision("PENDING", "single-reanchor-pending")
-                    )
-                } else {
-                    logFusionDecision(
-                        now = now,
-                        event = "REJECT",
-                        markerIds = poseMarkerIds,
-                        knownMarkerCount = tagResult.knownMarkerCount,
-                        reprojectionErrorPx = tagPose.reprojectionErrorPx,
-                        maxReprojectionErrorPx = maxReprojectionErrorPx,
-                        correctionMm = correctionMm,
-                        correctionAngleDeg = correctionAngleDeg,
-                        alpha = null,
-                        depthHit = depthArFromPoint != null,
-                        pendingFrames = pendingReanchorUpdate.pendingFrames,
-                        candidateDeltaMm = pendingReanchorUpdate.candidateDeltaMm,
-                        candidateDeltaAngleDeg = pendingReanchorUpdate.candidateDeltaAngleDeg,
-                        eligibleForReanchor = eligibleForSingleReanchor,
-                        reason = recordFusionDecision(
-                            "REJECT",
-                            when {
-                                pendingReanchorUpdate.rejected -> "single-reanchor-rejected"
-                                isSingleVisibleTag && !singleTagStable -> "single-not-stable"
-                                !correctionWithinMultiReferenceSingleTagLimits && isSingleVisibleTagInMultiReferenceProject -> "single-jump"
-                                !correctionWithinSingleTagLimits && isSingleVisibleTag -> "single-jump"
-                                !correctionWithinMultiTagLimits && hasMultipleVisibleKnownTags -> "multi-jump"
-                                else -> "jump"
-                            }
-                        )
-                    )
+        previousCamera = if (arTracking) currentArFromCameraGl else null
+        wasTracking = arTracking
+        val cvToGl = Transform3D.cameraGlFromCameraCv()
+        val currentArFromCameraCv = currentArFromCameraGl * cvToGl
+        val hasPacket = tagArFromCameraGl != null && tagResult.capturedAtElapsedMillis != null &&
+            tagResult.detectionSequence != lastProcessedSequence
+        var candidateProjection: ArDisplayProjection? = null
+        var motionMm: Float? = null
+        var motionDeg: Float? = null
+        if (hasPacket) {
+            lastProcessedSequence = tagResult.detectionSequence
+            lastDetection = tagResult
+            captureArFromCameraCv = tagArFromCameraGl!! * cvToGl
+            motionMm = tagArFromCameraGl!!.distanceTo(currentArFromCameraGl).toFloat()
+            motionDeg = tagArFromCameraGl.rotationAngleDegreesTo(currentArFromCameraGl).toFloat()
+            val age = (nowMillis - tagResult.capturedAtElapsedMillis!!).coerceAtLeast(0L)
+            val tagPose = tagResult.transformerPose
+            if (tagResult.referenceConflict || age > DETECTION_FRESH_MILLIS || !arTracking || tagPose == null) {
+                anchorFilter.clearPending()
+                if (tagResult.referenceConflict || age > DETECTION_FRESH_MILLIS || !arTracking) anchorSettled = false
+                lastEvent = "REJECT"
+                lastReason = when {
+                    tagResult.referenceConflict -> "reference-conflict"
+                    age > DETECTION_FRESH_MILLIS -> "stale-detection"
+                    !arTracking -> "tracking-lost"
+                    else -> "no-reference"
                 }
             } else {
-                logFusionDecision(
-                    now = now,
-                    event = "REJECT",
-                    markerIds = poseMarkerIds,
-                    knownMarkerCount = tagResult.knownMarkerCount,
-                    reprojectionErrorPx = tagPose.reprojectionErrorPx,
-                    maxReprojectionErrorPx = maxReprojectionErrorPx,
-                    correctionMm = null,
-                    correctionAngleDeg = null,
-                    alpha = null,
-                    depthHit = depthArFromPoint != null,
-                    reason = recordFusionDecision("REJECT", "reprojection")
+                val candidate = tagArFromCameraGl * cvToGl * Transform3D.cameraCvFromTransformerPose(tagPose)
+                candidateProjection = ArDisplayProjection.fromOpenGlCamera(
+                    displayWidth, displayHeight, projectionMatrixColumnMajor, currentCameraGlFromAr * candidate
                 )
+                val update = anchorFilter.update(candidate, tagResult.poseMarkerIds, nowMillis, relocalizing)
+                lastEvent = update.event
+                lastReason = update.reason
+                anchorSettled = update.settled
+                if (update.event == "ACCEPT") {
+                    lastCalibrationMillis = tagResult.capturedAtElapsedMillis
+                    lastReprojectionErrorPx = tagPose.reprojectionErrorPx
+                    relocalizing = false
+                }
+            }
+            if (Log.isLoggable("ARSensFusion", Log.DEBUG)) {
+                Log.d("ARSensFusion", "$lastEvent reason=$lastReason tags=${tagResult.poseMarkerIds} excluded=${tagResult.rejectedMarkerIds}")
             }
         }
-
-        val calibratedTransform = arFromTransformer.takeUnless { needsFreshCalibration }
-        // Stap 5: bewaar de directe cameraCv→transformer matrix in ARCore-leading mode (dezelfde
-        // matrix waaruit trackingPose wordt afgeleid) zodat de STL-overlay de per-draw Rodrigues
-        // round-trip kan overslaan zonder de plaatsing te veranderen.
-        var cameraCvFromTransformerDirect: Transform3D? = null
-        val trackingPose = if (arTracking && calibratedTransform != null) {
-            val cameraCvFromAr = currentArFromCameraCv.inverseRigid()
-            val cameraCvFromTransformer = cameraCvFromAr * calibratedTransform
-            cameraCvFromTransformerDirect = cameraCvFromTransformer
-            cameraCvFromTransformer.toTransformerPose(lastReprojectionErrorPx)
-        } else {
-            usedTagPose
-        }
-        val cameraGlFromTransformer = when {
-            arTracking && calibratedTransform != null -> currentCameraGlFromAr * calibratedTransform
-            else -> null
-        }
-        val displayProjection = cameraGlFromTransformer?.let {
+        val capture = lastDetection.capturedAtElapsedMillis
+        val age = capture?.let { (nowMillis - it).coerceAtLeast(0L) } ?: Long.MAX_VALUE
+        val fresh = age <= DETECTION_FRESH_MILLIS
+        val debugFresh = age <= DEBUG_DETECTION_HOLD_MILLIS
+        val conflict = fresh && lastDetection.referenceConflict
+        val calibrated = anchorFilter.anchor.takeUnless { relocalizing }
+        val cameraCvFromTransformer = if (arTracking && calibrated != null) {
+            currentArFromCameraCv.inverseRigid() * calibrated
+        } else null
+        val pose = cameraCvFromTransformer?.toTransformerPose(lastReprojectionErrorPx)
+        val display = if (arTracking && calibrated != null) {
             ArDisplayProjection.fromOpenGlCamera(
-                displayWidthPx = displayWidth,
-                displayHeightPx = displayHeight,
-                projectionMatrixColumnMajor = projectionMatrixColumnMajor,
-                cameraGlFromTransformer = it
+                displayWidth, displayHeight, projectionMatrixColumnMajor, currentCameraGlFromAr * calibrated
             )
-        }
-        val depthHitPosition = if (calibratedTransform != null && depthArFromPoint != null) {
-            val transformerFromAr = calibratedTransform.inverseRigid()
-            val point = transformerFromAr.transformPoint(depthArFromPoint.translation())
-            MmPosition(
-                x = point[0].roundToInt(),
-                y = point[1].roundToInt(),
-                z = point[2].roundToInt()
-            )
-        } else {
-            null
-        }
-
-        val millisSinceTag = now - lastTagCalibrationMillis
-        val detectionAgeMillis = if (lastDetectionsMillis > 0) now - lastDetectionsMillis else Long.MAX_VALUE
-        val isLiveDetectionFresh = detectionAgeMillis <= LIVE_DETECTION_HOLD_MILLIS
-        val isPerTagPoseFresh = detectionAgeMillis <= PER_TAG_POSE_FRESH_MILLIS
-        val isDebugHold = detectionAgeMillis <= DEBUG_DETECTION_HOLD_MILLIS
-        val visibleDetections = if (isDebugHold) lastDetections else emptyList()
-        val visibleScreenDetections = if (isDebugHold) lastScreenDetections else emptyList()
-        val effectivePosePerTag = if (isPerTagPoseFresh) lastPosePerTag else emptyMap()
-        val effectivePoseMarkerIds = if (isPerTagPoseFresh) lastPoseMarkerIds else emptyList()
-        val effectiveImageToViewMapper = tagResult.imageToViewMapper ?: lastImageToViewMapper
-        val effectiveCameraIntrinsics = tagResult.cameraIntrinsics ?: lastCameraIntrinsics
-        val detectionsFresh = isLiveDetectionFresh && lastDetections.isNotEmpty()
+        } else null
+        val sinceCalibration = nowMillis - lastCalibrationMillis
         val status = when {
-            needsFreshCalibration && arFromTransformer != null -> ArTrackingStatus.NeedsRecalibration
-            arFromTransformer == null && visibleDetections.isNotEmpty() -> ArTrackingStatus.NeedsRecalibration
-            trackingPose != null && millisSinceTag <= TAG_STATUS_HOLD_MILLIS -> ArTrackingStatus.TagCalibration
-            trackingPose != null && arTracking && millisSinceTag <= 10_000 -> ArTrackingStatus.ArCoreTracking
-            trackingPose != null && arTracking -> ArTrackingStatus.DriftPossible
-            else -> ArTrackingStatus.NoPose
+            relocalizing || conflict || lastReason == "reference-jump" -> ArTrackingStatus.NeedsRecalibration
+            pose == null -> ArTrackingStatus.NoPose
+            sinceCalibration <= TAG_STATUS_HOLD_MILLIS && anchorSettled -> ArTrackingStatus.TagCalibration
+            sinceCalibration <= 10_000L -> ArTrackingStatus.ArCoreTracking
+            else -> ArTrackingStatus.DriftPossible
         }
         val quality = when (status) {
-            ArTrackingStatus.TagCalibration -> tagResult.trackingQualityPercent.coerceAtLeast(85)
+            ArTrackingStatus.TagCalibration -> 95
             ArTrackingStatus.ArCoreTracking -> 75
             ArTrackingStatus.DriftPossible -> 45
             ArTrackingStatus.NeedsRecalibration -> 20
             ArTrackingStatus.NoPose -> 0
         }
-        val overlayRoute = when {
-            displayProjection != null -> "displayProjection"
-            trackingPose != null && effectiveImageToViewMapper != null -> "transformerPoseFallback"
-            isPerTagPoseFresh && effectivePosePerTag.isNotEmpty() && effectiveImageToViewMapper != null -> "freshTagPoseFallback"
-            else -> "none"
-        }
-        // Stap 2: debug-only (Log.isLoggable DEBUG, standaard uit -> geen logcat-spam) en
-        // gethrottled op route/status/fusion-wijziging of >=500ms. detectionAge zit niet in de
-        // throttle-key (verandert elke frame) maar blijft wel in de message staan.
-        if (Log.isLoggable("ARSensOverlayRoute", Log.DEBUG)) {
-            val overlayRouteLogKey = "$overlayRoute|${status.name}|${fusionEvent ?: "-"}|" +
-                "${fusionReason ?: "-"}|${displayProjection != null}|${trackingPose != null}"
-            if (overlayRouteLogKey != lastOverlayRouteLogKey ||
-                now - lastOverlayRouteLogMillis >= OVERLAY_ROUTE_LOG_INTERVAL_MILLIS
-            ) {
-                lastOverlayRouteLogKey = overlayRouteLogKey
-                lastOverlayRouteLogMillis = now
-                Log.d(
-                    "ARSensOverlayRoute",
-                    "route=$overlayRoute detectionAge=$detectionAgeMillis tracking=${status.name} " +
-                        "displayProjection=${displayProjection != null} transformerPose=${trackingPose != null} " +
-                        "posePerTag=${effectivePosePerTag.size} detectionsFresh=$detectionsFresh " +
-                        "screenDetections=${visibleScreenDetections.size} imageProjectionPose=${usedTagPose != null} " +
-                        "trackingStatus=${status.name} arTracking=$arTracking detectionAgeMillis=$detectionAgeMillis"
-                )
-            }
-        }
-        return tagResult.copy(
-            imageWidth = tagResult.imageWidth.takeIf { it > 0 } ?: displayWidth,
-            imageHeight = tagResult.imageHeight.takeIf { it > 0 } ?: displayHeight,
-            detections = visibleDetections,
-            screenDetections = visibleScreenDetections,
-            cameraIntrinsics = effectiveCameraIntrinsics,
-            imageToViewMapper = effectiveImageToViewMapper,
-            posePerTag = effectivePosePerTag,
-            poseMarkerIds = effectivePoseMarkerIds,
-            detectionsFresh = detectionsFresh,
-            transformerPose = trackingPose,
-            displayProjection = displayProjection,
-            candidateDisplayProjection = candidateDisplayProjection,
-            imageProjectionPose = usedTagPose,
-            arTracking = arTracking,
-            freshImageProjectionPose = if (isPerTagPoseFresh) {
-                tagResult.freshImageProjectionPose ?: tagResult.imageProjectionPose
-            } else {
-                null
-            },
-            freshPosePerTag = if (isPerTagPoseFresh) {
-                tagResult.freshPosePerTag.takeIf { it.isNotEmpty() } ?: tagResult.posePerTag
-            } else {
-                emptyMap()
-            },
-            depthHitPositionMm = depthHitPosition,
-            trackingStatus = status,
+        // Raw image coordinates must stay paired with their capture pose. UI projection and
+        // placement instead use displayProjection, which follows the current camera every frame.
+        return AprilTagFrameResult(
+            imageWidth = lastDetection.imageWidth,
+            imageHeight = lastDetection.imageHeight,
+            detections = if (debugFresh) lastDetection.detections else emptyList(),
+            screenDetections = if (debugFresh) lastDetection.screenDetections else emptyList(),
+            cameraIntrinsics = lastDetection.cameraIntrinsics,
+            imageToViewMapper = lastDetection.imageToViewMapper,
+            imageProjectionPose = if (fresh && calibrated != null) {
+                captureArFromCameraCv?.inverseRigid()?.times(calibrated)?.toTransformerPose(lastReprojectionErrorPx)
+            } else null,
+            detectionsFresh = fresh && lastDetection.detections.isNotEmpty(),
+            knownMarkerCount = lastDetection.knownMarkerCount,
+            poseMarkerIds = if (fresh) lastDetection.poseMarkerIds else emptyList(),
+            poseMarkerCount = if (fresh) lastDetection.poseMarkerCount else 0,
+            posePerTag = emptyMap(),
+            freshPosePerTag = if (hasPacket && fresh) lastDetection.freshPosePerTag else emptyMap(),
+            freshImageProjectionPose = if (hasPacket && fresh) lastDetection.freshImageProjectionPose else null,
+            transformerPose = pose,
+            displayProjection = display,
+            candidateDisplayProjection = candidateProjection,
             trackingQualityPercent = quality,
-            fusionEvent = fusionEvent,
-            fusionReason = fusionReason,
-            detectionAgeMillis = detectionAgeMillis,
-            cameraCvFromTransformer = cameraCvFromTransformerDirect,
-            motionDuringDetectionMm = motionDuringDetectionMm,
-            motionDuringDetectionDeg = motionDuringDetectionDeg,
-            arFromTransformer = calibratedTransform
+            errorMessage = tagResult.errorMessage,
+            trackingStatus = status,
+            arTracking = arTracking,
+            fusionEvent = lastEvent,
+            fusionReason = lastReason,
+            detectionAgeMillis = age,
+            cameraCvFromTransformer = cameraCvFromTransformer,
+            motionDuringDetectionMm = motionMm,
+            motionDuringDetectionDeg = motionDeg,
+            arFromTransformer = calibrated,
+            rejectedMarkerIds = if (fresh) lastDetection.rejectedMarkerIds else emptyList(),
+            referenceConflict = conflict,
+            capturedAtElapsedMillis = capture,
+            detectionSequence = lastDetection.detectionSequence,
+            referenceDepthMm = lastDetection.referenceDepthMm,
+            anchorSettled = anchorSettled && !relocalizing
         )
     }
-
-    private fun correctionAlpha(correctionMm: Double, reprojectionErrorPx: Float): Double {
-        val correctionWeight = when {
-            correctionMm >= 1_000.0 -> 0.45
-            correctionMm >= 300.0 -> 0.32
-            else -> 0.22
-        }
-        val qualityWeight = when {
-            reprojectionErrorPx <= 3f -> 1.0
-            reprojectionErrorPx <= 6f -> 0.75
-            else -> 0.50
-        }
-        return correctionWeight * qualityWeight
-    }
-
-    private fun multiTagCorrectionAlpha(reprojectionErrorPx: Float): Double =
-        when {
-            reprojectionErrorPx <= 4f -> MULTI_TAG_CORRECTION_ALPHA
-            reprojectionErrorPx <= 10f -> 0.65
-            else -> 0.50
-        }
-
-    @Suppress("UNUSED_PARAMETER")
-    private fun cameraGlFromCameraCvFor(mapper: ImageToViewMapper?): Transform3D =
-        // ImageToViewMapper maps image pixels to Compose/view pixels. ARCore's projection matrix
-        // already accounts for display geometry, so camera axes must stay the fixed CV->GL basis.
-        fallbackCameraGlFromCameraCv
-
-    private fun updatePendingSingleReanchor(
-        markerIds: List<Int>,
-        candidate: Transform3D,
-        reprojectionErrorPx: Float
-    ): SingleReanchorUpdate {
-        val previous = pendingSingleReanchor
-        if (previous == null || previous.markerIds != markerIds) {
-            pendingSingleReanchor = PendingSingleReanchor(
-                markerIds = markerIds,
-                candidate = candidate,
-                stableFrames = 1
-            )
-            return SingleReanchorUpdate(pendingFrames = 1)
-        }
-
-        val candidateDeltaMm = previous.candidate.distanceTo(candidate)
-        val candidateDeltaAngleDeg = previous.candidate.rotationAngleDegreesTo(candidate)
-        val stable =
-            reprojectionErrorPx <= SINGLE_TAG_REANCHOR_REPROJECTION_PX &&
-                candidateDeltaMm <= PENDING_SINGLE_REANCHOR_STABLE_TRANSLATION_MM &&
-                candidateDeltaAngleDeg <= PENDING_SINGLE_REANCHOR_STABLE_ANGLE_DEG
-        if (!stable) {
-            pendingSingleReanchor = null
-            return SingleReanchorUpdate(
-                pendingFrames = 0,
-                candidateDeltaMm = candidateDeltaMm,
-                candidateDeltaAngleDeg = candidateDeltaAngleDeg,
-                rejected = true
-            )
-        }
-
-        val stableFrames = previous.stableFrames + 1
-        pendingSingleReanchor = PendingSingleReanchor(
-            markerIds = markerIds,
-            candidate = candidate,
-            stableFrames = stableFrames
-        )
-        return SingleReanchorUpdate(
-            pendingFrames = stableFrames,
-            candidateDeltaMm = candidateDeltaMm,
-            candidateDeltaAngleDeg = candidateDeltaAngleDeg,
-            confirmed = stableFrames >= PENDING_SINGLE_REANCHOR_STABLE_FRAMES
-        )
-    }
-
-    private fun resetPendingSingleReanchor() {
-        pendingSingleReanchor = null
-    }
-
-    private fun logFusionDecision(
-        now: Long,
-        event: String,
-        markerIds: List<Int>,
-        knownMarkerCount: Int,
-        reprojectionErrorPx: Float,
-        maxReprojectionErrorPx: Float,
-        correctionMm: Double?,
-        correctionAngleDeg: Double?,
-        alpha: Double?,
-        depthHit: Boolean,
-        pendingFrames: Int? = null,
-        candidateDeltaMm: Double? = null,
-        candidateDeltaAngleDeg: Double? = null,
-        eligibleForReanchor: Boolean? = null,
-        reason: String
-    ) {
-        val markerKey = markerIds.joinToString(",").ifBlank { "-" }
-        val key = "$event|$markerKey|$knownMarkerCount|$reason|$depthHit|" +
-            "${pendingFrames ?: "-"}|${candidateDeltaMm?.roundToInt() ?: "-"}|" +
-            "${candidateDeltaAngleDeg?.roundToInt() ?: "-"}|${eligibleForReanchor ?: "-"}"
-        if (key == lastFusionLogKey && now - lastFusionLogMillis < FUSION_LOG_INTERVAL_MILLIS) return
-        lastFusionLogKey = key
-        lastFusionLogMillis = now
-
-        val message = buildString {
-            append(event)
-            append(" tags=[")
-            append(markerKey)
-            append("] known=")
-            append(knownMarkerCount)
-            append(" err=")
-            append(reprojectionErrorPx.shortPx())
-            append("/")
-            append(maxReprojectionErrorPx.shortPx())
-            correctionMm?.let {
-                append(" jump=")
-                append(it.shortMm())
-            }
-            correctionAngleDeg?.let {
-                append(" angle=")
-                append(it.shortDeg())
-            }
-            alpha?.let {
-                append(" alpha=")
-                append(it.shortAlpha())
-            }
-            pendingFrames?.let {
-                append(" pendingFrames=")
-                append(it)
-            }
-            candidateDeltaMm?.let {
-                append(" candidateDeltaMm=")
-                append(it.shortMm())
-            }
-            candidateDeltaAngleDeg?.let {
-                append(" candidateDeltaAngleDeg=")
-                append(it.shortDeg())
-            }
-            eligibleForReanchor?.let {
-                append(" eligibleForReanchor=")
-                append(it)
-            }
-            append(" depth=")
-            append(if (depthHit) "hit" else "none")
-            append(" reason=")
-            append(reason)
-        }
-        if (event == "REJECT") {
-            Log.w("ARsensFusion", message)
-        } else {
-            Log.i("ARsensFusion", message)
-        }
-    }
-
-    private fun updateArTrackingContinuity(arTracking: Boolean, currentArFromCameraGl: Transform3D) {
-        if (!arTracking) {
-            if (arFromTransformer != null && !needsFreshCalibration) {
-                needsFreshCalibration = true
-                Log.w("ARsensFusion", "TRACKING_LOST needsFreshCalibration=true")
-            }
-            previousArFromCameraGl = null
-            wasArTracking = false
-            return
-        }
-
-        val previous = previousArFromCameraGl
-        if (wasArTracking && previous != null && arFromTransformer != null && !needsFreshCalibration) {
-            val cameraJumpMm = previous.distanceTo(currentArFromCameraGl)
-            val cameraJumpAngleDeg = previous.rotationAngleDegreesTo(currentArFromCameraGl)
-            if (cameraJumpMm > MAX_ARCORE_FRAME_JUMP_MM || cameraJumpAngleDeg > MAX_ARCORE_FRAME_JUMP_ANGLE_DEG) {
-                needsFreshCalibration = true
-                Log.w(
-                    "ARsensFusion",
-                    "ARCORE_JUMP needsFreshCalibration=true jump=${cameraJumpMm.shortMm()} angle=${cameraJumpAngleDeg.shortDeg()}"
-                )
-            }
-        }
-        previousArFromCameraGl = currentArFromCameraGl
-        wasArTracking = true
-    }
-
 }
 
 private class ArCoreBackgroundRenderer {
@@ -1372,7 +916,9 @@ private data class PendingAprilTagFrame(
     val intrinsics: CameraIntrinsics,
     val arFromCameraGlAtCapture: Transform3D,
     val imageToViewMapper: ImageToViewMapper,
-    val markerSignatures: Map<Int, String>
+    val markerSignatures: Map<Int, String>,
+    val capturedAtElapsedMillis: Long,
+    val detectionSequence: Long
 )
 
 private data class AprilTagDetectionPacket(
@@ -1386,7 +932,9 @@ private fun Image.copyLumaFrame(
     intrinsics: CameraIntrinsics,
     arFromCameraGlAtCapture: Transform3D,
     imageToViewMapper: ImageToViewMapper,
-    markerSignatures: Map<Int, String>
+    markerSignatures: Map<Int, String>,
+    capturedAtElapsedMillis: Long,
+    detectionSequence: Long
 ): PendingAprilTagFrame {
     val plane = planes[0]
     val rowStride = plane.rowStride
@@ -1411,7 +959,9 @@ private fun Image.copyLumaFrame(
         intrinsics = intrinsics,
         arFromCameraGlAtCapture = arFromCameraGlAtCapture,
         imageToViewMapper = imageToViewMapper,
-        markerSignatures = markerSignatures
+        markerSignatures = markerSignatures,
+        capturedAtElapsedMillis = capturedAtElapsedMillis,
+        detectionSequence = detectionSequence
     )
 }
 

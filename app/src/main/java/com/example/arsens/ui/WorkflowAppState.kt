@@ -120,6 +120,9 @@ import com.example.arsens.ar.PlacementQualityTuning
 import com.example.arsens.ar.computePlacementQuality
 import com.example.arsens.ar.toAudit
 import com.example.arsens.ar.RayMm
+import com.example.arsens.ar.intersectTagPlaneExact
+import com.example.arsens.ar.imagePoseRayForPixel
+import com.example.arsens.ar.tagPlaneOutwardNormal
 import com.example.arsens.ar.Transform3D
 import com.example.arsens.ar.cameraRayInTransformer
 import com.example.arsens.ar.reprojectPlacementRay
@@ -465,6 +468,13 @@ fun setDefaultTagSize(sizeMm: Int) {
     var sensorY by mutableStateOf("0")
     var sensorZ by mutableStateOf("0")
     var sensorTolerance by mutableStateOf("50")
+    var planSensorAtCursor by mutableStateOf(false)
+    private var cursorPlacementRay: RayMm? = null
+    val sensorPlacementReady: Boolean
+        get() = aprilTagResult.displayProjection != null && aprilTagResult.anchorSettled &&
+            !aprilTagResult.referenceConflict && aprilTagResult.trackingStatus in listOf(
+                ArTrackingStatus.TagCalibration, ArTrackingStatus.ArCoreTracking
+            ) && placementQuality?.grade in listOf(com.example.arsens.data.QualityGrade.High, com.example.arsens.data.QualityGrade.Medium)
     var sensorInstruction by mutableStateOf("")
     /** Formulierveld: AprilTag-ID die fysiek óp de sensor geplakt is (leeg = geen). */
     var sensorTagId by mutableStateOf("")
@@ -784,40 +794,19 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (tagScanArmed && result.detections.isNotEmpty()) {
             captureVisibleTagForSetup(result)
         }
-        // Bereken de plaatsings-cursor via een verse individuele referentietag-pose. Zodra die
-        // pose ouder wordt, blijft de gefuseerde ARCore-projectie leidend zodat de cursor niet
-        // aan een vastgehouden tag-frame blijft plakken.
-        val cursorRefTagId = aprilTagResult.poseMarkerIds
-            .firstOrNull()
-            ?.takeIf { aprilTagResult.detectionAgeMillis <= FRESH_PER_TAG_POSE_MILLIS }
-        val cursorRefPose = cursorRefTagId?.let { aprilTagResult.posePerTag[it] }
-        // Onthoud de laatst gebruikte verse bekende referentietag als plaatsingsvlak. Zodra de tag
-        // niet meer vers is, gebruikt estimateCursorOnReferenceSurface dit vlak via de ARCore-straal.
-        if (cursorRefTagId != null) {
-            knownAprilTags.firstOrNull { it.id == cursorRefTagId }?.let { marker ->
-                lastPlacementReference = PlacementReference(tagId = cursorRefTagId, marker = marker)
+        // One world anchor for model, cursor, stored point and replay. The operator explicitly
+        // chooses the tank face; visible tags establish the frame, not the placement surface.
+        result.poseMarkerIds.firstOrNull()?.let { id ->
+            knownAprilTags.firstOrNull { it.id == id }?.let { marker ->
+                lastPlacementReference = PlacementReference(id, marker)
             }
         }
-        // Tijdens een verse detectie projecteren cursor en sensor in hetzelfde per-tag frame.
-        // Tussen detecties door mag displayProjection blijven staan en volgt ARCore de camera.
-        val cursorResult = if (cursorRefPose != null) {
-            aprilTagResult.copy(
-                imageProjectionPose = cursorRefPose,
-                transformerPose = cursorRefPose,
-                displayProjection = null
-            )
-        } else {
-            aprilTagResult
-        }
-        val surfaceHit = estimateCursorOnReferenceSurface(
-            result = cursorResult,
-            dimensionsMm = project.dimensionsMm,
-            knownMarkers = knownAprilTags,
-            // Schermfractie → NDC: x gelijk, y omgekeerd (scherm omlaag = NDC omhoog).
-            cursorNdcX = arCursorScreenOffset.x.toDouble(),
-            cursorNdcY = -arCursorScreenOffset.y.toDouble(),
-            placementReferenceMarker = lastPlacementReference?.marker
-        )
+        cursorPlacementRay = if (result.displayProjection != null) cameraRayInTransformer(
+            result, arCursorScreenOffset.x.toDouble(), -arCursorScreenOffset.y.toDouble()
+        ) else null
+        val surfaceHit = cursorPlacementRay?.let {
+            intersectTagPlaneExact(it, selectedTagPlane, project.dimensionsMm)
+        }?.let { PlaneHit(it, true) }
         val depthHit = aprilTagResult.depthHitPositionMm?.snapToTransformerSurface(project.dimensionsMm)
         val objectHit = surfaceHit ?: depthHit
         if (objectHit != null) {
@@ -850,13 +839,15 @@ fun setDefaultTagSize(sizeMm: Int) {
     /** Werkt de jitter-buffer, stabiele-lock-bepaling en live [placementQuality] bij, en markeert
      *  reeds (stabiel) geplaatste sensoren als "opnieuw valideren" bij een significante herankering.
      *  Blokkeert nooit het opslaan — puur informatief + audittrail. */
+    private var lastLockDetectionSequence = 0L
+
     private fun updatePlacementQuality(now: Long, cursorHit: PlaneHit?, cursorSource: String) {
         val result = aprilTagResult
         // Verse, hoge-kwaliteit tag-pose? Dat is de basis voor een stabiele lock.
         val freshGoodPose = result.detectionAgeMillis <= PlacementQualityTuning.LOCK_FRESH_AGE_MILLIS &&
             result.trackingQualityPercent >= PlacementQualityTuning.LOCK_MIN_QUALITY_PERCENT &&
             result.transformerPose != null &&
-            result.trackingStatus == ArTrackingStatus.TagCalibration
+            result.trackingStatus == ArTrackingStatus.TagCalibration && result.anchorSettled && !result.referenceConflict
         val signature = result.poseMarkerIds.sorted()
         if (freshGoodPose && signature.isNotEmpty()) {
             if (signature != lockTagSignature) {
@@ -865,9 +856,10 @@ fun setDefaultTagSize(sizeMm: Int) {
                 lockSinceMillis = now
                 lockSamples = 1
                 cursorJitterSamples.clear()
-            } else {
+            } else if (result.detectionSequence != lastLockDetectionSequence) {
                 lockSamples += 1
             }
+            lastLockDetectionSequence = result.detectionSequence
             val hitPosition = cursorHit?.position
                 ?.takeIf { cursorSource == "surface" || cursorSource == "depth" }
             if (hitPosition != null) {
@@ -908,13 +900,8 @@ fun setDefaultTagSize(sizeMm: Int) {
     /** Bewaart (in-memory, sessie-gebonden) de camerastraal van het plaatsmoment, zodat de positie
      *  later via straal-replay gecorrigeerd kan worden. Vereist een ARCore-anker + displayProjection;
      *  anders niets te corrigeren en wordt geen straal bewaard. */
-    private fun storePlacementRayFor(sensorId: String, referenceTagId: Int?) {
+    private fun storePlacementRayFor(sensorId: String, referenceTagId: Int?, ray: RayMm?, plane: TagPlane) {
         val anchor = aprilTagResult.arFromTransformer
-        val ray = cameraRayInTransformer(
-            aprilTagResult,
-            arCursorScreenOffset.x.toDouble(),
-            -arCursorScreenOffset.y.toDouble()
-        )
         if (anchor == null || ray == null) {
             placementRays.remove(sensorId)
             return
@@ -923,7 +910,8 @@ fun setDefaultTagSize(sizeMm: Int) {
             rayTransformer = ray,
             anchorAtPlacement = anchor,
             referenceTagId = referenceTagId,
-            placedAtMillis = System.currentTimeMillis()
+            placedAtMillis = System.currentTimeMillis(),
+            plane = plane
         )
     }
 
@@ -934,7 +922,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     private fun maybeAutoCorrectSensors(result: AprilTagFrameResult) {
         if (!autoCorrectSensorDrift || placementRays.isEmpty()) { resetCorrectionSettle(); return }
         val anchorNow = result.arFromTransformer ?: run { resetCorrectionSettle(); return }
-        if (result.trackingStatus != ArTrackingStatus.TagCalibration ||
+        if (!result.anchorSettled || result.referenceConflict || result.trackingStatus != ArTrackingStatus.TagCalibration ||
             result.detectionAgeMillis > PlacementQualityTuning.LOCK_FRESH_AGE_MILLIS
         ) {
             resetCorrectionSettle(); return
@@ -943,6 +931,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (visibleTags.isEmpty()) { resetCorrectionSettle(); return }
         // Openstaande sensoren waarvan de referentietag nu in beeld is.
         val pending = project.sensors.filter { sensor ->
+            if (sensor.origin == PlacementOrigin.Prepared) return@filter false
             val stored = placementRays[sensor.id] ?: return@filter false
             val refTag = stored.referenceTagId ?: sensor.referenceTagId
             refTag != null && refTag in visibleTags
@@ -986,7 +975,8 @@ fun setDefaultTagSize(sizeMm: Int) {
                 anchorAtPlacement = stored.anchorAtPlacement,
                 anchorNow = anchorNow,
                 dimensionsMm = dims,
-                referenceMarker = markersById[refTag]
+                referenceMarker = null,
+                placementPlane = stored.plane
             ) ?: return@forEach
             if (!newPos.insideBox(dims)) return@forEach
             val delta = distanceMm(newPos - sensor.positionMm)
@@ -1535,11 +1525,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             } else {
                 ""
             }
-        // On-the-fly met een STL-assembly: zet de tag automatisch op het werkelijke modeloppervlak
-        // (async via het camerascherm) zodat het AR-model op tag-diepte verschijnt.
-        if (mode == WorkMode.OnTheFly && project.stlModels.any { it.visible }) {
-            pendingTagSnapId = id
-        }
+
     }
 
     fun requestDeleteMarker(marker: Marker) {
@@ -2245,8 +2231,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         val tolerance = sensorTolerance.toIntOrNull()
         val id = sensorId.ifBlank { nextSensorId() }.trim()
         val name = sensorName.ifBlank { "sens" }.trim()
-        if (operatorPosition == null || tolerance == null) {
-            message = "Sensorpositie en tolerantie moeten hele millimeters zijn."
+        if (operatorPosition == null || tolerance == null || tolerance <= 0) {
+            message = "Sensorpositie moet in hele millimeters staan; de tolerantie moet groter dan nul zijn."
             return null
         }
         val boxPosition = project.coordinateMapper().operatorToBox(operatorPosition)
@@ -2255,13 +2241,16 @@ fun setDefaultTagSize(sizeMm: Int) {
             return null
         }
         val existingSensor = project.sensors.firstOrNull { it.id == id }
+        val target = existingSensor?.takeIf { markInstalled && (it.status == SensorStatus.Pending || it.origin == PlacementOrigin.Prepared) }
+        val savedPosition = target?.positionMm ?: boxPosition
         val nextOrder = (project.sensors.maxOfOrNull { it.order } ?: 0) + 1
-        val sensor = Sensor(
+        var sensor = Sensor(
             order = existingSensor?.order ?: nextOrder,
             id = id,
             name = name,
-            side = "veld",
-            positionMm = boxPosition,
+            side = target?.side ?: tagPlaneForSurfacePosition(savedPosition).name,
+            normal = target?.normal ?: tagPlaneOutwardNormal(tagPlaneForSurfacePosition(savedPosition)),
+            positionMm = savedPosition,
             toleranceMm = tolerance,
             instruction = sensorInstruction.trim(),
             status = if (markInstalled) SensorStatus.Ok else existingSensor?.status ?: SensorStatus.Pending,
@@ -2279,22 +2268,19 @@ fun setDefaultTagSize(sizeMm: Int) {
             // Herkomst: een bestaande sensor behoudt zijn herkomst; een NIEUWE sensor is OnTheFly als
             // hij live is vastgelegd (markInstalled), anders Voorbereid (formulier/2D).
             origin = existingSensor?.origin
-                ?: if (markInstalled) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
+                ?: if (placement != null || markInstalled) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
         )
-        val sensors = (project.sensors.filterNot { it.id == sensor.id } + sensor)
-            .sortedBy { it.order }
-            .mapIndexed { index, item -> item.copy(order = index + 1) }
-        project = project.copy(sensors = sensors)
         if (markInstalled) {
             log = confirmSensorAtMeasuredPosition(
-                log = log,
-                sensor = sensor,
-                measuredPosition = boxPosition,
-                photo = null,
-                confirmedAt = repository.nowIso()
+                log = log, sensor = sensor, measuredPosition = boxPosition,
+                photo = null, confirmedAt = repository.nowIso()
             )
+            sensor = sensor.copy(status = log.results.first { it.sensorId == sensor.id }.status)
             repository.saveLog(log)
         }
+        val sensors = (project.sensors.filterNot { it.id == sensor.id } + sensor)
+            .sortedBy { it.order }.mapIndexed { index, item -> item.copy(order = index + 1) }
+        project = project.copy(sensors = sensors)
         resetSensorFormForNext()
         showSensorOverlay = true
         saveProject()
@@ -2309,6 +2295,10 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun saveSensorAtCursor() {
+        if (!sensorPlacementReady) {
+            message = "Nog niet vastleggen: houd de telefoon rustig en scan overeenkomende referentietags."
+            return
+        }
         val cursor = arCursorPosition
         if (cursor == null) {
             message = "Sensor niet opgeslagen: geen objectvlak onder de AR-cursor. Scan een bekende tag en richt de cursor op de trafo."
@@ -2326,20 +2316,22 @@ fun setDefaultTagSize(sizeMm: Int) {
         // cursor en is de instelling aan, dan koppelt deze plaatsing die tag automatisch. De positie
         // komt dan van het tagmiddelpunt op het trafo-vlak (nauwkeuriger dan de losse cursor) en het
         // sensornummer wordt van de tag afgeleid (tag 200 → sensor 1, …).
-        val sensorTag = if (autoLinkSensorTagOnPlace && aprilTagResult.hasFreshDetection()) {
+        val sensorTag = if (!planSensorAtCursor && autoLinkSensorTagOnPlace && aprilTagResult.hasFreshDetection()) {
             bestDetectionAtCursorForSetup(aprilTagResult) { it.id >= sensorTagStartId }
         } else {
             null
         }
-        val tagSurface = sensorTag?.let { tag ->
-            estimateSurfaceAtPixel(
-                result = aprilTagResult,
-                pixelX = tag.centerPx.xPx,
-                pixelY = tag.centerPx.yPx,
-                dimensionsMm = project.dimensionsMm
-            )?.takeIf { it.insideBox(project.dimensionsMm) }
+        val tagRay = sensorTag?.let { tag ->
+            imagePoseRayForPixel(aprilTagResult, tag.centerPx.xPx, tag.centerPx.yPx)
+        }
+        val tagSurface = tagRay?.let { intersectTagPlaneExact(it, selectedTagPlane, project.dimensionsMm) }
+        if (sensorTag != null && tagSurface == null) {
+            message = "Sensor-tag raakt het gekozen vlak niet. Kies het juiste trafovlak en scan opnieuw."
+            return
         }
         val placePosition = tagSurface ?: cursor
+        val placementRay = tagRay ?: cursorPlacementRay
+        val placementPlane = selectedTagPlane
         if (sensorTag != null) {
             sensorId = deriveSensorIdForScannedTag(project.sensors, sensorTag.id, sensorTagStartId)
             sensorTagId = sensorTag.id.toString()
@@ -2353,6 +2345,10 @@ fun setDefaultTagSize(sizeMm: Int) {
         setSensorFieldsFromBox(placePosition)
         if (sensorId.isBlank()) sensorId = nextSensorId()
         if (sensorName.isBlank()) sensorName = "sens"
+        if (planSensorAtCursor && project.sensors.any { it.id == sensorId }) {
+            message = "Dit sensornummer bestaat al. Kies een nieuw nummer of bewerk de bestaande sensor."
+            return
+        }
         val audit = buildPlacementAudit()
         Log.i(
             "ARSensPlacementQuality",
@@ -2362,11 +2358,11 @@ fun setDefaultTagSize(sizeMm: Int) {
                 "motionMm=${audit.motionDuringDetectionMm} fusion=${audit.fusionEvent}:${audit.fusionReason} " +
                 "reasons=${audit.reasons}"
         )
-        val saved = saveSensorPointInternal(markInstalled = true, placement = audit)
+        val saved = saveSensorPointInternal(markInstalled = !planSensorAtCursor, placement = audit)
         if (saved != null) {
-            storePlacementRayFor(saved.id, saved.referenceTagId)
+            if (!planSensorAtCursor) storePlacementRayFor(saved.id, saved.referenceTagId, placementRay, placementPlane)
             val tagNote = sensorTag?.let { " · tag ${it.id}" } ?: ""
-            message = "Sensor ${saved.id} geplaatst — ${audit.grade.label}$tagNote" +
+            message = "Sensor ${saved.id} ${if (planSensorAtCursor) "gepland (straal ${saved.toleranceMm} mm)" else "vastgelegd"} — ${audit.grade.label}$tagNote" +
                 (audit.reprojectionErrorPx?.let { " · fit ${it.roundToInt()} px" } ?: "") +
                 (audit.jitterMm?.let { " · jitter ${it.roundToInt()} mm" } ?: "") +
                 if (audit.reasons.isEmpty()) "." else "; ${audit.reasons.joinToString()}."
@@ -2679,6 +2675,7 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun setCursorFromCurrentSensor() {
         currentSensor?.let {
+            selectedTagPlane = tagPlaneForSurfacePosition(it.positionMm)
             setCursorFieldsFromBox(it.positionMm)
         }
     }
@@ -2688,6 +2685,10 @@ fun setDefaultTagSize(sizeMm: Int) {
      *  blijft handmatig (de OK-knop → [confirmInstallation]). Gemodelleerd naar [saveMeasuredTag]. */
     fun confirmSensorByScannedTag() {
         val result = aprilTagResult
+        if (!sensorPlacementReady) {
+            message = "Wacht op een stabiele kalibratie voordat je een sensor meet."
+            return
+        }
         if (!result.hasFreshDetection()) {
             message = "Geen verse tag-detectie in dit cameraframe. Houd de sensor-tag midden in beeld."
             return
@@ -2702,12 +2703,9 @@ fun setDefaultTagSize(sizeMm: Int) {
             message = "Tag ${detection.id} is aan geen enkele sensor gekoppeld. Koppel hem via 'ID-tag' in de sensor-setup."
             return
         }
-        val measured = estimateSurfaceAtPixel(
-            result = result,
-            pixelX = detection.centerPx.xPx,
-            pixelY = detection.centerPx.yPx,
-            dimensionsMm = project.dimensionsMm
-        )
+        val measured = imagePoseRayForPixel(result, detection.centerPx.xPx, detection.centerPx.yPx)?.let {
+            intersectTagPlaneExact(it, tagPlaneForSurfacePosition(sensor.positionMm), project.dimensionsMm)
+        }
         if (measured == null || !measured.insideBox(project.dimensionsMm)) {
             message = "Kon de positie van tag ${detection.id} niet op de trafo bepalen. Houd een referentietag in beeld en kom dichter/rechter voor de sensor."
             return
@@ -2723,7 +2721,11 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun confirmInstallation() {
         val sensor = currentSensor ?: return
-        val measuredPosition = scannedMeasuredPosition ?: sensor.positionMm
+        val measuredPosition = scannedMeasuredPosition ?: arCursorPosition?.takeIf { sensorPlacementReady }
+        if (measuredPosition == null) {
+            message = "Richt de cursor op de geplaatste sensor of scan zijn sensor-tag bij een stabiele kalibratie."
+            return
+        }
         setCursorFieldsFromBox(measuredPosition)
         log = confirmSensorAtMeasuredPosition(
             log = log,
@@ -2734,7 +2736,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         )
         project = project.copy(
             sensors = project.sensors.map {
-                if (it.id == sensor.id) it.copy(status = SensorStatus.Ok) else it
+                if (it.id == sensor.id) it.copy(status = log.results.first { r -> r.sensorId == sensor.id }.status) else it
             }
         )
         repository.saveLog(log)
@@ -2744,7 +2746,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         message = if (viaScan) {
             "Sensor ${sensor.id} bevestigd via gescande tag op meet-XYZ ${operatorText(measuredPosition)}."
         } else {
-            "Sensor ${sensor.id} bevestigd op vaste meet-XYZ ${operatorText(measuredPosition)}."
+            "Sensor ${sensor.id} gemeten met de cursor op meet-XYZ ${operatorText(measuredPosition)}."
         }
     }
 
@@ -3181,39 +3183,11 @@ fun setDefaultTagSize(sizeMm: Int) {
     /** Dempt per-tag en gefuseerde poses tegen trillen; zie [TagPoseSmoother] voor de tunables. */
     private val tagPoseSmoother = TagPoseSmoother()
 
-private fun smoothArPoses(result: AprilTagFrameResult, now: Long): AprilTagFrameResult {
-    if (result.posePerTag.isEmpty() && result.transformerPose == null) return result
-
-    val smoothedPerTag = result.posePerTag.mapValues { (id, pose) ->
-        tagPoseSmoother.smooth(id, pose, now)
-    }
-
-    // De gefuseerde hoofd-pose alleen dempen zolang ARCore GÉÉN displayProjection levert: dan is
-    // transformerPose een (springerige) solvePnP-pose die demping nodig heeft. Zodra ARCore trackt
-    // is transformerPose juist de al gladde ARCore-camera (zelfde basis als displayProjection) — die
-    // door de solvePnP-smoother halen geeft alleen lag/inhaal-jitter bij beweging (het 3D-model
-    // "zwemt" terwijl de sensoren via de rauwe displayProjection strak meelopen).
-    val arCoreLeading = result.displayProjection != null
-    val smoothedMain = result.transformerPose?.let { pose ->
-        if (arCoreLeading) pose else tagPoseSmoother.smooth(TagPoseSmoother.FUSED_KEY, pose, now)
-    }
-
-    val smoothedImage = when {
-        result.imageProjectionPose == null -> null
-        result.imageProjectionPose === result.transformerPose -> smoothedMain
-        else -> tagPoseSmoother.smooth(TagPoseSmoother.IMAGE_KEY, result.imageProjectionPose, now)
-    }
-
-    tagPoseSmoother.prune(now)
-
-    return result.copy(
-        posePerTag = smoothedPerTag,
-        transformerPose = smoothedMain,
-        imageProjectionPose = smoothedImage
-    )
-}
+private fun smoothArPoses(result: AprilTagFrameResult, now: Long): AprilTagFrameResult = result
 
     private fun resetArPoseState() {
+        scannedMeasuredPosition = null
+        cursorPlacementRay = null
         tagPoseSmoother.reset()
         aprilTagResult = AprilTagFrameResult()
         heldAprilTagResult = AprilTagFrameResult()
@@ -3256,7 +3230,8 @@ private data class StoredPlacementRay(
     val rayTransformer: RayMm,
     val anchorAtPlacement: Transform3D,
     val referenceTagId: Int?,
-    val placedAtMillis: Long
+    val placedAtMillis: Long,
+    val plane: TagPlane
 )
 
 /** Resultaat van [WorkflowAppState.tagPlacementPreview]: het berekende tag-center (box + meet-XYZ),

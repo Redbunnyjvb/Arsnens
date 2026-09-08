@@ -72,7 +72,7 @@ fun computePlacementQuality(
     val motionMm = result.motionDuringDetectionMm
     val motionDeg = result.motionDuringDetectionDeg
     val reprojPx = pose?.reprojectionErrorPx?.takeIf { it.isFinite() }
-    val reprojMm = reprojectionErrorMm(pose, result.cameraIntrinsics, reprojPx)
+    val reprojMm = reprojectionErrorMm(result.referenceDepthMm, result.cameraIntrinsics, reprojPx)
     val noPose = pose == null || status == ArTrackingStatus.NoPose
 
     val reprojGood = reprojPx == null || reprojPx <= PlacementQualityTuning.REPROJ_GOOD_PX
@@ -83,9 +83,12 @@ fun computePlacementQuality(
         (motionDeg ?: 0f) <= PlacementQualityTuning.MOTION_WARN_DEG
 
     val grade = when {
+        result.referenceConflict -> QualityGrade.Unsafe
         noPose -> QualityGrade.Unsafe
         status == ArTrackingStatus.NeedsRecalibration -> QualityGrade.Unsafe
-        status == ArTrackingStatus.TagCalibration && reprojGood && jitterGood && motionGood ->
+        !result.anchorSettled -> QualityGrade.Low
+        status == ArTrackingStatus.TagCalibration && reprojGood && jitterGood && motionGood && isStableLock &&
+            result.rejectedMarkerIds.isEmpty() ->
             QualityGrade.High
         (status == ArTrackingStatus.TagCalibration || status == ArTrackingStatus.ArCoreTracking) &&
             reprojOk && jitterOk ->
@@ -94,6 +97,9 @@ fun computePlacementQuality(
     }
 
     val reasons = buildList {
+        if (result.referenceConflict) add("referentietags spreken elkaar tegen")
+        if (result.rejectedMarkerIds.isNotEmpty()) add("tag ${result.rejectedMarkerIds.joinToString()} uitgesloten; controleer de positie")
+        if (!result.anchorSettled && !noPose) add("kalibratie komt tot rust")
         if (reprojPx != null && reprojPx > PlacementQualityTuning.REPROJ_GOOD_PX) {
             add("pose-fit ${reprojPx.roundToInt()} px")
         }
@@ -133,16 +139,14 @@ fun computePlacementQuality(
 /** Reprojectiefout (px) → mm op tag-diepte: px × afstand/fx. Afstand = ‖tag-translatie‖ (mm),
  *  fx in pixels. Fysisch onderbouwde conversie i.p.v. een vaste factor. */
 private fun reprojectionErrorMm(
-    pose: TransformerPose?,
+    referenceDepthMm: Float?,
     intrinsics: CameraIntrinsics?,
     reprojPx: Float?
 ): Float? {
-    if (pose == null || reprojPx == null) return null
+    if (reprojPx == null) return null
     val fx = intrinsics?.fx?.takeIf { it > 0f } ?: return null
-    val t = pose.translationMm
-    val distance = sqrt((t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).toDouble()).toFloat()
-    if (distance <= 0f) return null
-    return reprojPx * distance / fx
+    val depth = referenceDepthMm?.takeIf { it.isFinite() && it > 0f } ?: return null
+    return reprojPx * depth / fx
 }
 
 /** Bevriest deze live kwaliteit tot de onveranderlijke audit-snapshot die op de sensor komt. */

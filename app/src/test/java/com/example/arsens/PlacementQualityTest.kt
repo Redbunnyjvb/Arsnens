@@ -28,6 +28,7 @@ class PlacementQualityTest {
     @Test
     fun freshTagCalibration_lowReproj_isHigh_noReasons() {
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(1f),
             trackingStatus = ArTrackingStatus.TagCalibration,
             trackingQualityPercent = 95,
@@ -43,6 +44,7 @@ class PlacementQualityTest {
     @Test
     fun driftPossible_isLow() {
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(3f),
             trackingStatus = ArTrackingStatus.DriftPossible,
             trackingQualityPercent = 45,
@@ -56,6 +58,7 @@ class PlacementQualityTest {
     @Test
     fun recentArCoreTracking_isMedium() {
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(5f),
             trackingStatus = ArTrackingStatus.ArCoreTracking,
             trackingQualityPercent = 75,
@@ -69,6 +72,7 @@ class PlacementQualityTest {
     @Test
     fun highJitter_downgradesFromHigh() {
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(1f),
             trackingStatus = ArTrackingStatus.TagCalibration,
             trackingQualityPercent = 95,
@@ -94,6 +98,7 @@ class PlacementQualityTest {
     @Test
     fun needsRecalibration_isUnsafe() {
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(2f),
             trackingStatus = ArTrackingStatus.NeedsRecalibration,
             trackingQualityPercent = 20,
@@ -107,7 +112,9 @@ class PlacementQualityTest {
     fun reprojectionMm_isPhysicalConversion_pxTimesDistanceOverFx() {
         // 2 px op 1500 mm met fx 1400 → 2 * 1500 / 1400 ≈ 2.14 mm.
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(2f, distanceMm = 1500f),
+            referenceDepthMm = 1500f,
             cameraIntrinsics = CameraIntrinsics(fx = 1400f, fy = 1400f, cx = 640f, cy = 360f),
             trackingStatus = ArTrackingStatus.TagCalibration,
             trackingQualityPercent = 95,
@@ -121,6 +128,7 @@ class PlacementQualityTest {
     @Test
     fun reprojectionMm_isNull_withoutIntrinsics() {
         val result = AprilTagFrameResult(
+            anchorSettled = true,
             transformerPose = pose(2f),
             trackingStatus = ArTrackingStatus.TagCalibration,
             trackingQualityPercent = 95,

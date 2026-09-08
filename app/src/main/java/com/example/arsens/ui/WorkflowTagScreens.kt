@@ -149,14 +149,6 @@ import kotlin.math.sin
 @Composable
 internal fun WorkflowTagsScreen(state: WorkflowAppState) {
     val menus = workflowTagCameraMenus(state)
-    // Na on-the-fly tag-opslag: tag op het modeloppervlak zetten (model op tag-diepte in AR).
-    // Async, want de meshes kunnen nog aan het parsen zijn en de raycast is zwaar.
-    LaunchedEffect(state.pendingTagSnapId) {
-        val tagId = state.pendingTagSnapId ?: return@LaunchedEffect
-        state.pendingTagSnapId = null
-        // quiet: als er geen oppervlak gevonden wordt blijft de "tag opgeslagen"-melding staan.
-        state.snapTagToModelSurface(tagId, quiet = true)
-    }
     FullScreenCameraWorkflowShell(
         title = state.project.projectName,
         subtitle = "",
@@ -184,7 +176,7 @@ internal fun WorkflowTagsScreen(state: WorkflowAppState) {
             )
         },
         message = state.message,
-        primaryActionText = if (state.cameraPlacementTarget == CameraPlacementTarget.Tag) "Tag" else "Sensor",
+        primaryActionText = if (state.cameraPlacementTarget == CameraPlacementTarget.Tag) "Tag" else if (state.planSensorAtCursor) "Plan sensor" else "Sensor zit hier",
         onPrimaryAction = {
             if (state.cameraPlacementTarget == CameraPlacementTarget.Tag) {
                 state.saveMeasuredTag()

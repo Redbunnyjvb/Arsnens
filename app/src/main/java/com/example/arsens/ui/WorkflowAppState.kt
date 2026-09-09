@@ -146,6 +146,9 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.sensorTagConflict
+import com.example.arsens.data.resetSensorInstallation
+import com.example.arsens.data.updateSensorPlan
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.SensorDriftCorrection
 import com.example.arsens.data.SensorPlacementAudit
@@ -195,7 +198,7 @@ internal enum class WorkflowScreen {
 
 internal enum class WorkMode(val label: String) {
     Prepared("Voorbereid"),
-    OnTheFly("On the fly")
+    OnTheFly("Camera")
 }
 
 internal enum class CameraPlacementTarget(val label: String) {
@@ -495,7 +498,7 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     /** Gemeten positie afgeleid uit een gescande sensor-tag, klaargezet voor handmatige bevestiging
      *  in de Install-flow. Null = geen gescande meting; [confirmInstallation] valt dan terug op de
-     *  geplande positie (bestaand gedrag). */
+     *  actuele AR-cursor, mits plaatsingskwaliteit en tracking dit toelaten. */
     var scannedMeasuredPosition: MmPosition? by mutableStateOf<MmPosition?>(null)
         private set
     var cursorX by mutableStateOf("0")
@@ -713,6 +716,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         cameraPlacementTarget = if (selected == WorkMode.OnTheFly) CameraPlacementTarget.Sensor else CameraPlacementTarget.Tag
         navHistory.clear()
         if (selected == WorkMode.OnTheFly) {
+            planSensorAtCursor = false
             resetSensorFormForNext()
             reseedTagPlacement()
             showTagOverlay = true
@@ -1076,6 +1080,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun selectTagPlane(plane: TagPlane) {
+        scannedMeasuredPosition = null
         selectedTagPlane = plane
         activeMapView = plane.toMapView()
         reseedTagPlacement()
@@ -2235,7 +2240,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         saveSensorPointInternal(markInstalled = false)
     }
 
-    private fun saveSensorPointInternal(markInstalled: Boolean, placement: SensorPlacementAudit? = null): Sensor? {
+    private fun saveSensorPointInternal(markInstalled: Boolean, placement: SensorPlacementAudit? = null, plane: TagPlane? = null): Sensor? {
         val operatorPosition = operatorPositionOrNull(sensorX, sensorY, sensorZ)
         val tolerance = sensorTolerance.toIntOrNull()
         val id = sensorId.ifBlank { nextSensorId() }.trim()
@@ -2251,14 +2256,20 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
         val existingSensor = project.sensors.firstOrNull { it.id == id }
         val target = existingSensor?.takeIf { markInstalled && (it.status == SensorStatus.Pending || it.origin == PlacementOrigin.Prepared) }
+        val tagIdValue = sensorTagId.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
+        if (sensorTagId.isNotBlank() && (tagIdValue == null || tagIdValue < sensorTagStartId)) {
+            message = "Kies een sensor-tag-ID vanaf $sensorTagStartId of laat het veld leeg."
+            return null
+        }
+        sensorTagConflict(project.sensors, id, tagIdValue)?.let { message = it; return null }
         val savedPosition = target?.positionMm ?: boxPosition
         val nextOrder = (project.sensors.maxOfOrNull { it.order } ?: 0) + 1
         var sensor = Sensor(
             order = existingSensor?.order ?: nextOrder,
             id = id,
-            name = name,
-            side = target?.side ?: (if (placement != null) selectedTagPlane else tagPlaneForSurfacePosition(savedPosition)).name,
-            normal = target?.normal ?: tagPlaneOutwardNormal(if (placement != null) selectedTagPlane else tagPlaneForSurfacePosition(savedPosition)),
+            name = target?.name ?: name,
+            side = target?.side ?: (plane ?: tagPlaneForSurfacePosition(savedPosition)).name,
+            normal = target?.normal ?: tagPlaneOutwardNormal(plane ?: tagPlaneForSurfacePosition(savedPosition)),
             positionMm = savedPosition,
             toleranceMm = target?.toleranceMm ?: tolerance,
             instruction = target?.instruction ?: sensorInstruction.trim(),
@@ -2272,12 +2283,13 @@ fun setDefaultTagSize(sizeMm: Int) {
             // Live-AR plaatsing levert een audit-snapshot; form-/2D-edits (placement == null) behouden
             // de bestaande audit.
             placement = placement ?: existingSensor?.placement,
-            // Sensor-tag uit het formulier; leeg laat de bestaande koppeling staan.
-            sensorTagId = this.sensorTagId.toIntOrNull() ?: existingSensor?.sensorTagId,
+            // An empty field explicitly removes the optional physical label.
+            sensorTagId = tagIdValue,
+            driftCorrection = if (markInstalled) null else existingSensor?.driftCorrection,
             // Herkomst: een bestaande sensor behoudt zijn herkomst; een NIEUWE sensor is OnTheFly als
             // hij live is vastgelegd (markInstalled), anders Voorbereid (formulier/2D).
             origin = existingSensor?.origin
-                ?: if (placement != null || markInstalled) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
+                ?: if (markInstalled) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
         )
         if (markInstalled) {
             log = confirmSensorAtMeasuredPosition(
@@ -2285,6 +2297,12 @@ fun setDefaultTagSize(sizeMm: Int) {
                 photo = null, confirmedAt = repository.nowIso()
             )
             sensor = sensor.copy(status = log.results.first { it.sensorId == sensor.id }.status)
+            repository.saveLog(log)
+        }
+        if (!markInstalled) {
+            val change = updateSensorPlan(sensor, log)
+            sensor = change.sensor
+            log = change.log
             repository.saveLog(log)
         }
         val sensors = (project.sensors.filterNot { it.id == sensor.id } + sensor)
@@ -2323,8 +2341,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
         // On-the-fly sensor-tag koppeling: staat er een sensor-tag (ID ≥ sensorTagStartId) onder de
         // cursor en is de instelling aan, dan koppelt deze plaatsing die tag automatisch. De positie
-        // komt dan van het tagmiddelpunt op het trafo-vlak (nauwkeuriger dan de losse cursor) en het
-        // sensornummer wordt van de tag afgeleid (tag 200 → sensor 1, …).
+        // komt dan van het tagmiddelpunt op het gekozen trafo-vlak. De gekozen sensor-ID blijft staan.
         val sensorTag = if (!planSensorAtCursor && autoLinkSensorTagOnPlace && aprilTagResult.hasFreshDetection()) {
             bestDetectionAtCursorForSetup(aprilTagResult) { it.id >= sensorTagStartId }
         } else {
@@ -2342,9 +2359,14 @@ fun setDefaultTagSize(sizeMm: Int) {
         val placementRay = tagRay ?: cursorPlacementRay
         val placementPlane = selectedTagPlane
         if (sensorTag != null) {
-            sensorId = deriveSensorIdForScannedTag(project.sensors, sensorTag.id, sensorTagStartId)
+            if (sensorId.isBlank()) sensorId = nextSensorId()
+            sensorTagConflict(project.sensors, sensorId, sensorTag.id)?.let { message = it; return }
+            val linkedTag = project.sensors.firstOrNull { it.id == sensorId }?.sensorTagId
+            if (linkedTag != null && linkedTag != sensorTag.id) {
+                message = "Sensor $sensorId is gekoppeld aan tag $linkedTag. Wijzig de koppeling via Bewerken."
+                return
+            }
             sensorTagId = sensorTag.id.toString()
-            sensorForSensorTag(project.sensors, sensorTag.id)?.let { sensorName = it.name }
         }
         // Sla de tag op die nu de pose levert — dit wordt de vaste referentietag voor deze sensor.
         // Bij een stale tag (ARCore-fallback) is poseMarkerIds leeg; val dan terug op de laatst
@@ -2367,14 +2389,25 @@ fun setDefaultTagSize(sizeMm: Int) {
                 "motionMm=${audit.motionDuringDetectionMm} fusion=${audit.fusionEvent}:${audit.fusionReason} " +
                 "reasons=${audit.reasons}"
         )
-        val saved = saveSensorPointInternal(markInstalled = !planSensorAtCursor, placement = audit)
+        val preservesTarget = project.sensors.any { it.id == sensorId &&
+            (it.origin == PlacementOrigin.Prepared || it.status == SensorStatus.Pending) }
+        val saved = saveSensorPointInternal(markInstalled = !planSensorAtCursor,
+            placement = audit.takeUnless { planSensorAtCursor }, plane = selectedTagPlane)
         if (saved != null) {
-            if (!planSensorAtCursor) storePlacementRayFor(saved.id, saved.referenceTagId, placementRay, placementPlane)
-            val tagNote = sensorTag?.let { " · tag ${it.id}" } ?: ""
-            message = "Sensor ${saved.id} ${if (planSensorAtCursor) "gepland (straal ${saved.toleranceMm} mm)" else "vastgelegd"} — ${audit.grade.label}$tagNote" +
-                (audit.reprojectionErrorPx?.let { " · fit ${it.roundToInt()} px" } ?: "") +
-                (audit.jitterMm?.let { " · jitter ${it.roundToInt()} mm" } ?: "") +
-                if (audit.reasons.isEmpty()) "." else "; ${audit.reasons.joinToString()}."
+            if (!planSensorAtCursor) {
+                if (!preservesTarget) storePlacementRayFor(saved.id, saved.referenceTagId, placementRay, placementPlane)
+                selectSensorForEdit(saved)
+            }
+            val tagNote = sensorTag?.let { " · tag ${it.id}" }.orEmpty()
+            val installed = log.results.firstOrNull { it.sensorId == saved.id }
+            message = if (planSensorAtCursor) {
+                "Sensor ${saved.id} voorbereid · doelradius ${saved.toleranceMm} mm."
+            } else if (preservesTarget && installed != null) {
+                "Sensor ${saved.id} vastgelegd$tagNote · ${installed.distanceErrorMm} mm van doel " +
+                    "(${if (installed.status == SensorStatus.Fail) "buiten" else "binnen"} radius ${saved.toleranceMm} mm)."
+            } else {
+                "Sensor ${saved.id} vastgelegd$tagNote. Kies Nieuwe sensor voor het volgende punt."
+            }
         }
     }
 
@@ -2383,10 +2416,14 @@ fun setDefaultTagSize(sizeMm: Int) {
             message = "Sensorpunt valt buiten de trafo-box."
             return
         }
+        if (project.sensors.any { it.id == sensorId.trim() }) {
+            message = "Sensor $sensorId bestaat al. Kies een nieuw ID; verplaatsen kan via de selectie."
+            return
+        }
         setSensorFieldsFromBox(position)
         if (sensorId.isBlank()) sensorId = nextSensorId()
         if (sensorName.isBlank()) sensorName = "sens"
-        saveSensorPointInternal(markInstalled = false)
+        saveSensorPointInternal(markInstalled = false, plane = tagPlaneForMapView(activeMapView.name, position))
     }
 
     fun saveTagAtBoxPosition(position: MmPosition, viewName: String) {
@@ -2404,7 +2441,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             size = size,
             position = position,
             rotation = rotation,
-            allowMoveExisting = true,
+            allowMoveExisting = false,
             advanceToNextId = true,
             messagePrefix = "AprilTag $id voorbereid op ${plane.label}"
         )
@@ -2583,33 +2620,87 @@ fun setDefaultTagSize(sizeMm: Int) {
         sensorTolerance = sensor.toleranceMm.toString()
         sensorInstruction = sensor.instruction
         sensorTagId = sensor.sensorTagId?.toString() ?: ""
+        sensorReferenceTagId = sensor.referenceTagId
     }
 
-    fun moveSensorToBoxPosition(sensorId: String, position: MmPosition) {
+    fun beginMapPreparation() {
+        beginNewSensor()
+        tagId = nextAprilTagId().toString()
+        tagSize = defaultTagSizeMm.toString()
+    }
+
+    fun saveNewSensorFromFields() {
+        if (project.sensors.any { it.id == sensorId.trim() }) {
+            message = "Dit sensor-ID bestaat al. Kies een nieuw ID of selecteer de bestaande sensor."
+            return
+        }
+        saveSensorPointInternal(markInstalled = false)
+    }
+
+    fun beginNewSensor() {
+        resetSensorFormForNext()
+        scannedMeasuredPosition = null
+    }
+
+    fun selectCameraSensor(sensor: Sensor) {
+        selectSensorForEdit(sensor)
+        planSensorAtCursor = false
+        scannedMeasuredPosition = null
+        selectedTagPlane = sensorPlane(sensor)
+        cameraPlacementTarget = CameraPlacementTarget.Sensor
+        message = "Sensor ${sensor.id} · ${sensor.name} geselecteerd. Richt op de werkelijke plek; buiten de radius mag ook."
+    }
+
+    fun openCameraForSensor(id: String?) {
+        chooseMode(WorkMode.OnTheFly)
+        id?.let { value -> project.sensors.firstOrNull { it.id == value }?.let(::selectCameraSensor) }
+        cameraMenuRequest = "sensor"
+    }
+
+    fun editSensorDetails(id: String, name: String, radius: Int, tag: Int?, instruction: String): String? {
+        val sensor = project.sensors.firstOrNull { it.id == id } ?: return "Sensor bestaat niet meer."
+        if (radius <= 0) return "De radius moet groter zijn dan nul."
+        if (tag != null && tag < sensorTagStartId) return "Sensor-tag-ID moet minstens $sensorTagStartId zijn."
+        sensorTagConflict(project.sensors, id, tag)?.let { return it }
+        val change = updateSensorPlan(sensor.copy(name = name.trim(), toleranceMm = radius,
+            sensorTagId = tag, instruction = instruction.trim()), log)
+        project = project.copy(sensors = project.sensors.map { if (it.id == id) change.sensor else it })
+        log = change.log
+        repository.saveLog(log)
+        saveProject()
+        message = "Sensor $id bijgewerkt."
+        return null
+    }
+
+    fun resetPlacement(id: String) {
+        val sensor = project.sensors.firstOrNull { it.id == id } ?: return
+        val change = resetSensorInstallation(sensor, log)
+        project = project.copy(sensors = project.sensors.map { if (it.id == id) change.sensor else it })
+        log = change.log
+        placementRays.remove(id)
+        scannedMeasuredPosition = null
+        repository.saveLog(log)
+        saveProject()
+        message = "Sensor $id staat weer op te plaatsen; zijn doelgebied blijft bewaard."
+    }
+
+    fun moveSensorToBoxPosition(sensorId: String, position: MmPosition, viewName: String? = null) {
         if (!position.insideBox(project.dimensionsMm)) {
             message = "Sensorpunt valt buiten de trafo-box."
             return
         }
-        val existing = project.sensors.firstOrNull { it.id == sensorId }
-        if (existing == null) {
-            message = "Sensor $sensorId bestaat niet meer."
-            return
-        }
-        val updated = existing.copy(
-            positionMm = position,
-            // Herkoppel aan de dichtstbijzijnde tag op de nieuwe plek (behoud oude als er geen is).
-            referenceTagId = nearestTagIdForBox(position) ?: existing.referenceTagId
-        )
-        project = project.copy(
-            sensors = project.sensors.map { sensor ->
-                if (sensor.id == sensorId) updated else sensor
-            }
-        )
+        val existing = project.sensors.firstOrNull { it.id == sensorId } ?: return
+        val plane = viewName?.let { tagPlaneForMapView(it, position) } ?: tagPlaneForSurfacePosition(position)
+        val change = updateSensorPlan(existing.copy(positionMm = position, side = plane.name,
+            normal = tagPlaneOutwardNormal(plane),
+            referenceTagId = nearestTagIdForBox(position) ?: existing.referenceTagId), log)
+        project = project.copy(sensors = project.sensors.map { if (it.id == sensorId) change.sensor else it })
+        log = change.log
         placementRays.remove(sensorId)
-        selectSensorForEdit(updated)
+        repository.saveLog(log)
         showSensorOverlay = true
         saveProject()
-        message = "Sensor $sensorId verplaatst naar meet-XYZ ${operatorText(position)}."
+        message = "Doel van sensor $sensorId verplaatst. Een bestaande meting blijft op zijn werkelijke plek."
     }
 
     fun selectTagForEdit(marker: Marker) {
@@ -2648,26 +2739,17 @@ fun setDefaultTagSize(sizeMm: Int) {
                 .mapIndexed { index, item -> item.copy(order = index + 1) }
         )
         placementRays.remove(sensor.id)
+        log = log.copy(results = log.results.filterNot { it.sensorId == sensor.id })
+        repository.saveLog(log)
         saveProject()
         message = "Sensor ${sensor.id} verwijderd."
     }
 
-    /** Verwijder de laatst geplaatste sensor (hoogste order) — handig wanneer een sensor
-     *  net verkeerd is neergezet tijdens live plaatsen. */
+    /** Zet de laatste bevestiging terug op te plaatsen; behoud de sensor en zijn doelgebied. */
     fun undoLastPlacedSensor() {
-        val last = project.sensors.maxByOrNull { it.order }
-        if (last == null) {
-            message = "Geen sensor om te verwijderen."
-            return
-        }
-        project = project.copy(
-            sensors = project.sensors.filterNot { it.id == last.id }
-                .sortedBy { it.order }
-                .mapIndexed { index, item -> item.copy(order = index + 1) }
-        )
-        placementRays.remove(last.id)
-        saveProject()
-        message = "Laatst geplaatste sensor (${last.id}) verwijderd."
+        val last = log.results.maxByOrNull { it.confirmedAt }
+        if (last == null) { message = "Geen plaatsing om terug te zetten."; return }
+        resetPlacement(last.sensorId)
     }
 
     fun previousSensor() {
@@ -2715,8 +2797,12 @@ fun setDefaultTagSize(sizeMm: Int) {
             message = "Tag ${detection.id} is aan geen enkele sensor gekoppeld. Koppel hem via 'ID-tag' in de sensor-setup."
             return
         }
+        if (sensor.id != currentSensor?.id) {
+            message = "Tag ${detection.id} hoort bij sensor ${sensor.id}. Selecteer eerst die sensor."
+            return
+        }
         val measured = imagePoseRayForPixel(result, detection.centerPx.xPx, detection.centerPx.yPx)?.let {
-            intersectTagPlaneExact(it, sensorPlane(sensor), project.dimensionsMm)
+            intersectTagPlaneExact(it, selectedTagPlane, project.dimensionsMm)
         }
         if (measured == null || !measured.insideBox(project.dimensionsMm)) {
             message = "Kon de positie van tag ${detection.id} niet op de trafo bepalen. Houd een referentietag in beeld en kom dichter/rechter voor de sensor."
@@ -2733,7 +2819,10 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun confirmInstallation() {
         val sensor = currentSensor ?: return
-        val measuredPosition = scannedMeasuredPosition ?: arCursorPosition?.takeIf { sensorPlacementReady }
+        if (!sensorPlacementReady) { message = sensorPlacementBlockReason; return }
+        val measuredPosition = scannedMeasuredPosition ?: arCursorPosition?.takeIf {
+            arCursorInsideTransformer && (arCursorSource == "surface" || arCursorSource == "depth")
+        }
         if (measuredPosition == null) {
             message = "Richt de cursor op de geplaatste sensor of scan zijn sensor-tag bij een stabiele kalibratie."
             return
@@ -2748,7 +2837,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         )
         project = project.copy(
             sensors = project.sensors.map {
-                if (it.id == sensor.id) it.copy(status = log.results.first { r -> r.sensorId == sensor.id }.status) else it
+                if (it.id == sensor.id) it.copy(status = log.results.first { r -> r.sensorId == sensor.id }.status, placement = buildPlacementAudit()) else it
             }
         )
         repository.saveLog(log)

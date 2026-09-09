@@ -123,6 +123,8 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.placementCountLabel
+import com.example.arsens.data.displayName
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -154,7 +156,7 @@ internal fun WorkflowTagsScreen(state: WorkflowAppState) {
         subtitle = "",
         onBack = state::navigateBack,
         topActions = {
-            WorkflowCameraStatusPill("${state.project.sensors.size} sensoren geplaatst")
+            WorkflowCameraStatusPill(if (state.cameraPlacementTarget == CameraPlacementTarget.Sensor) "Sensor ${state.sensorId} · ${state.project.placementCountLabel}" else state.project.placementCountLabel)
             // Opent de 2D-kaart met ALLE sensoren en tags — ook die waarvan de referentietag
             // nu niet in beeld is (die worden in de live overlay bewust verborgen).
             // Gevulde knoppen in de app-kleur (i.p.v. outline) zodat ze opvallen op het camerabeeld.
@@ -187,7 +189,8 @@ internal fun WorkflowTagsScreen(state: WorkflowAppState) {
         placementTarget = state.cameraPlacementTarget,
         onPlacementTargetChange = state::selectCameraPlacementTarget,
         camera = {
-            WorkflowCameraLayers(state)
+            WorkflowCameraLayers(state, targetSensor = state.project.sensors.firstOrNull { it.id == state.sensorId }
+                .takeIf { state.cameraPlacementTarget == CameraPlacementTarget.Sensor && !state.planSensorAtCursor })
         },
         requestedMenuKey = state.cameraMenuRequest,
         onMenuRequestConsumed = state::consumeCameraMenuRequest,

@@ -5,7 +5,7 @@ import kotlin.math.sqrt
 enum class SensorStatus(val wireName: String, val label: String) {
     Pending("pending", "Nog te plaatsen"),
     Ok("ok", "OK"),
-    Fail("fail", "Fout")
+    Fail("fail", "Afwijking")
 }
 
 /** Hoe een sensor of tag in het project terecht is gekomen — LOS van de plaatsings-[SensorStatus].
@@ -14,7 +14,7 @@ enum class SensorStatus(val wireName: String, val label: String) {
  *  status (oranje = nog te plaatsen, blauw = geplaatst). Twee onafhankelijke assen. */
 enum class PlacementOrigin(val wireName: String, val label: String) {
     Prepared("prepared", "Voorbereid"),
-    OnTheFly("on_the_fly", "On the fly")
+    OnTheFly("on_the_fly", "Camera")
 }
 
 data class MmPosition(

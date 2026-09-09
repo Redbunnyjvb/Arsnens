@@ -120,6 +120,8 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.placementCountLabel
+import com.example.arsens.data.displayName
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -145,53 +147,63 @@ import kotlin.math.sin
 
 @Composable
 internal fun WorkflowSensorSheet(state: WorkflowAppState) {
-    // Sensoren-paneel zoals de afbeelding: lijst van geplaatste sensoren met vlak + coördinaten en
-    // bewerk/verwijder-knoppen, daaronder de teal "Plaats sensor"-knop.
-    val cursorReady = state.sensorPlacementReady && state.arCursorPosition != null &&
+    val cursorReady = state.sensorPlacementReady && state.arCursorPosition != null && state.arCursorInsideTransformer &&
         (state.arCursorSource == "surface" || state.arCursorSource == "depth")
     val sensors = state.project.sensors.sortedBy { it.order }
+    val selected = sensors.firstOrNull { it.id == state.sensorId }
+    var choosing by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var editing by remember { mutableStateOf<Sensor?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Hier komt een sensor", modifier = Modifier.weight(1f), color = Color.White)
-            Switch(checked = state.planSensorAtCursor, onCheckedChange = { state.planSensorAtCursor = it })
+        Text(selected?.displayName() ?: "Nieuwe sensor ${state.sensorId}", color = Color.White, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { choosing = true }) { Text("Sensor kiezen") }
+            OutlinedButton(onClick = { state.beginNewSensor() }) { Text("Nieuwe sensor") }
         }
-        Text(
-            if (state.planSensorAtCursor) "Geplande plek: cirkel met straal ${state.sensorTolerance} mm."
-            else "Leg vast waar de sensor zit; een zichtbare sensor-tag wordt gekoppeld.",
-            color = Color.White.copy(alpha = 0.66f), fontSize = 13.sp
-        )
-        if (sensors.isEmpty()) {
-            Text(
-                "Nog geen sensoren geplaatst. Richt de cursor op het vlak en tik 'Plaats sensor'.",
-                color = Color.White.copy(alpha = 0.66f),
-                fontSize = 13.sp
-            )
-        } else {
-            sensors.forEach { sensor ->
-                WorkflowSheetEntityRow(
-                    name = sensor.id.ifBlank { "Sensor ${sensor.order.toString().padStart(3, '0')}" },
-                    plane = sensor.side.ifBlank { state.selectedTagPlane.cameraPlaneLabel() },
-                    coords = workflowSheetCoords(sensor.positionMm),
-                    dotColor = workflowStatusColor(sensor.status),
-                    onEdit = { state.selectSensorForEdit(sensor) },
-                    onDelete = { state.requestRemoveSensor(sensor) }
-                )
+        if (selected == null) {
+            OutlinedTextField(state.sensorId, { state.sensorId = it }, label = { Text("Sensor-ID") }, singleLine = true)
+            OutlinedTextField(state.sensorName, { state.sensorName = it }, label = { Text("Naam") }, singleLine = true)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Hier komt een sensor", modifier = Modifier.weight(1f), color = Color.White)
+                Switch(checked = state.planSensorAtCursor, onCheckedChange = { state.planSensorAtCursor = it })
             }
+            if (state.planSensorAtCursor) WorkflowNumberField("Doelradius (mm)", state.sensorTolerance, { state.sensorTolerance = it })
+        } else {
+            Text("${selected.status.label} · doelradius ${selected.toleranceMm} mm", color = Color.White)
+            if (selected.instruction.isNotBlank()) Text(selected.instruction, color = Color.White)
+            selected.sensorTagId?.let { Text("Sensor-tag $it", color = Color.White) }
+            TextButton(onClick = { editing = selected }) { Text("Bewerken") }
+            if (selected.status != SensorStatus.Pending) TextButton(onClick = { state.resetPlacement(selected.id) }) { Text("Opnieuw te plaatsen") }
         }
-        WorkflowSheetPlaceButton(
-            label = if (state.planSensorAtCursor) "Hier komt de sensor" else "Sensor zit hier",
-            color = ArSensTeal,
-            enabled = cursorReady,
-            onClick = {
+        Text(if (state.planSensorAtCursor) "Bereid een doelgebied voor; deze sensor is nog niet geplaatst."
+            else "Richt op de werkelijke plek. Buiten de doelradius plaatsen mag; de afwijking wordt bewaard.",
+            color = Color.White.copy(alpha = 0.72f), fontSize = 13.sp)
+        WorkflowSheetPlaceButton(label = if (state.planSensorAtCursor) "Hier komt de sensor" else "Sensor zit hier",
+            color = ArSensTeal, enabled = cursorReady, onClick = {
                 state.selectCameraPlacementTarget(CameraPlacementTarget.Sensor)
                 state.saveSensorAtCursor()
-            }
-        )
-        if (!cursorReady) Text(
-            state.sensorPlacementBlockReason ?: "Richt de cursor op het gekozen trafovlak.",
-            color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp
-        )
+            })
+        if (!cursorReady) Text(state.sensorPlacementBlockReason ?: "Richt de cursor op het gekozen trafovlak.",
+            color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
     }
+    if (choosing) AlertDialog(onDismissRequest = { choosing = false }, title = { Text("Sensor kiezen") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(query, { query = it }, label = { Text("Zoek naam of ID") })
+            Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+                sensors.filter { it.displayName().contains(query, true) }.forEach { sensor ->
+                    TextButton(onClick = { state.selectCameraSensor(sensor); choosing = false }) {
+                        Text("${sensor.displayName()} · ${sensor.status.label}")
+                    }
+                }
+            }
+        }
+    }, confirmButton = { TextButton(onClick = { choosing = false }) { Text("Sluiten") } })
+    editing?.let { sensor -> WorkflowSensorEditDialog(sensor, { editing = null }) { id, name, radius, tag, note ->
+        state.editSensorDetails(id, name, radius, tag, note).also { error ->
+            if (error == null) state.project.sensors.firstOrNull { it.id == id }?.let(state::selectCameraSensor)
+        }
+    } }
+
 }
 
 @Composable
@@ -204,7 +216,7 @@ internal fun WorkflowSensorsScreen(state: WorkflowAppState) {
         subtitle = "Voorbereid of live vastleggen",
         onBack = { state.go(WorkflowScreen.Start) },
         topActions = {
-            ArSensCounterPill("${state.project.sensors.size} sensoren geplaatst", dark = false)
+            ArSensCounterPill(state.project.placementCountLabel, dark = false)
         },
         overflowItems = workflowTopBarMenuItems(state)
     ) {
@@ -335,7 +347,7 @@ internal fun WorkflowInstallScreen(state: WorkflowAppState) {
             )
         },
         message = state.message,
-        primaryActionText = "OK",
+        primaryActionText = "Sensor zit hier",
         onPrimaryAction = state::confirmInstallation,
         camera = {
             WorkflowCameraLayers(state, targetSensor = sensor)
@@ -375,7 +387,7 @@ internal fun WorkflowInstallSensorPanel(state: WorkflowAppState, sensor: Sensor)
     state.scannedMeasuredPosition?.let { measured ->
         val delta = distanceMm(measured - sensor.positionMm)
         WorkflowStatusChip(
-            text = "Gescande meting · afwijking $delta mm (tolerantie ${sensor.toleranceMm} mm) — druk OK om te bevestigen",
+            text = "Gescande meting · afwijking $delta mm (tolerantie ${sensor.toleranceMm} mm) — tik Sensor zit hier om te bevestigen",
             status = if (delta <= sensor.toleranceMm) SensorStatus.Ok else SensorStatus.Fail
         )
     }

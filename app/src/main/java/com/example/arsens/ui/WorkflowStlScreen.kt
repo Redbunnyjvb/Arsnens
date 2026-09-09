@@ -125,6 +125,8 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.placementCountLabel
+import com.example.arsens.data.displayName
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -259,7 +261,7 @@ internal fun WorkflowStlScreen(state: WorkflowAppState) {
             dark = false,
             overflowItems = workflowTopBarMenuItems(state)
         ) {
-            ArSensCounterPill("${state.project.sensors.size} sensoren geplaatst", dark = false)
+            ArSensCounterPill(state.project.placementCountLabel, dark = false)
         }
         WorkflowStlLoadBar(
             state = state,

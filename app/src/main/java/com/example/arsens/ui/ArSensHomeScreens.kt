@@ -126,6 +126,8 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.placementCountLabel
+import com.example.arsens.data.displayName
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -317,8 +319,8 @@ internal fun WorkflowStartScreen(state: WorkflowAppState) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                     ArSensFeatureTile(
-                        title = "On the fly",
-                        body = "Direct meten en vastleggen",
+                        title = "Camera",
+                        body = "Sensoren plaatsen en vastleggen",
                         icon = ArSensGlyph.Navigation,
                         tint = ArSensBlue,
                         onClick = { state.chooseMode(WorkMode.OnTheFly) },
@@ -327,8 +329,8 @@ internal fun WorkflowStartScreen(state: WorkflowAppState) {
                             .height(158.dp)
                     )
                     ArSensFeatureTile(
-                        title = "Voorbereid",
-                        body = "Gebruik een voorbereid plan",
+                        title = "2D",
+                        body = "Bekijken, meten en voorbereiden",
                         icon = ArSensGlyph.Checklist,
                         tint = ArSensTeal,
                         onClick = { state.chooseMode(WorkMode.Prepared) },
@@ -712,8 +714,8 @@ internal fun WorkflowTagSettingsCard(state: WorkflowAppState) {
             )
             WorkflowSettingsToggleRow(
                 title = "Sensor-tag koppelen bij plaatsen",
-                subtitle = "On-the-fly: 'Plaats sensor' pakt automatisch de sensor-tag onder de cursor " +
-                    "en leidt het sensornummer ervan af (tag ${state.sensorTagStartId} → sensor 1).",
+                subtitle = "Camera: koppel de sensor-tag onder de cursor aan de gekozen sensor. " +
+                    "Naam en sensor-ID blijven behouden.",
                 checked = state.autoLinkSensorTagOnPlace
             ) { state.setAutoLinkSensorTag(!state.autoLinkSensorTagOnPlace) }
         }

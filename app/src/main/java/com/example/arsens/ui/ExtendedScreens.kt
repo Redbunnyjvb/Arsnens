@@ -48,6 +48,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.Switch
+import androidx.compose.ui.platform.testTag
+import com.example.arsens.data.displayName
+import com.example.arsens.data.placementCountLabel
+import com.example.arsens.data.toReadableMm
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,617 +96,262 @@ internal fun TransformerMapWorkspace(
     log: InstallationLog,
     onBack: () -> Unit,
     initialView: TransformerMapView = TransformerMapView.Top,
-    onViewChanged: ((TransformerMapView) -> Unit)? = null,
+    onViewChanged: (TransformerMapView) -> Unit = {},
     message: String? = null,
-    sensorPlacementLabel: String? = null,
-    onPlaceSensorPoint: ((MmPosition) -> Unit)? = null,
-    onMoveSensorPoint: ((String, MmPosition) -> Unit)? = null,
-    tagPlacementLabel: String? = null,
-    onPlaceTagPoint: ((MmPosition, String) -> Unit)? = null,
-    onMoveTagPoint: ((Int, MmPosition, String) -> Unit)? = null,
-    tagControls: (@Composable ColumnScope.() -> Unit)? = null,
-    sensorControls: (@Composable ColumnScope.() -> Unit)? = null,
-    startControls: (@Composable ColumnScope.() -> Unit)? = null,
-    onSelectSensor: ((String) -> Unit)? = null,
-    onSelectTag: ((Int) -> Unit)? = null,
-    // Verenigde selectie zoals de 3D-weergave: tik = selecteren → glas-sheet bovenin met ⋮
-    // (Hernoemen / Verplaats / Verwijderen / Deselecteren). Geen aparte Selecteer-/Gereedschap-tool.
-    // Alleen voor de gewone 2D-weergave (niet tijdens het plaatsen van sensoren/tags).
-    unifiedSelection: Boolean = false,
-    onRenameSensor: ((String, String) -> Unit)? = null,
-    onDeleteSensor: ((String) -> Unit)? = null,
-    onDeleteTag: ((Int) -> Unit)? = null,
+    onPlaceSensorPoint: (MmPosition) -> Unit,
+    onMoveSensorPoint: (String, MmPosition, String) -> Unit,
+    onPlaceTagPoint: (MmPosition, String) -> Unit,
+    onMoveTagPoint: (Int, MmPosition, String) -> Unit,
+    sensorControls: @Composable ColumnScope.() -> Unit,
+    tagControls: @Composable ColumnScope.() -> Unit,
+    onBeginPrepare: () -> Unit,
+    nextSensorLabel: String,
+    nextTagLabel: String,
+    onEditSensor: (String, String, Int, Int?, String) -> String?,
+    onEditTag: (Int) -> Unit,
+    onDeleteSensor: (String) -> Unit,
+    onDeleteTag: (Int) -> Unit,
+    onResetPlacement: (String) -> Unit,
+    onCamera: (String?) -> Unit,
     overflowItems: List<ArSensMenuItem> = emptyList()
 ) {
     var selectedView by remember(initialView) { mutableStateOf(initialView) }
-    var mapZoom by remember { mutableStateOf(1f) }
-    var mapPan by remember { mutableStateOf(Offset.Zero) }
+    var zoom by remember { mutableStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    var mode by remember { mutableStateOf(MapEditMode.Select) }
+    var prepareTag by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<MapMoveTarget?>(null) }
     var measureStart by remember { mutableStateOf<MapMeasurePoint?>(null) }
     var measureEnd by remember { mutableStateOf<MapMeasurePoint?>(null) }
-    // Aangetikte rand in de meet-overlay (0=Links,1=Rechts,2=Onder,3=Boven); licht die rand op.
-    var highlightEdge by remember { mutableStateOf<Int?>(null) }
-    var selectedMoveTarget by remember { mutableStateOf<MapMoveTarget?>(null) }
-    // Verplaats-modus: het gesleepte deel + de live positie onder de vinger (voor de maatvoering).
-    var dragTarget by remember { mutableStateOf<MapMoveTarget?>(null) }
-    var dragPoint by remember { mutableStateOf<MapMeasurePoint?>(null) }
-    val initialEditMode = when {
-        onPlaceTagPoint != null -> MapEditMode.Tag
-        onPlaceSensorPoint != null -> MapEditMode.Sensor
-        else -> MapEditMode.Measure
+    var moving by remember { mutableStateOf(false) }
+    var draftPoint by remember { mutableStateOf<MapMeasurePoint?>(null) }
+    var menu by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<Sensor?>(null) }
+    var sensorTab by remember { mutableStateOf(true) }
+    var search by remember { mutableStateOf("") }
+    var showSensors by remember { mutableStateOf(true) }
+    var showTags by remember { mutableStateOf(true) }
+    val sensors = project.sensors.sortedBy { it.order }
+    val tags = project.markers.filter { it.isAprilTagCalibrationMarker() }.sortedBy { it.id }
+    val selectedSensor = (selected as? MapMoveTarget.Sensor)?.let { t -> sensors.firstOrNull { it.id == t.id } }
+    val selectedTag = (selected as? MapMoveTarget.Tag)?.let { t -> tags.firstOrNull { it.id == t.id } }
+    val mapProject = project.copy(
+        sensors = if (showSensors) sensors.filter { mapViewForSensor(it, project.dimensionsMm) == selectedView } else emptyList(),
+        markers = if (showTags) tags.filter { mapViewForMarker(it) == selectedView } else emptyList()
+    )
+    fun changeView(view: TransformerMapView) {
+        selectedView = view; onViewChanged(view)
+        zoom = 1f; pan = Offset.Zero
+        measureStart = null; measureEnd = null; moving = false; draftPoint = null
     }
-    var editMode by remember(onPlaceSensorPoint != null, onPlaceTagPoint != null) { mutableStateOf(initialEditMode) }
-    var openMenuKey by remember { mutableStateOf<String?>(null) }
-    val hasPlacementMode = onPlaceSensorPoint != null || onPlaceTagPoint != null
-    val hasMoveMode = onMoveSensorPoint != null || onMoveTagPoint != null
-    // Verenigde selectie: zit de geselecteerde sensor/tag in sleep-verplaatsmodus (na ⋮ → Verplaats),
-    // plus de hernoem-dialoog.
-    var movingActive by remember { mutableStateOf(false) }
-    var renameId by remember { mutableStateOf<String?>(null) }
-    var renameText by remember { mutableStateOf("") }
-    val measureText = if (editMode == MapEditMode.Measure) {
-        measureStart?.let { start ->
-            measureEnd?.let { end ->
-                "Meting ${start.label} -> ${end.label}: ${start.distanceTo(end).roundToInt()} mm (${start.componentsTo(end, selectedView)})"
-            } ?: "Meting start: ${start.label}"
+    fun select(target: MapMoveTarget?) {
+        selected = target; moving = false; draftPoint = null
+        measureStart = null; measureEnd = null
+        val view = when (target) {
+            is MapMoveTarget.Sensor -> sensors.firstOrNull { it.id == target.id }?.let { mapViewForSensor(it, project.dimensionsMm) }
+            is MapMoveTarget.Tag -> tags.firstOrNull { it.id == target.id }?.let(::mapViewForMarker)
+            null -> null
         }
-    } else if (editMode == MapEditMode.Move) {
-        selectedMoveTarget?.let { "${it.label} geselecteerd. Tik de nieuwe positie." }
-            ?: "Verplaats: tik eerst een bestaande tag of sensor."
-    } else if (editMode == MapEditMode.Select) {
-        selectedMoveTarget?.let { "${it.label} geselecteerd — bewerk in het paneel." }
-            ?: "Selecteer: tik een sensor of tag op de kaart."
-    } else {
-        null
+        if (view != null && view != selectedView) changeView(view)
     }
-    fun handleMapTap(point: MapMeasurePoint) {
-        // Verenigde selectie (gewone 2D-weergave): tik = selecteren/meten, net als de 3D-weergave.
-        // Verplaatsen gebeurt door te slepen in de verplaatsmodus (⋮ → Verplaats), niet via een tik.
-        if (unifiedSelection) {
-            val target = point.toMoveTarget(project)
-            if (target != null) {
-                // Sensor/tag aangetikt → selecteren; de sheet bovenin toont afstanden + ⋮.
-                selectedMoveTarget = target
-                measureStart = point
-                measureEnd = null
-                highlightEdge = null
-                when (target) {
-                    is MapMoveTarget.Sensor -> onSelectSensor?.invoke(target.id)
-                    is MapMoveTarget.Tag -> onSelectTag?.invoke(target.id)
-                }
-                return
-            }
-            // Vrij punt → meten (eerste/los punt, daarna het tweede punt voor de afstand).
-            selectedMoveTarget = null
-            highlightEdge = null
-            if (measureStart == null || measureEnd != null) {
-                measureStart = point
-                measureEnd = null
-            } else {
-                measureEnd = point
-            }
+    fun selectMode(value: MapEditMode) {
+        mode = value; select(null); menu = null
+        if (value == MapEditMode.Sensor) onBeginPrepare()
+    }
+    fun tap(point: MapMeasurePoint) {
+        if (mode == MapEditMode.Measure) {
+            if (measureStart == null || measureEnd != null) { measureStart = point; measureEnd = null }
+            else measureEnd = point
             return
         }
-        when (editMode) {
-            MapEditMode.Sensor -> if (onPlaceSensorPoint != null) {
-                onPlaceSensorPoint(point.toBoxPosition(selectedView, project.dimensionsMm))
-                measureStart = null
-                measureEnd = null
-                selectedMoveTarget = null
-                openMenuKey = null
-                return
-            }
-            MapEditMode.Tag -> if (onPlaceTagPoint != null) {
-                onPlaceTagPoint(point.toBoxPosition(selectedView, project.dimensionsMm), selectedView.name)
-                measureStart = null
-                measureEnd = null
-                selectedMoveTarget = null
-                openMenuKey = null
-                return
-            }
-            MapEditMode.Move -> {
-                val selected = selectedMoveTarget
-                if (selected == null) {
-                    selectedMoveTarget = point.toMoveTarget(project)
-                    measureStart = null
-                    measureEnd = null
-                    return
-                }
-                val position = point.toBoxPosition(selectedView, project.dimensionsMm)
-                when (selected) {
-                    is MapMoveTarget.Sensor -> onMoveSensorPoint?.invoke(selected.id, position)
-                    is MapMoveTarget.Tag -> onMoveTagPoint?.invoke(selected.id, position, selectedView.name)
-                }
-                selectedMoveTarget = null
-                measureStart = null
-                measureEnd = null
-                openMenuKey = null
-                return
-            }
-            MapEditMode.Select -> {
-                val target = point.toMoveTarget(project)
-                if (target != null) {
-                    selectedMoveTarget = target
-                    measureStart = null
-                    measureEnd = null
-                    when (target) {
-                        is MapMoveTarget.Sensor -> onSelectSensor?.invoke(target.id)
-                        is MapMoveTarget.Tag -> onSelectTag?.invoke(target.id)
-                    }
-                    openMenuKey = "select"
-                }
-                return
-            }
-            MapEditMode.Measure -> Unit
+        val target = point.toMoveTarget(project)
+        if (target != null) { select(target); return }
+        if (mode == MapEditMode.Sensor) {
+            val position = point.toBoxPosition(selectedView, project.dimensionsMm)
+            if (prepareTag) onPlaceTagPoint(position, selectedView.name) else onPlaceSensorPoint(position)
         }
-        selectedMoveTarget = null
-        highlightEdge = null
-        if (measureStart == null || measureEnd != null) {
-            measureStart = point
-            measureEnd = null
-        } else {
-            measureEnd = point
-        }
+        select(null)
     }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFFEFF3F7))
-            .safeDrawingPadding()
-    ) {
-        TransformerMapCanvas(
-            project = project,
-            log = log,
-            selectedView = selectedView,
-            mapZoom = mapZoom,
-            mapPan = mapPan,
-            measureStart = measureStart,
-            measureEnd = measureEnd,
-            highlightEdge = highlightEdge,
-            selectedTarget = selectedMoveTarget,
-            // Sleep-verplaatsen: in de plaats-/voorbereidmodi via de Verplaats-tool, en in de
-            // verenigde weergave zodra je ⋮ → Verplaats kiest (movingActive).
-            moveMode = editMode == MapEditMode.Move || (unifiedSelection && movingActive),
-            dragTarget = dragTarget,
-            dragPoint = dragPoint,
-            onMoveBegin = { target ->
-                dragTarget = target
-                selectedMoveTarget = target
-                if (!unifiedSelection) {
-                    measureStart = null
-                    measureEnd = null
-                }
-            },
-            onMovePoint = { dragPoint = it },
-            onMoveCommit = {
-                val p = dragPoint
-                val t = dragTarget
-                when (t) {
-                    is MapMoveTarget.Sensor -> if (p != null) onMoveSensorPoint?.invoke(t.id, p.toBoxPosition(selectedView, project.dimensionsMm))
-                    is MapMoveTarget.Tag -> if (p != null) onMoveTagPoint?.invoke(t.id, p.toBoxPosition(selectedView, project.dimensionsMm), selectedView.name)
-                    null -> Unit
-                }
-                if (unifiedSelection) {
-                    // In de verplaatsmodus BLIJVEN na het neerzetten (de sensor blijft staan); alleen de
-                    // selectie bijwerken naar de nieuwe plek zodat de sheet de nieuwe randafstanden toont.
-                    // Verlaten doe je met de "Annuleer"-knop in de sheet.
-                    if (t != null && p != null) {
-                        selectedMoveTarget = t
-                        measureStart = p
-                        measureEnd = null
-                    }
-                }
-                dragTarget = null
-                dragPoint = null
-            },
-            onMoveCancel = {
-                if (unifiedSelection) {
-                    // Niet verplaatst → herstel de selectie-sheet op de oorspronkelijke plek.
-                    movingActive = false
-                    val t = selectedMoveTarget
-                    measureStart = t?.let { tgt ->
-                        when (tgt) {
-                            is MapMoveTarget.Sensor -> project.sensors.firstOrNull { it.id == tgt.id }?.positionMm
-                            is MapMoveTarget.Tag -> project.markers.firstOrNull { it.id == tgt.id && it.isAprilTagCalibrationMarker() }?.positionMm
-                        }?.toMapMeasurePoint(selectedView, project.dimensionsMm, tgt.label)
-                    }
-                    measureEnd = null
-                }
-                dragTarget = null
-                dragPoint = null
-            },
-            onTapPoint = ::handleMapTap,
-            onTransform = { pan, zoom ->
-                mapZoom = (mapZoom * zoom).coerceIn(0.35f, 6f)
-                mapPan += pan
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-        ArSensGlassTopBar(
-            title = project.projectName,
-            onBack = onBack,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(12.dp)
-                .fillMaxWidth(),
-            dark = false,
-            overflowItems = overflowItems
-        ) {
-            ArSensCounterPill("${project.sensors.size} sensoren geplaatst", dark = false)
+    val modeLabel = when (mode) {
+        MapEditMode.Measure -> "Meten"
+        MapEditMode.Sensor -> "Voorbereiden"
+        else -> "Selecteren"
+    }
+    val sequence = if (selected is MapMoveTarget.Tag) tags.map { MapMoveTarget.Tag(it.id) }
+        else sensors.map { MapMoveTarget.Sensor(it.id) }
+    val index = sequence.indexOf(selected)
+    Column(Modifier.fillMaxSize().background(Color(0xFFEFF3F7)).safeDrawingPadding()) {
+        ArSensGlassTopBar(title = project.projectName, onBack = onBack,
+            modifier = Modifier.padding(8.dp).fillMaxWidth(), dark = false, overflowItems = overflowItems) {
+            ArSensCounterPill(project.placementCountLabel, dark = false)
         }
-        // De vlak-/aanzichtkiezer zit als "Vlak"-knop in de rechter tool-rail (zelfde idee als de
-        // "Paneel selector" op de camera) i.p.v. een aparte dropdown bovenaan — zie de menu's.
-        if (unifiedSelection) {
-            // Selectie/meet-sheet bovenin, parallel aan de 3D-weergave: tik een sensor/tag → naam +
-            // randafstanden + ⋮ (Hernoemen / Verplaats / Verwijderen / Deselecteren); twee punten → afstand.
-            // In de verplaatsmodus tonen we live de positie (en randafstanden) onder de vinger.
-            val displayPoint = dragPoint ?: measureStart
-            val displayTarget = dragTarget ?: selectedMoveTarget
-            val dragging = dragTarget != null
-            if (displayPoint != null) {
-                WorkflowMapSelectionOverlay(
-                    measureStart = displayPoint,
-                    measureEnd = if (dragging) null else measureEnd,
-                    view = selectedView,
-                    dimensions = project.dimensionsMm,
-                    target = displayTarget,
-                    moving = movingActive,
-                    dragging = dragging,
-                    highlightEdge = if (movingActive || dragging) null else highlightEdge,
-                    onEdgeClick = { highlightEdge = it },
-                    onRename = {
-                        (selectedMoveTarget as? MapMoveTarget.Sensor)?.let { t ->
-                            renameText = project.sensors.firstOrNull { it.id == t.id }?.name.orEmpty()
-                            renameId = t.id
-                        }
-                    },
-                    onMove = { movingActive = true; highlightEdge = null },
-                    onCancelMove = { movingActive = false; highlightEdge = null },
-                    onDelete = {
-                        when (val t = selectedMoveTarget) {
-                            is MapMoveTarget.Sensor -> onDeleteSensor?.invoke(t.id)
-                            is MapMoveTarget.Tag -> onDeleteTag?.invoke(t.id)
-                            null -> Unit
-                        }
-                        selectedMoveTarget = null; measureStart = null; measureEnd = null
-                        highlightEdge = null; movingActive = false
-                    },
-                    onDeselect = {
-                        selectedMoveTarget = null; measureStart = null; measureEnd = null
-                        highlightEdge = null; movingActive = false
-                    },
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 88.dp, start = 16.dp, end = 16.dp)
-                        .widthIn(max = 360.dp)
-                )
-            }
-        } else {
-            // Plaats-/voorbereidmodi: meet-overlay (één punt → randafstanden) + live maatvoering tijdens slepen.
-            val activeMeasure = measureStart
-            if (editMode == MapEditMode.Measure && activeMeasure != null && measureEnd == null) {
-                MapWallOffsetOverlay(
-                    measureStart = activeMeasure,
-                    view = selectedView,
-                    dimensions = project.dimensionsMm,
-                    highlightEdge = highlightEdge,
-                    onEdgeClick = { highlightEdge = it },
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 88.dp, start = 16.dp, end = 16.dp)
-                        .widthIn(max = 360.dp)
-                )
-            }
-            val activeDrag = dragPoint
-            if (editMode == MapEditMode.Move && dragTarget != null && activeDrag != null) {
-                MapWallOffsetOverlay(
-                    measureStart = activeDrag,
-                    view = selectedView,
-                    dimensions = project.dimensionsMm,
-                    highlightEdge = null,
-                    onEdgeClick = {},
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 88.dp, start = 16.dp, end = 16.dp)
-                        .widthIn(max = 360.dp)
-                )
-            }
-        }
-        // Eén 2D-layout voor álle modi (rapport, voorbereiden én sensor-setup): de camera-glas
-        // tool-rail rechts + donkere tool-sheet. De vroegere lichte onderbalk (mini-trafo +
-        // tekstknoppen) is vervallen zodat de 2D-kaart overal hetzelfde oogt als de 3D-weergave.
-        run {
-            val menus = transformerMapCompactMenus(
-                sensorPlacementLabel = sensorPlacementLabel,
-                onPlaceSensorPoint = onPlaceSensorPoint,
-                sensorControls = sensorControls,
-                tagPlacementLabel = tagPlacementLabel,
-                onPlaceTagPoint = onPlaceTagPoint,
-                tagControls = tagControls,
-                startControls = startControls,
-                includeMeasureTool = !hasPlacementMode && !unifiedSelection,
-                unifiedSelection = unifiedSelection,
-                selectedView = selectedView,
-                onViewSelected = { selectedView = it; onViewChanged?.invoke(it) },
-                canMove = hasMoveMode,
-                editMode = editMode,
-                onEditModeSelected = {
-                    editMode = it
-                    selectedMoveTarget = null
-                    measureStart = null
-                    measureEnd = null
-                    dragTarget = null
-                    dragPoint = null
-                },
-                onReset = {
-                    mapZoom = 1f
-                    mapPan = Offset.Zero
-                    measureStart = null
-                    measureEnd = null
-                    selectedMoveTarget = null
-                }
-            )
-            val openMenu = menus.firstOrNull { it.key == openMenuKey }
-            // Status verbergen zodra er iets open is (tool-sheet/"Vlak"-paneel) of, in de verenigde
-            // weergave, zodra er iets geselecteerd/gemeten wordt (de boven-sheet neemt het dan over).
-            if (openMenuKey == null && !(unifiedSelection && (measureStart != null || movingActive || dragPoint != null))) {
-                TransformerMapCompactStatus(
-                    mode = editMode,
-                    selectedView = selectedView,
-                    sensorPlacementLabel = sensorPlacementLabel,
-                    tagPlacementLabel = tagPlacementLabel,
-                    message = message,
-                    measureText = measureText,
-                    unifiedSelection = unifiedSelection,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(start = 12.dp, end = 74.dp, bottom = 12.dp)
-                )
-            }
-            if (openMenu != null) {
-                // Donkere camera-glas-sheet, identiek aan de 3D-weergave en de camera, zodat de
-                // 2D-kaart bij de rest aansluit. De menu-inhoud gebruikt thematische kleuren en
-                // schakelt daardoor vanzelf mee naar het donkere schema.
-                WorkflowStlToolPanel(
-                    title = openMenu.label,
-                    onClose = { openMenuKey = null },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(start = 12.dp, end = 84.dp, bottom = 12.dp)
-                        .fillMaxWidth()
-                        .widthIn(max = 460.dp)
-                ) {
-                    openMenu.content(this)
-                }
-            }
-            // Zwevend "Vlak"-paneel náást de rail — exact dezelfde UI als de camera ("Paneel selector"):
-            // het knoppen-kruis WorkflowPlaneCross via WorkflowCameraPlaneSelectorPanel.
-            if (openMenuKey == "plane") {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = WorkflowCameraPanel,
-                    contentColor = Color.White,
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-                    shadowElevation = 12.dp,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 76.dp)
-                        .width(212.dp)
-                ) {
-                    MaterialTheme(colorScheme = WorkflowCameraDarkScheme, typography = MaterialTheme.typography) {
-                        Column(Modifier.padding(12.dp)) {
-                            WorkflowCameraPlaneSelectorPanel(
-                                selectedPlane = selectedView.toTagPlane(),
-                                onPlaneSelected = { plane ->
-                                    val v = plane.toMapView()
-                                    selectedView = v
-                                    onViewChanged?.invoke(v)
-                                    openMenuKey = null
-                                    // Selectie/meting hoort bij het oude vlak (de randafstanden zijn
-                                    // vlak-specifiek) → wissen bij een vlakwissel.
-                                    selectedMoveTarget = null
-                                    measureStart = null
-                                    measureEnd = null
-                                    highlightEdge = null
-                                    movingActive = false
-                                }
-                            )
-                        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            TransformerMapCanvas(project = mapProject, log = log, selectedView = selectedView,
+                mapZoom = zoom, mapPan = pan, measureStart = measureStart, measureEnd = measureEnd,
+                selectedTarget = selected, moveMode = moving,
+                dragTarget = selected.takeIf { moving }, dragPoint = draftPoint,
+                onMoveBegin = {}, onMovePoint = { draftPoint = it }, onMoveCommit = {},
+                onMoveCancel = { draftPoint = null }, onTapPoint = ::tap,
+                onTransform = { delta, factor -> zoom = (zoom * factor).coerceIn(0.35f, 6f); pan += delta },
+                modifier = Modifier.fillMaxSize().testTag("transformer-map"))
+            Box(Modifier.align(Alignment.TopStart).padding(8.dp)) {
+                OutlinedButton(onClick = { menu = "plane" }, enabled = !moving) { Text(selectedView.label) }
+                DropdownMenu(expanded = menu == "plane", onDismissRequest = { menu = null }) {
+                    TransformerMapView.entries.forEach { view ->
+                        DropdownMenuItem(text = { Text(view.label) }, onClick = { changeView(view); selected = null; menu = null })
                     }
                 }
             }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.End
-            ) {
-                // "Vlak" bovenaan de rail — opent het zwevende paneel hierboven (camera-stijl).
-                WorkflowCameraToolButton(
-                    key = "plane",
-                    selected = openMenuKey == "plane",
-                    onClick = { openMenuKey = if (openMenuKey == "plane") null else "plane" }
-                )
-                menus.reversed().forEach { menu ->
-                    WorkflowCameraToolButton(
-                        key = menu.key,
-                        selected = openMenuKey == menu.key,
-                        onClick = {
-                            menu.editMode?.let { editMode = it }
-                            openMenuKey = if (openMenuKey == menu.key) null else menu.key
-                        }
-                    )
-                }
-                if (unifiedSelection) {
-                    // Reset weergave (zoom/pan) — in de verenigde weergave is er geen Gereedschap-sheet meer.
-                    WorkflowCameraToolButton(
-                        key = "undo",
-                        selected = false,
-                        onClick = {
-                            mapZoom = 1f
-                            mapPan = Offset.Zero
-                            measureStart = null
-                            measureEnd = null
-                            selectedMoveTarget = null
-                            highlightEdge = null
-                            movingActive = false
-                        }
-                    )
-                }
+            Column(Modifier.align(Alignment.CenterEnd).padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                MapRailButton("Lagen", menu == "layers", enabled = !moving) { menu = "layers" }
+                MapRailButton(modeLabel, true, enabled = !moving) { menu = "mode" }
+                MapRailButton("Lijst", menu == "list", enabled = !moving) { sensorTab = selected !is MapMoveTarget.Tag; menu = "list" }
+                MapRailButton("Fit", false) { zoom = 1f; pan = Offset.Zero }
             }
         }
-
-        // Hernoem-dialoog voor de geselecteerde sensor (verenigde weergave, via ⋮ → Hernoemen).
-        renameId?.let { id ->
-            AlertDialog(
-                onDismissRequest = { renameId = null },
-                title = { Text("Sensor hernoemen") },
-                text = {
-                    OutlinedTextField(
-                        value = renameText,
-                        onValueChange = { renameText = it },
-                        label = { Text("Naam") },
-                        singleLine = true
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        onRenameSensor?.invoke(id, renameText)
-                        renameId = null
-                    }) { Text("Opslaan") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { renameId = null }) { Text("Annuleren") }
-                }
-            )
-        }
-    }
-}
-
-private data class TransformerMapWorkspaceMenu(
-    val key: String,
-    val label: String,
-    val editMode: MapEditMode?,
-    val content: @Composable ColumnScope.() -> Unit
-)
-
-private fun transformerMapCompactMenus(
-    sensorPlacementLabel: String?,
-    onPlaceSensorPoint: ((MmPosition) -> Unit)?,
-    sensorControls: (@Composable ColumnScope.() -> Unit)?,
-    tagPlacementLabel: String?,
-    onPlaceTagPoint: ((MmPosition, String) -> Unit)?,
-    tagControls: (@Composable ColumnScope.() -> Unit)?,
-    startControls: (@Composable ColumnScope.() -> Unit)?,
-    includeMeasureTool: Boolean,
-    unifiedSelection: Boolean,
-    selectedView: TransformerMapView,
-    onViewSelected: (TransformerMapView) -> Unit,
-    canMove: Boolean,
-    editMode: MapEditMode,
-    onEditModeSelected: (MapEditMode) -> Unit,
-    onReset: () -> Unit
-): List<TransformerMapWorkspaceMenu> {
-    val menus = mutableListOf<TransformerMapWorkspaceMenu>()
-    if (onPlaceTagPoint != null && tagPlacementLabel != null) {
-        menus += TransformerMapWorkspaceMenu("tags", tagPlacementLabel, MapEditMode.Tag) {
-            Text("Tik op het actieve vlak om een AprilTag te plaatsen.", fontWeight = FontWeight.Bold)
-            tagControls?.invoke(this)
-        }
-    }
-    if (onPlaceSensorPoint != null && sensorPlacementLabel != null) {
-        menus += TransformerMapWorkspaceMenu("sensor", sensorPlacementLabel, MapEditMode.Sensor) {
-            Text("Tik op de kaart om een sensorpunt te plaatsen.", fontWeight = FontWeight.Bold)
-            sensorControls?.invoke(this)
-        }
-    }
-    // Eigen icoonknop voor Meten in weergaven zonder plaatsings-tools (bv. de rapport-2D).
-    if (includeMeasureTool) {
-        menus += TransformerMapWorkspaceMenu("measure", "Meten", MapEditMode.Measure) {
-            Text("Tik twee punten op de kaart om de afstand te meten.", fontWeight = FontWeight.Bold)
-        }
-    }
-    // "Gereedschap"-menu (plaats-/voorbereidmodi): Meten/Verplaats/Reset. In de verenigde 2D-weergave
-    // vervalt dit — daar tik je direct om te selecteren/meten en verplaats je via ⋮ → Verplaats.
-    if (!unifiedSelection) {
-        menus += TransformerMapWorkspaceMenu("view", "Gereedschap", null) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!includeMeasureTool) {
-                    if (editMode == MapEditMode.Measure) {
-                        Button(onClick = { onEditModeSelected(MapEditMode.Measure) }, modifier = Modifier.height(48.dp)) {
-                            Text("Meten")
+        MaterialTheme(colorScheme = WorkflowCameraDarkScheme) {
+            Surface(color = WorkflowCameraPanel, contentColor = Color.White,
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
+                Column(Modifier.fillMaxWidth().heightIn(max = 245.dp).verticalScroll(rememberScrollState()).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    if (selectedSensor != null || selectedTag != null) {
+                        Text(selectedSensor?.displayName() ?: "Tag ${selectedTag!!.id}", fontWeight = FontWeight.Bold)
+                        selectedSensor?.let { sensor ->
+                            Text("${sensor.status.label} · radius ${sensor.toleranceMm} mm", fontSize = 13.sp)
+                            Text("Doel: ${sensor.positionMm.toReadableMm()}", fontSize = 12.sp)
+                            log.results.firstOrNull { it.sensorId == sensor.id }?.let { result ->
+                                Text("Gemeten: ${result.measuredPositionMm?.toReadableMm()} · afwijking ${result.distanceErrorMm} mm", fontSize = 12.sp)
+                            }
                         }
+                        selectedTag?.let { Text("${it.sizeMm} × ${it.sizeMm} mm · ${it.positionMm.toReadableMm()}", fontSize = 12.sp) }
+                        if (moving) {
+                            Text("Sleep het geselecteerde punt. Alleen Opslaan wijzigt het doel.", fontSize = 13.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { moving = false; draftPoint = null }) { Text("Annuleren") }
+                                Button(enabled = draftPoint != null, onClick = {
+                                    val p = draftPoint!!.toBoxPosition(selectedView, project.dimensionsMm)
+                                    when (val t = selected) {
+                                        is MapMoveTarget.Sensor -> onMoveSensorPoint(t.id, p, selectedView.name)
+                                        is MapMoveTarget.Tag -> onMoveTagPoint(t.id, p, selectedView.name)
+                                        null -> Unit
+                                    }
+                                    moving = false; draftPoint = null
+                                }) { Text("Opslaan") }
+                            }
+                        } else {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(enabled = index > 0, onClick = { select(sequence[index - 1]) }) { Text("Vorige") }
+                                TextButton(onClick = { sensorTab = selected !is MapMoveTarget.Tag; menu = "list" }) { Text("${index + 1} / ${sequence.size}") }
+                                TextButton(enabled = index in 0 until sequence.lastIndex, onClick = { select(sequence[index + 1]) }) { Text("Volgende") }
+                                TextButton(onClick = { select(null) }) { Text("Sluit") }
+                            }
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { moving = true }) { Text("Verplaatsen") }
+                                OutlinedButton(onClick = {
+                                    if (selectedSensor != null) editing = selectedSensor
+                                    else { onEditTag(selectedTag!!.id); menu = "tagEdit" }
+                                }) { Text("Bewerken") }
+                                TextButton(onClick = { menu = "actions" }) { Text("Meer") }
+                            }
+                        }
+                    } else if (mode == MapEditMode.Measure) {
+                        Text("Meten | ${selectedView.label}", fontWeight = FontWeight.Bold)
+                        val start = measureStart
+                        val end = measureEnd
+                        Text(if (start != null && end != null) "${start.distanceTo(end).roundToInt()} mm · ${start.componentsTo(end, selectedView)}"
+                            else if (start != null) "Tik het tweede punt." else "Tik twee punten om te meten.")
+                        TextButton(onClick = { measureStart = null; measureEnd = null }) { Text("Nieuwe meting") }
+                    } else if (mode == MapEditMode.Sensor) {
+                        Text("Voorbereiden | ${selectedView.label}", fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            MapRailButton("Sensor", !prepareTag) { prepareTag = false }
+                            MapRailButton("Tag", prepareTag) { prepareTag = true }
+                            TextButton(onClick = { menu = "prepare" }) { Text("Instellen") }
+                        }
+                        Text("Volgende: ${if (prepareTag) nextTagLabel else nextSensorLabel}", fontSize = 13.sp)
+                        Text("Tik een lege plek op het vlak. Tik een bestaand punt om het te selecteren.", fontSize = 12.sp)
                     } else {
-                        OutlinedButton(onClick = { onEditModeSelected(MapEditMode.Measure) }, modifier = Modifier.height(48.dp)) {
-                            Text("Meten")
-                        }
+                        Text("Selecteren | ${selectedView.label}", fontWeight = FontWeight.Bold)
+                        Text("Tik een sensor of tag. Sleep om de kaart te verschuiven.", fontSize = 13.sp)
+                        TextButton(onClick = { onCamera(null) }) { Text("Camera openen") }
                     }
-                }
-                if (canMove) {
-                    if (editMode == MapEditMode.Move) {
-                        Button(onClick = { onEditModeSelected(MapEditMode.Move) }, modifier = Modifier.height(48.dp)) {
-                            Text("Verplaats")
-                        }
-                    } else {
-                        OutlinedButton(onClick = { onEditModeSelected(MapEditMode.Move) }, modifier = Modifier.height(48.dp)) {
-                            Text("Verplaats")
-                        }
-                    }
-                }
-                OutlinedButton(onClick = onReset, modifier = Modifier.height(48.dp)) {
-                    Text("Reset")
+                    message?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis) }
                 }
             }
         }
     }
-    if (startControls != null) {
-        menus += TransformerMapWorkspaceMenu("start", "Start", null) {
-            startControls.invoke(this)
+    if (menu != null && menu != "plane") {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { menu = null }) {
+            WorkflowStlToolPanel(title = when (menu) {
+                "mode" -> "Werkwijze"; "list" -> "Sensoren en tags"; "layers" -> "Lagen"
+                "actions" -> "Acties"; "tagEdit" -> "Tag bewerken"; else -> "Voorbereiden"
+            }, onClose = { menu = null }) {
+                when (menu) {
+                    "mode" -> listOf("Selecteren" to MapEditMode.Select, "Meten" to MapEditMode.Measure,
+                        "Voorbereiden" to MapEditMode.Sensor).forEach { (label, value) ->
+                        TextButton(onClick = { selectMode(value) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                    }
+                    "layers" -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) { Switch(showSensors, { showSensors = it }); Text("Sensoren en doelradius") }
+                        Row(verticalAlignment = Alignment.CenterVertically) { Switch(showTags, { showTags = it }); Text("Referentietags") }
+                    }
+                    "list" -> {
+                        Row {
+                            TextButton(onClick = { sensorTab = true }) { Text("Sensoren (${sensors.size})") }
+                            TextButton(onClick = { sensorTab = false }) { Text("Tags (${tags.size})") }
+                        }
+                        OutlinedTextField(search, { search = it }, label = { Text("Zoek naam of ID") }, modifier = Modifier.fillMaxWidth())
+                        if (sensorTab) sensors.filter { it.displayName().contains(search, true) }.forEach { sensor ->
+                            TextButton(onClick = { select(MapMoveTarget.Sensor(sensor.id)); menu = null }, modifier = Modifier.fillMaxWidth()) {
+                                Text("${sensor.displayName()} · ${sensor.status.label}", color = workflowStatusColor(sensor.status))
+                            }
+                        } else tags.filter { it.id.toString().contains(search) }.forEach { tag ->
+                            TextButton(onClick = { select(MapMoveTarget.Tag(tag.id)); menu = null }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Tag ${tag.id} · ${if (tag.active) "Referentie" else "Uitgesloten"}")
+                            }
+                        }
+                    }
+                    "prepare" -> if (prepareTag) tagControls() else sensorControls()
+                    "tagEdit" -> tagControls()
+                    "actions" -> {
+                        selectedSensor?.let { sensor ->
+                            Button(onClick = { menu = null; onCamera(sensor.id) }) { Text("Met camera plaatsen") }
+                            if (sensor.status != SensorStatus.Pending) TextButton(onClick = { onResetPlacement(sensor.id); menu = null }) { Text("Opnieuw te plaatsen") }
+                            TextButton(onClick = { onDeleteSensor(sensor.id); select(null); menu = null }) { Text("Sensor verwijderen") }
+                        }
+                        selectedTag?.let { tag -> TextButton(onClick = { onDeleteTag(tag.id); select(null); menu = null }) { Text("Tag verwijderen") } }
+                    }
+                }
+            }
         }
     }
-    return menus
+    editing?.let { sensor ->
+        WorkflowSensorEditDialog(sensor = sensor, onDismiss = { editing = null }, onSave = onEditSensor)
+    }
 }
 
 @Composable
-private fun TransformerMapCompactStatus(
-    mode: MapEditMode,
-    selectedView: TransformerMapView,
-    sensorPlacementLabel: String?,
-    tagPlacementLabel: String?,
-    message: String?,
-    measureText: String?,
-    unifiedSelection: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    val modeLabel = when {
-        unifiedSelection -> "Selecteer"
-        mode == MapEditMode.Tag -> tagPlacementLabel ?: "Tag"
-        mode == MapEditMode.Sensor -> sensorPlacementLabel ?: "Sensor"
-        mode == MapEditMode.Measure -> "Meten"
-        mode == MapEditMode.Move -> "Verplaats"
-        else -> "Selecteer"
+private fun MapRailButton(label: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
+    Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(12.dp),
+        color = if (selected) ArSensTeal else WorkflowCameraPanel, contentColor = Color.White) {
+        Text(label, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
     }
-    Surface(
-        modifier = modifier.widthIn(max = 420.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
-        shadowElevation = 5.dp
-    ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("$modeLabel | ${selectedView.label}", fontWeight = FontWeight.Bold)
-            val hint = if (unifiedSelection) {
-                "Tik een sensor of tag om te selecteren, of twee punten om te meten."
-            } else {
-                "Tik op de kaart of open een tool rechts."
-            }
-            when {
-                measureText != null -> Text(measureText, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                !message.isNullOrBlank() -> Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                else -> Text(hint, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-            }
-        }
-    }
+}
+
+internal fun mapViewForSensor(sensor: Sensor, dimensions: MmPosition): TransformerMapView =
+    TransformerMapView.entries.firstOrNull { it.name.equals(sensor.side, true) }
+        ?: listOf(TransformerMapView.Front to sensor.positionMm.y,
+            TransformerMapView.Back to (dimensions.y - sensor.positionMm.y),
+            TransformerMapView.Left to sensor.positionMm.x,
+            TransformerMapView.Right to (dimensions.x - sensor.positionMm.x),
+            TransformerMapView.Top to (dimensions.z - sensor.positionMm.z)).minBy { kotlin.math.abs(it.second) }.first
+
+private fun mapViewForMarker(marker: com.example.arsens.data.Marker): TransformerMapView = when {
+    kotlin.math.abs(marker.rotationDeg.x) > 45f -> TransformerMapView.Top
+    marker.rotationDeg.z > 135f || marker.rotationDeg.z < -135f -> TransformerMapView.Back
+    marker.rotationDeg.z > 45f -> TransformerMapView.Right
+    marker.rotationDeg.z < -45f -> TransformerMapView.Left
+    else -> TransformerMapView.Front
 }
 
 @Composable
@@ -722,6 +376,13 @@ private fun TransformerMapCanvas(
     onTransform: (Offset, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val tapHandler by rememberUpdatedState(onTapPoint)
+    val moveBegin by rememberUpdatedState(onMoveBegin)
+    val movePoint by rememberUpdatedState(onMovePoint)
+    val moveCommit by rememberUpdatedState(onMoveCommit)
+    val moveCancel by rememberUpdatedState(onMoveCancel)
+    val transformHandler by rememberUpdatedState(onTransform)
+    val draft by rememberUpdatedState(dragPoint)
     val results = log.results.associateBy { it.sensorId }
     Canvas(
         modifier = modifier
@@ -730,27 +391,29 @@ private fun TransformerMapCanvas(
                 if (moveMode) {
                     // Verplaats-modus: sleep een sensor/tag rechtstreeks (geen pan/zoom). De sleep pakt
                     // het dichtstbijzijnde punt onder de vinger; zonder treffer gebeurt er niets.
-                    Modifier.pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers) {
+                    Modifier.pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers, selectedTarget) {
                         var grabbed = false
                         detectDragGestures(
                             onDragStart = { offset ->
                                 val layout = mapLayoutFor(Size(size.width.toFloat(), size.height.toFloat()), selectedView, project.dimensionsMm, mapZoom, mapPan)
                                 val target = measurePointFromTap(offset, layout, selectedView, project)?.toMoveTarget(project)
-                                grabbed = target != null
-                                if (target != null) {
-                                    onMoveBegin(target)
-                                    onMovePoint(freeMapMeasurePoint(offset, layout, selectedView, project))
+                                val draftScreen = draft?.toScreenPoint(selectedView, layout.origin, layout.mapWidth, layout.mapHeight, project.dimensionsMm)
+                                val hitDraft = draftScreen != null && (draftScreen - offset).getDistance() <= 42f
+                                grabbed = selectedTarget != null && (target == selectedTarget || hitDraft)
+                                if (grabbed) {
+                                    moveBegin(selectedTarget!!)
+                                    movePoint(freeMapMeasurePoint(offset, layout, selectedView, project))
                                 }
                             },
                             onDrag = { change, _ ->
                                 if (grabbed) {
                                     change.consume()
                                     val layout = mapLayoutFor(Size(size.width.toFloat(), size.height.toFloat()), selectedView, project.dimensionsMm, mapZoom, mapPan)
-                                    onMovePoint(freeMapMeasurePoint(change.position, layout, selectedView, project))
+                                    movePoint(freeMapMeasurePoint(change.position, layout, selectedView, project))
                                 }
                             },
-                            onDragEnd = { if (grabbed) { onMoveCommit(); grabbed = false } },
-                            onDragCancel = { if (grabbed) { onMoveCancel(); grabbed = false } }
+                            onDragEnd = { if (grabbed) { moveCommit(); grabbed = false } },
+                            onDragCancel = { if (grabbed) { moveCancel(); grabbed = false } }
                         )
                     }
                 } else {
@@ -770,12 +433,12 @@ private fun TransformerMapCanvas(
                                     view = selectedView,
                                     project = project
                                 ) ?: return@detectTapGestures
-                                onTapPoint(tappedPoint)
+                                tapHandler(tappedPoint)
                             }
                         }
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
-                                onTransform(pan, zoom)
+                                transformHandler(pan, zoom)
                             }
                         }
                 }
@@ -886,8 +549,14 @@ private fun DrawScope.drawTransformerMap(
         val status = result?.status ?: sensor.status
         val color = mapStatusColor(status)
 
-        // Geen geplande-vs-gemeten verschil-lijn meer in de 2D-weergave: die hoort bij het rapport,
-        // niet bij de gewone bewerk-/meet-weergave (zelfde keuze als de 3D-weergave).
+        val radius = sensor.toleranceMm.toFloat() / selectedView.horizontalMm(project.dimensionsMm) * mapWidth
+        drawCircle(color.copy(alpha = 0.14f), radius = radius, center = expected)
+        drawCircle(color.copy(alpha = 0.55f), radius = radius, center = expected, style = Stroke(2f))
+        result?.measuredPositionMm?.takeIf { sensor.status != SensorStatus.Pending }?.let { measured ->
+            val actual = measured.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
+            drawLine(color, expected, actual, strokeWidth = 2f)
+            drawCircle(color, radius = 7f, center = actual)
+        }
         drawCircle(color = color, radius = 11f, center = expected)
         drawCircle(
             color = Color.White,
@@ -1026,197 +695,13 @@ internal fun TransformerMapView.verticalAxisLabel(): String = when (this) {
     TransformerMapView.Front, TransformerMapView.Back, TransformerMapView.Left, TransformerMapView.Right -> "Z"
 }
 
-/** De 2D-aanzichten komen 1-op-1 overeen met de camera-vlakken (TagPlane); via deze koppeling
- *  hergebruikt de 2D-kaart exact dezelfde "Paneel selector"-UI (knoppen-kruis) als de camera.
- *  De omgekeerde richting (TagPlane.toMapView) staat al in WorkflowTagScreens.kt. */
-private fun TransformerMapView.toTagPlane(): TagPlane = when (this) {
-    TransformerMapView.Top -> TagPlane.Top
-    TransformerMapView.Front -> TagPlane.Front
-    TransformerMapView.Back -> TagPlane.Back
-    TransformerMapView.Left -> TagPlane.Left
-    TransformerMapView.Right -> TagPlane.Right
-}
+private data class MapLayout(val origin: Offset, val mapWidth: Float, val mapHeight: Float)
 
-/**
- * Selectie/meet-sheet bovenin de verenigde 2D-weergave — parallel aan WorkflowStlMeasureOverlay in
- * de 3D-weergave: naam van het aangetikte deel + afstanden tot de 4 randen (tik → rand licht op) en
- * een ⋮-menu (Hernoemen / Verplaats / Verwijderen / Deselecteren). Twee losse punten → afstand.
- */
-@Composable
-private fun WorkflowMapSelectionOverlay(
-    measureStart: MapMeasurePoint,
-    measureEnd: MapMeasurePoint?,
-    view: TransformerMapView,
-    dimensions: MmPosition,
-    target: MapMoveTarget?,
-    moving: Boolean,
-    dragging: Boolean,
-    highlightEdge: Int?,
-    onEdgeClick: (Int?) -> Unit,
-    onRename: () -> Unit,
-    onMove: () -> Unit,
-    onCancelMove: () -> Unit,
-    onDelete: () -> Unit,
-    onDeselect: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var menuOpen by remember(measureStart, measureEnd) { mutableStateOf(false) }
-    val hMax = view.horizontalMm(dimensions)
-    val vMax = view.verticalMm(dimensions)
-    val edges = listOf(
-        "Links" to measureStart.horizontalMm.roundToInt(),
-        "Rechts" to (hMax - measureStart.horizontalMm).roundToInt(),
-        "Onder" to measureStart.verticalMm.roundToInt(),
-        "Boven" to (vMax - measureStart.verticalMm).roundToInt()
-    )
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(13.dp),
-        color = WorkflowCameraPanel.copy(alpha = 0.92f),
-        contentColor = Color.White,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-        shadowElevation = 8.dp
-    ) {
-        Column(
-            Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    if (measureEnd != null) "Meting: ${measureStart.distanceTo(measureEnd).roundToInt()} mm (${measureStart.componentsTo(measureEnd, view)})"
-                    else target?.label ?: "Meetpunt",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                // ⋮ bij een geselecteerde sensor/tag in rust (niet bij een 2-punts meting of actief slepen).
-                if (measureEnd == null && target != null && !dragging) {
-                    Box {
-                        Surface(
-                            modifier = Modifier.size(28.dp).clickable { menuOpen = true },
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color.White.copy(alpha = 0.12f)
-                        ) {
-                            Canvas(Modifier.fillMaxSize().padding(8.dp)) {
-                                repeat(3) { i ->
-                                    drawCircle(
-                                        Color.White,
-                                        radius = size.minDimension * 0.11f,
-                                        center = Offset(size.width / 2f, size.height * (0.2f + i * 0.3f))
-                                    )
-                                }
-                            }
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            if (target is MapMoveTarget.Sensor) {
-                                DropdownMenuItem(text = { Text("Hernoemen") }, onClick = { menuOpen = false; onRename() })
-                            }
-                            DropdownMenuItem(text = { Text("Verplaats") }, onClick = { menuOpen = false; onMove() })
-                            DropdownMenuItem(text = { Text("Verwijderen") }, onClick = { menuOpen = false; onDelete() })
-                            DropdownMenuItem(text = { Text("Deselecteren") }, onClick = { menuOpen = false; onDeselect() })
-                        }
-                    }
-                }
-            }
-            // Randafstanden (live tijdens slepen) + context-hint. Tijdens het (ver)plaatsen zijn de
-            // randwaarden alleen ter info (niet aantikbaar om op te lichten).
-            if (measureEnd == null) {
-                val edgesClickable = !moving && !dragging
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    edges.forEachIndexed { i, (label, mm) ->
-                        val selected = i == highlightEdge
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .then(if (edgesClickable) Modifier.clickable { onEdgeClick(if (selected) null else i) } else Modifier)
-                                .background(
-                                    if (selected) ArSensBlue.copy(alpha = 0.40f) else Color.Transparent,
-                                    RoundedCornerShape(7.dp)
-                                )
-                                .padding(horizontal = 5.dp, vertical = 3.dp)
-                        ) {
-                            Text(label, color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp)
-                            Text("$mm", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                        }
-                    }
-                }
-                Text(
-                    when {
-                        dragging -> "Loslaten om te plaatsen."
-                        moving -> "Sleep de sensor naar de nieuwe plek."
-                        else -> "tik een waarde → rand licht op"
-                    },
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 9.sp
-                )
-            }
-        }
-    }
-}
-
-private data class MapLayout(
-    val origin: Offset,
-    val mapWidth: Float,
-    val mapHeight: Float
-)
-
-/** Interactieve rand-afstand-overlay voor de 2D-kaart: afstand van het meetpunt tot de 4 randen
- *  van het gekozen vlak; tik een waarde → die rand licht op in de kaart (parallel aan de 3D-overlay). */
-@Composable
-private fun MapWallOffsetOverlay(
-    measureStart: MapMeasurePoint,
-    view: TransformerMapView,
-    dimensions: MmPosition,
-    highlightEdge: Int?,
-    onEdgeClick: (Int?) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val hMax = view.horizontalMm(dimensions)
-    val vMax = view.verticalMm(dimensions)
-    val edges = listOf(
-        "Links" to measureStart.horizontalMm.roundToInt(),
-        "Rechts" to (hMax - measureStart.horizontalMm).roundToInt(),
-        "Onder" to measureStart.verticalMm.roundToInt(),
-        "Boven" to (vMax - measureStart.verticalMm).roundToInt()
-    )
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = Color.White.copy(alpha = 0.94f),
-        shadowElevation = 6.dp
-    ) {
-        Column(
-            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text("Afstand tot rand (mm) — tik om op te lichten", color = ArSensChromeMuted, fontSize = 11.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                edges.forEachIndexed { i, (label, mm) ->
-                    val selected = i == highlightEdge
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .clickable { onEdgeClick(if (selected) null else i) }
-                            .background(
-                                if (selected) ArSensBlue.copy(alpha = 0.18f) else Color.Transparent,
-                                RoundedCornerShape(8.dp)
-                            )
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text(label, color = ArSensChromeMuted, fontSize = 10.sp)
-                        Text("$mm", color = Color(0xFF111827), fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private data class MapMeasurePoint(
+internal data class MapMeasurePoint(
     val label: String,
     val horizontalMm: Double,
-    val verticalMm: Double
+    val verticalMm: Double,
+    val target: MapMoveTarget? = null
 ) {
     fun distanceTo(other: MapMeasurePoint): Double =
         hypot(horizontalMm - other.horizontalMm, verticalMm - other.verticalMm)
@@ -1230,23 +715,15 @@ private fun MapMeasurePoint.componentsTo(other: MapMeasurePoint, view: Transform
     return "Δ${view.horizontalAxisLabel()} $dh · Δ${view.verticalAxisLabel()} $dv"
 }
 
-private fun MapMeasurePoint.toMoveTarget(project: Project): MapMoveTarget? {
-    val tagId = label.removePrefix("T").takeIf { label.startsWith("T") }?.toIntOrNull()
-    if (tagId != null && project.markers.any { it.id == tagId && it.isAprilTagCalibrationMarker() }) {
-        return MapMoveTarget.Tag(tagId)
-    }
-    return project.sensors.firstOrNull { it.id == label }?.let { MapMoveTarget.Sensor(it.id) }
+internal fun MapMeasurePoint.toMoveTarget(project: Project): MapMoveTarget? = when (val item = target) {
+    is MapMoveTarget.Sensor -> item.takeIf { project.sensors.any { it.id == item.id } }
+    is MapMoveTarget.Tag -> item.takeIf { project.markers.any { it.id == item.id && it.isAprilTagCalibrationMarker() } }
+    null -> null
 }
 
-private enum class MapEditMode {
-    Measure,
-    Sensor,
-    Tag,
-    Move,
-    Select
-}
+private enum class MapEditMode { Select, Measure, Sensor }
 
-private sealed class MapMoveTarget(open val label: String) {
+internal sealed class MapMoveTarget(open val label: String) {
     data class Tag(val id: Int) : MapMoveTarget("Tag $id")
     data class Sensor(val id: String) : MapMoveTarget("Sensor $id")
 }
@@ -1412,7 +889,7 @@ private fun measurePointFromTap(
     )
 }
 
-private fun selectableMapPoints(project: Project, view: TransformerMapView): List<MapMeasurePoint> {
+internal fun selectableMapPoints(project: Project, view: TransformerMapView): List<MapMeasurePoint> {
     val dimensions = project.dimensionsMm
     val corners = listOf(
         MapMeasurePoint("hoek", 0.0, 0.0),
@@ -1422,9 +899,9 @@ private fun selectableMapPoints(project: Project, view: TransformerMapView): Lis
     )
     val tags = project.markers
         .filter { it.isAprilTagCalibrationMarker() }
-        .map { marker -> marker.positionMm.toMapMeasurePoint(view, dimensions, "T${marker.id}") }
+        .map { marker -> marker.positionMm.toMapMeasurePoint(view, dimensions, "T${marker.id}").copy(target = MapMoveTarget.Tag(marker.id)) }
     val sensors = project.sensors.map { sensor ->
-        sensor.positionMm.toMapMeasurePoint(view, dimensions, sensor.id)
+        sensor.positionMm.toMapMeasurePoint(view, dimensions, sensor.id).copy(target = MapMoveTarget.Sensor(sensor.id))
     }
     return corners + tags + sensors
 }

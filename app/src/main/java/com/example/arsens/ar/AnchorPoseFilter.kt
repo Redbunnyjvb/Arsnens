@@ -1,5 +1,11 @@
 package com.example.arsens.ar
 
+enum class AnchorCorrectionState(val label: String) {
+    Uncalibrated("Eerste kalibratie"), Confirmed("Anker bevestigd"),
+    Collecting("Correctie opbouwen"), Correcting("Correctie uitvoeren"),
+    RecoveryRequired("Extra referenties of bevestiging nodig"), TrackingPaused("AR-anker herstellen")
+}
+
 data class AnchorUpdate(
     val event: String,
     val reason: String,
@@ -31,6 +37,14 @@ class AnchorPoseFilter {
     private var lastAdvanceMillis: Long? = null
 
     val isSettled: Boolean get() = settled && !requiresRecalibration
+    val correctionState: AnchorCorrectionState get() = when {
+        requiresRecalibration -> AnchorCorrectionState.RecoveryRequired
+        correctionTarget != null -> AnchorCorrectionState.Correcting
+        pending != null -> AnchorCorrectionState.Collecting
+        anchor == null -> AnchorCorrectionState.Uncalibrated
+        else -> AnchorCorrectionState.Confirmed
+    }
+    val correctionGoal: Transform3D? get() = correctionTarget
 
     val prediction: Transform3D? get() = anchor ?: pending
     val initializationCandidate: Transform3D? get() = pending
@@ -65,9 +79,8 @@ class AnchorPoseFilter {
         check(anchor != null)
         clearPending()
         clearDivergence()
-        settled = true
-        correctionTarget = null
-        return AnchorUpdate("ACCEPT", "anchor-image-held", true)
+        if (correctionTarget == null) settled = true
+        return AnchorUpdate("ACCEPT", if (correctionTarget == null) "anchor-image-held" else "correction-running", isSettled)
     }
 
     fun cancelCorrection() {
@@ -108,7 +121,7 @@ class AnchorPoseFilter {
     /** Called once per fresh detection packet, never once per render frame. */
     fun update(candidate: Transform3D, markerIds: List<Int>, nowMillis: Long, relocalizing: Boolean,
                referencePoint: DoubleArray = doubleArrayOf(0.0, 0.0, 0.0),
-               consistentWithPendingImage: Boolean = false): AnchorUpdate {
+               consistentWithPendingImage: Boolean? = null): AnchorUpdate {
         advance(nowMillis, !relocalizing)
         if (markerIds.isEmpty() || candidate.values.any { !it.isFinite() }) {
             clearPending()
@@ -140,15 +153,15 @@ class AnchorPoseFilter {
         if (current != null && !relocalizing && distance <= 3.0 && angle <= 0.15) {
             clearPending()
             clearDivergence()
-            correctionTarget = null
-            settled = true
-            return decision("ACCEPT", "anchor-held")
+            if (correctionTarget == null) settled = true
+            return decision("ACCEPT", if (correctionTarget == null) "anchor-held" else "correction-running")
         }
         if (current != null && !relocalizing) observeDivergence(nowMillis)
         val previous = pending
-        if (previous == null || (ids != pendingIds && !consistentWithPendingImage) || nowMillis - lastSampleMillis > 500L ||
+        if (previous == null || consistentWithPendingImage == false ||
+            (ids != pendingIds && consistentWithPendingImage != true) || nowMillis - lastSampleMillis > 500L ||
             distanceAtReference(previous, candidate) > 30.0 ||
-            (!consistentWithPendingImage && previous.rotationAngleDegreesTo(candidate) > (if (ids.size == 1) 6.0 else 2.0))
+            (consistentWithPendingImage != true && previous.rotationAngleDegreesTo(candidate) > (if (ids.size == 1) 6.0 else 2.0))
         ) {
             pending = candidate
             pendingIds = ids

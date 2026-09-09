@@ -2,6 +2,14 @@ package com.example.arsens.ar
 
 import com.example.arsens.data.Marker
 import kotlin.math.abs
+import kotlin.math.sqrt
+
+internal fun tagDistanceMm(cameraCvFromTransformer: Transform3D, marker: Marker): Float? {
+    val p = marker.positionMm
+    val cameraPoint = cameraCvFromTransformer.transformPoint(doubleArrayOf(p.x.toDouble(), p.y.toDouble(), p.z.toDouble()))
+    if (cameraPoint.any { !it.isFinite() } || cameraPoint[2] <= 0.0) return null
+    return sqrt(cameraPoint.sumOf { it * it }).toFloat().takeIf { it.isFinite() }
+}
 
 /** Carries measured pixels from their capture to the current view using the observed tag
  * plane and camera motion. The fused object anchor is deliberately not an input: disagreement

@@ -175,6 +175,7 @@ private class ArCoreCameraRenderer(
     private var session: Session? = null
     private var nativeAnchor: Anchor? = null
     private var trackingFrameId = trackingFrameIds.incrementAndGet()
+    private val nativeRecovery = NativeAnchorRecovery { trackingFrameIds.incrementAndGet() }
     private var anchorCreationError: String? = null
     private var installRequested = false
     private var surfaceWidth = 1
@@ -346,20 +347,27 @@ private class ArCoreCameraRenderer(
         refreshDetectorIfNeeded()
         resetFusionIfMarkersChanged(markers)
         if (nativeAnchor?.trackingState == TrackingState.STOPPED) resetTrackingReference()
+        val nowMillis = SystemClock.elapsedRealtime()
+        val expectedCaptureFrameId = nativeRecovery.captureFrameId(cameraTracking, nativeAnchor?.trackingState, trackingFrameId, nowMillis)
         var tagPacket = pollLatestDetectionPacket(knownMarkerSignatures)
-            ?.takeIf { it.result.trackingFrameId == trackingFrameId }
+            ?.takeIf { it.result.trackingFrameId == expectedCaptureFrameId }
+        if (nativeAnchor?.trackingState == TrackingState.PAUSED && tagPacket != null) {
+            tagPacket = if (nativeRecovery.observe(tagPacket.result, tagPacket.arFromCameraGlAtCapture, nowMillis)) {
+                establishTrackingReference(tagPacket)
+            } else null
+        }
         if (nativeAnchor == null && cameraTracking) {
             tagPacket = establishTrackingReference(tagPacket)
         }
-        val reference = nativeAnchor?.let { TrackingReferenceFrame(it.pose.toMillimeterTransform()) }
         val nativeTracking = nativeAnchor?.trackingState == TrackingState.TRACKING
+        val reference = nativeAnchor?.takeIf { nativeTracking }?.let { TrackingReferenceFrame(it.pose.toMillimeterTransform()) }
         val tracking = cameraTracking && nativeTracking
         val referenceFromCameraGl = reference?.cameraPose(arFromCameraGl) ?: arFromCameraGl
         val cameraGlFromReference = reference?.viewPose(cameraGlFromAr) ?: cameraGlFromAr
-        // Never attach an image to an untracked capture camera. A reference is established
-        // from a fresh tag first; all subsequent captures use the native anchor's local frame.
-        if (cameraTracking && (nativeAnchor == null || nativeTracking)) {
-            submitTagDetectionIfNeeded(frame, referenceFromCameraGl, markers)
+        val detectionFrameId = nativeRecovery.captureFrameId(cameraTracking, nativeAnchor?.trackingState, trackingFrameId, nowMillis)
+        if (detectionFrameId != null) {
+            submitTagDetectionIfNeeded(frame, referenceFromCameraGl, markers, detectionFrameId,
+                if (nativeTracking) fusion.predictedCameraPoseAt(referenceFromCameraGl) else null)
         }
         val tagResult = tagPacket?.result ?: AprilTagFrameResult(
             trackingStatus = if (tracking) ArTrackingStatus.ArCoreTracking else ArTrackingStatus.NoPose
@@ -382,12 +390,15 @@ private class ArCoreCameraRenderer(
             arTracking = tracking,
             displayWidth = surfaceWidth,
             displayHeight = surfaceHeight,
-            persistentTrackingFrame = nativeAnchor != null
+            persistentTrackingFrame = nativeAnchor != null,
+            currentTrackingFrameId = trackingFrameId
         ).let { fused ->
             fused.copy(calibrationRevision = frameCalibrationRevision, trackingFrameId = trackingFrameId,
                 nativeAnchorTracking = tracking,
+                correctionState = if (nativeAnchor?.trackingState == TrackingState.PAUSED) AnchorCorrectionState.TrackingPaused else fused.correctionState,
+                fusionDiagnostic = nativeRecovery.detail ?: nativeRecovery.diagnostic ?: fused.fusionDiagnostic,
                 poseDiagnostic = anchorCreationError ?: if (cameraTracking && nativeAnchor != null && !nativeTracking)
-                    "AR-anker wordt teruggevonden. Breng de trafo en omgeving in beeld." else fused.poseDiagnostic)
+                    nativeRecovery.diagnostic else fused.poseDiagnostic)
         }
         // Stap 4: status + detectie-versheid onthouden zodat submitTagDetectionIfNeeded de volgende
         // cadans kan kiezen (snel zodra de tag niet vers in beeld is → her-acquisitie blijft snel).
@@ -403,6 +414,7 @@ private class ArCoreCameraRenderer(
         trackingFrameId = trackingFrameIds.incrementAndGet()
         anchorCreationError = null
         fusion.reset()
+        nativeRecovery.reset()
         synchronized(detectionLock) {
             latestDetectionPacket = null
             consumedDetectionSequence = latestDetectionSequence
@@ -427,13 +439,16 @@ private class ArCoreCameraRenderer(
             anchorCreationError = "AR-anker kon niet worden gemaakt: ${it.message}"
             return null
         }
+        nativeAnchor?.detach()
         nativeAnchor = created
         trackingFrameId = trackingFrameIds.incrementAndGet()
         anchorCreationError = null
         fusion.reset()
+        nativeRecovery.reset()
         Log.i("ARSensFusion", "native-anchor-created frame=$trackingFrameId")
         // This first packet was captured before the anchor existed. Convert it once; any
         // other in-flight packet from that old coordinate frame is discarded by its frame ID.
+        if (created.trackingState != TrackingState.TRACKING) return null
         return packet.copy(result = detection.copy(trackingFrameId = trackingFrameId),
             arFromCameraGlAtCapture = TrackingReferenceFrame(created.pose.toMillimeterTransform()).cameraPose(packet.arFromCameraGlAtCapture))
     }
@@ -527,7 +542,9 @@ private class ArCoreCameraRenderer(
     private fun submitTagDetectionIfNeeded(
         frame: Frame,
         arFromCameraGlAtCapture: Transform3D,
-        markers: List<Marker>
+        markers: List<Marker>,
+        captureFrameId: Long,
+        predictedCameraPose: TransformerPose?
     ) {
         // Stap 4: backpressure (detectionInFlight) + tijd-gebaseerde cadans op elapsedRealtime().
         if (detectionInFlight) return
@@ -542,7 +559,7 @@ private class ArCoreCameraRenderer(
         } catch (error: Throwable) {
             publishDetectionPacket(
                 AprilTagDetectionPacket(
-                    result = AprilTagFrameResult(trackingFrameId = trackingFrameId,
+                    result = AprilTagFrameResult(trackingFrameId = captureFrameId,
                         errorMessage = error.message ?: "ARCore camera image kon niet gelezen worden"),
                     arFromCameraGlAtCapture = arFromCameraGlAtCapture,
                     markerSignatures = markerSignatures
@@ -571,9 +588,8 @@ private class ArCoreCameraRenderer(
                 arFromCameraGlAtCapture = arFromCameraGlAtCapture,
                 imageToViewMapper = imageToViewMapper,
                 markerSignatures = markerSignatures,
-                trackingFrameId = trackingFrameId,
-                predictedCameraPose = if (frame.camera.trackingState == TrackingState.TRACKING)
-                    fusion.predictedCameraPoseAt(arFromCameraGlAtCapture) else null,
+                trackingFrameId = captureFrameId,
+                predictedCameraPose = predictedCameraPose,
                 poseMode = tagPoseMode(),
                 capturedAtElapsedMillis = nowElapsed,
                 detectionSequence = frame.timestamp
@@ -751,6 +767,9 @@ internal class ArCoreAprilTagFusion(
     private var lastMotionDeg: Float? = null
     private var lastAnchorImageErrorPx: Float? = null
     private var referenceConflictActive = false
+    private var lastDeltaMm: Double? = null
+    private var lastDeltaDeg: Double? = null
+    private var lastSamples = 0
 
     /** Express the world prediction in this capture's camera, not the previous image's camera. */
     fun predictedCameraPoseAt(arFromCameraGl: Transform3D): TransformerPose? =
@@ -761,6 +780,7 @@ internal class ArCoreAprilTagFusion(
 
     fun reset() {
         anchorFilter.reset()
+        activeTrackingFrameId = null
         lastDetection = AprilTagFrameResult()
         lastCalibrationMillis = 0L
         previousCamera = null
@@ -776,6 +796,9 @@ internal class ArCoreAprilTagFusion(
         lastAnchorImageErrorPx = null
         referenceConflictActive = false
         lastUpdateDelta = ""
+        lastDeltaMm = null
+        lastDeltaDeg = null
+        lastSamples = 0
     }
 
     fun fuse(
@@ -789,8 +812,11 @@ internal class ArCoreAprilTagFusion(
         displayWidth: Int,
         displayHeight: Int,
         nowMillis: Long = SystemClock.elapsedRealtime(),
-        persistentTrackingFrame: Boolean = false
+        persistentTrackingFrame: Boolean = false,
+        currentTrackingFrameId: Long = 0L
     ): AprilTagFrameResult {
+        if (activeTrackingFrameId != null && activeTrackingFrameId != currentTrackingFrameId) reset()
+        activeTrackingFrameId = currentTrackingFrameId
         val previous = previousCamera
         if (!persistentTrackingFrame && anchorFilter.anchor != null && ((!arTracking && wasTracking) ||
                 (arTracking && previous != null &&
@@ -807,7 +833,8 @@ internal class ArCoreAprilTagFusion(
         wasTracking = arTracking
         val cvToGl = Transform3D.cameraGlFromCameraCv()
         val currentArFromCameraCv = currentArFromCameraGl * cvToGl
-        val hasPacket = tagArFromCameraGl != null && tagResult.capturedAtElapsedMillis != null &&
+        val hasPacket = tagResult.trackingFrameId == currentTrackingFrameId &&
+            tagArFromCameraGl != null && tagResult.capturedAtElapsedMillis != null &&
             tagResult.detectionSequence > lastProcessedSequence
         var motionMm: Float? = null
         var motionDeg: Float? = null
@@ -821,54 +848,73 @@ internal class ArCoreAprilTagFusion(
             lastMotionDeg = motionDeg
             val age = (nowMillis - tagResult.capturedAtElapsedMillis!!).coerceAtLeast(0L)
             val tagPose = tagResult.transformerPose
-            if (tagResult.referenceConflict || age > DETECTION_FRESH_MILLIS || !arTracking || tagPose == null) {
-                if (tagResult.referenceConflict) {
+            val evidenceIds = tagResult.verifiedReferenceIds.ifEmpty { tagResult.poseMarkerIds }.distinct()
+            val usesExcluded = (tagResult.poseMarkerIds + evidenceIds).any { it in tagResult.rejectedMarkerIds }
+            val freshConflict = age <= DETECTION_FRESH_MILLIS && arTracking && (tagResult.referenceConflict || usesExcluded)
+            if (tagResult.referenceConflict || usesExcluded || age > DETECTION_FRESH_MILLIS || !arTracking || tagPose == null) {
+                if (freshConflict) {
                     referenceConflictActive = true
                     anchorFilter.cancelCorrection()
                 }
-                if (tagResult.referenceConflict || age > DETECTION_FRESH_MILLIS || !arTracking) anchorFilter.clearPending()
+                if (freshConflict || age > DETECTION_FRESH_MILLIS || !arTracking) anchorFilter.clearPending()
                 if (!arTracking) anchorSettled = false
+                lastDeltaMm = null
+                lastDeltaDeg = null
+                lastSamples = 0
+                lastUpdateDelta = ""
                 lastEvent = "REJECT"
                 lastReason = when {
-                    tagResult.referenceConflict -> "reference-conflict"
                     age > DETECTION_FRESH_MILLIS -> "stale-detection"
                     !arTracking -> "tracking-lost"
+                    usesExcluded -> "excluded-reference"
+                    tagResult.referenceConflict -> "reference-conflict"
                     else -> "no-reference"
                 }
             } else {
                 val candidate = tagArFromCameraGl * cvToGl * Transform3D.cameraCvFromTransformerPose(tagPose)
                 val point = tagResult.referencePointMm
+                val referencePoint = doubleArrayOf(point?.x?.toDouble() ?: 0.0, point?.y?.toDouble() ?: 0.0, point?.z?.toDouble() ?: 0.0)
+                lastDeltaMm = anchorFilter.anchor?.let {
+                    val a = it.transformPoint(referencePoint)
+                    val b = candidate.transformPoint(referencePoint)
+                    kotlin.math.sqrt(a.indices.sumOf { axis -> (a[axis] - b[axis]) * (a[axis] - b[axis]) })
+                }
+                lastDeltaDeg = anchorFilter.anchor?.rotationAngleDegreesTo(candidate)
                 val imageError = anchorFilter.anchor?.takeUnless { relocalizing }?.let { anchor ->
                     anchorImageErrorPx(captureArFromCameraCv!!.inverseRigid() * anchor, tagResult.cameraIntrinsics,
-                        tagResult.referenceMarkers, tagResult.detections, tagResult.poseMarkerIds)
+                        tagResult.referenceMarkers, tagResult.detections, evidenceIds)
                 }
                 lastAnchorImageErrorPx = imageError
-                val pendingImageError = if (anchorFilter.anchor == null || relocalizing) {
-                    anchorFilter.initializationCandidate?.let { pending ->
+                val pendingImageError = anchorFilter.initializationCandidate?.let { pending ->
                         anchorImageErrorPx(captureArFromCameraCv!!.inverseRigid() * pending, tagResult.cameraIntrinsics,
-                            tagResult.referenceMarkers, tagResult.detections, tagResult.poseMarkerIds)
-                    }
-                } else null
-                val update = if (imageError != null && imageError <= ANCHOR_IMAGE_HOLD_MAX_PX) {
+                            tagResult.referenceMarkers, tagResult.detections, evidenceIds)
+                }
+                // Pixel agreement alone can conceal depth error. Allow noisy orientation
+                // for a small planar tag only when its observed center also stays close.
+                val targetImageError = anchorFilter.correctionGoal?.let {
+                    anchorImageErrorPx(captureArFromCameraCv!!.inverseRigid() * it, tagResult.cameraIntrinsics,
+                        tagResult.referenceMarkers, tagResult.detections, evidenceIds)
+                }
+                val update = if (imageError != null && imageError <= ANCHOR_IMAGE_HOLD_MAX_PX &&
+                    lastDeltaMm != null && lastDeltaMm!! <= 8.0 &&
+                    (anchorFilter.correctionGoal == null || (targetImageError != null && targetImageError <= ANCHOR_IMAGE_HOLD_MAX_PX))) {
                     anchorFilter.confirmImageConsistency()
-                } else anchorFilter.update(candidate, tagResult.poseMarkerIds, nowMillis, relocalizing,
-                    doubleArrayOf(point?.x?.toDouble() ?: 0.0, point?.y?.toDouble() ?: 0.0, point?.z?.toDouble() ?: 0.0),
-                    consistentWithPendingImage = pendingImageError != null && pendingImageError <= ANCHOR_IMAGE_HOLD_MAX_PX)
+                } else anchorFilter.update(candidate, evidenceIds, nowMillis, relocalizing,
+                    referencePoint, consistentWithPendingImage = pendingImageError?.let { it <= ANCHOR_IMAGE_HOLD_MAX_PX })
                 lastEvent = update.event
                 lastReason = update.reason
                 anchorSettled = update.settled
+                lastSamples = update.sampleCount
                 if (update.event == "ACCEPT") {
                     referenceConflictActive = false
                     lastCalibrationMillis = tagResult.capturedAtElapsedMillis
                     lastReprojectionErrorPx = if (update.reason == "anchor-image-held") imageError!! else tagPose.reprojectionErrorPx
                     relocalizing = false
                 }
-                if (update.event != "ACCEPT") {
-                    lastUpdateDelta = "delta=${update.distanceMm?.shortMm()}/${update.angleDeg?.shortDeg()} samples=${update.sampleCount}"
-                } else lastUpdateDelta = ""
+                lastUpdateDelta = "delta=${lastDeltaMm?.shortMm()}/${lastDeltaDeg?.shortDeg()} samples=$lastSamples state=${anchorFilter.correctionState}"
             }
-            val decision = "$lastEvent reason=$lastReason detected=${tagResult.detections.map { it.id }} tags=${tagResult.poseMarkerIds} excluded=${tagResult.rejectedMarkerIds}"
-            if (decision != lastLoggedDecision || nowMillis - lastLogMillis >= 1000L) {
+            val decision = "$lastEvent reason=$lastReason detected=${tagResult.detections.map { it.id }} tags=${tagResult.poseMarkerIds} verified=$evidenceIds excluded=${tagResult.rejectedMarkerIds}"
+            if ((decision != lastLoggedDecision && nowMillis - lastLogMillis >= 500L) || nowMillis - lastLogMillis >= 1000L) {
                 logDecision("$decision age=${age}ms settled=$anchorSettled tracking=$arTracking " +
                     "anchorPx=$lastAnchorImageErrorPx recalibration=${anchorFilter.requiresRecalibration} $lastUpdateDelta")
                 lastLoggedDecision = decision
@@ -911,6 +957,14 @@ internal class ArCoreAprilTagFusion(
                     lastDetection.cameraIntrinsics!!, projectionFromCapture)
             }
         } else emptyList()
+        val tagDistances = if (captureCamera != null) {
+            val currentCvFromCaptureCv = currentArFromCameraCv.inverseRigid() * captureCamera
+            lastDetection.referenceMarkers.mapNotNull { marker ->
+                val measured = lastDetection.freshPosePerTag[marker.id] ?: return@mapNotNull null
+                tagDistanceMm(currentCvFromCaptureCv * Transform3D.cameraCvFromTransformerPose(measured), marker)
+                    ?.let { marker.id to it }
+            }.toMap()
+        } else emptyMap()
         val sinceCalibration = nowMillis - lastCalibrationMillis
         val status = when {
             relocalizing || conflict || anchorFilter.requiresRecalibration -> ArTrackingStatus.NeedsRecalibration
@@ -927,14 +981,21 @@ internal class ArCoreAprilTagFusion(
             ArTrackingStatus.NeedsRecalibration -> 20
             ArTrackingStatus.NoPose -> 0
         }
+        val correctionState = when {
+            !arTracking && persistentTrackingFrame -> AnchorCorrectionState.TrackingPaused
+            conflict || relocalizing -> AnchorCorrectionState.RecoveryRequired
+            else -> anchorFilter.correctionState
+        }
         // Raw image coordinates must stay paired with their capture pose. UI projection and
         // placement instead use displayProjection, which follows the current camera every frame.
         return AprilTagFrameResult(
+            trackingFrameId = currentTrackingFrameId,
             imageWidth = lastDetection.imageWidth,
             imageHeight = lastDetection.imageHeight,
             detections = if (debugFresh) lastDetection.detections else emptyList(),
             screenDetections = if (debugFresh) lastDetection.screenDetections else emptyList(),
             trackedScreenDetections = trackedDetections,
+            tagDistancesMm = tagDistances,
             cameraIntrinsics = lastDetection.cameraIntrinsics,
             imageToViewMapper = lastDetection.imageToViewMapper,
             imageProjectionPose = if (fresh && calibrated != null) {
@@ -943,6 +1004,7 @@ internal class ArCoreAprilTagFusion(
             detectionsFresh = fresh && lastDetection.detections.isNotEmpty(),
             knownMarkerCount = lastDetection.knownMarkerCount,
             poseMarkerIds = if (fresh) lastDetection.poseMarkerIds else emptyList(),
+            verifiedReferenceIds = if (fresh) lastDetection.verifiedReferenceIds else emptyList(),
             poseMarkerCount = if (fresh) lastDetection.poseMarkerCount else 0,
             posePerTag = emptyMap(),
             freshPosePerTag = if (hasPacket && fresh) lastDetection.freshPosePerTag else emptyMap(),
@@ -970,11 +1032,19 @@ internal class ArCoreAprilTagFusion(
             nativeAnchorTracking = persistentTrackingFrame && arTracking,
             anchorImageErrorPx = lastAnchorImageErrorPx,
             anchorSettled = anchorSettled && !relocalizing,
+            correctionState = correctionState,
+            fusionDeltaMm = lastDeltaMm,
+            fusionDeltaDeg = lastDeltaDeg,
+            fusionSamples = lastSamples,
+            fusionDiagnostic = "${correctionState.label} · $lastEvent/$lastReason · tags ${lastDetection.poseMarkerIds} " +
+                "· bevestigd ${lastDetection.verifiedReferenceIds.ifEmpty { lastDetection.poseMarkerIds }} " +
+                "· uitgesloten ${lastDetection.rejectedMarkerIds} · leeftijd ${if (age == Long.MAX_VALUE) "—" else "$age ms"} " +
+                "· Δ ${lastDeltaMm?.shortMm() ?: "—"}/${lastDeltaDeg?.shortDeg() ?: "—"} · samples $lastSamples",
             poseDiagnostic = when {
                 !arTracking -> "ARCore volgt de camera niet. Breng ook de omgeving in beeld om tracking te herstellen."
                 conflict -> "Referentietags spreken elkaar tegen. Scan gecontroleerde referenties om de uitlijning te bevestigen."
                 relocalizing -> "ARCore moet opnieuw uitlijnen. Scan een bekende referentietag."
-                anchorFilter.requiresRecalibration -> "Referentie blijft afwijken van het anker. Scan andere referenties of kies AR opnieuw ijken."
+                anchorFilter.requiresRecalibration -> "Referentie blijft afwijken. Scan twee gecontroleerde referentietags samen, of bevestig de fysieke tagpositie en kies AR opnieuw ijken."
                 anchorFilter.anchor == null && lastDetection.poseMarkerIds.isNotEmpty() -> "Referentietag herkend; de eerste kalibratie wordt opgebouwd."
                 lastReason == "reference-jump" -> "Afwijkende tagmeting genegeerd; het bestaande AR-anker blijft staan."
                 !anchorSettled && pose != null -> "AR-uitlijning wordt bijgesteld; wacht tot de correctie klaar is."
@@ -986,6 +1056,7 @@ internal class ArCoreAprilTagFusion(
 
 
     private var lastUpdateDelta = ""
+    private var activeTrackingFrameId: Long? = null
 }
 
 private class ArCoreBackgroundRenderer {

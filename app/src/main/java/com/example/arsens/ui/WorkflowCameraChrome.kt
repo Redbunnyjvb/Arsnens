@@ -1323,6 +1323,7 @@ internal fun WorkflowArOptionsSheet(state: WorkflowAppState) {
             Text("AR opnieuw ijken")
         }
         state.aprilTagResult.poseDiagnostic?.let { Text(it, color = Color.White, fontSize = 13.sp) }
+        state.aprilTagResult.fusionDiagnostic?.let { Text(it, color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp) }
 
         if (state.project.stlModels.isEmpty()) {
             Text(

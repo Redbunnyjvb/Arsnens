@@ -177,6 +177,9 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
     if (state.showTagOverlay) {
         WorkflowAprilTagOverlay(state.project, state.overlayAprilTagResult, state.sensorTagStartId)
     }
+    if (state.showTagDistances) {
+        WorkflowTagDistanceOverlay(state.overlayAprilTagResult)
+    }
     if (state.showAxisOverlay) {
         WorkflowAxisOverlay(state.overlayAprilTagResult, state.project)
     }
@@ -356,6 +359,26 @@ private fun WorkflowPlacementQualityIndicator(quality: PlacementQuality?, correc
             drawRoundRect(color = color, topLeft = topLeft, size = Size(fillW, h), cornerRadius = radius)
         } else {
             drawRoundRect(color = color, topLeft = topLeft, size = Size(w, h), cornerRadius = radius)
+        }
+    }
+}
+
+@Composable
+private fun WorkflowTagDistanceOverlay(result: AprilTagFrameResult) {
+    Canvas(Modifier.fillMaxSize()) {
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 16.dp.toPx()
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            color = android.graphics.Color.WHITE
+            setShadowLayer(4.dp.toPx(), 0f, 0f, android.graphics.Color.BLACK)
+        }
+        result.trackedScreenDetections.forEach { detection ->
+            val distance = result.tagDistancesMm[detection.id] ?: return@forEach
+            drawContext.canvas.nativeCanvas.drawText(
+                String.format(Locale.getDefault(), "≈ %.2f m", distance / 1000f),
+                detection.centerPx.xPx + 12.dp.toPx(),
+                detection.centerPx.yPx + 24.dp.toPx(), textPaint
+            )
         }
     }
 }

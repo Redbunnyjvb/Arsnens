@@ -620,6 +620,11 @@ internal fun WorkflowTagSettingsCard(state: WorkflowAppState) {
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Tags", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            WorkflowSettingsToggleRow(
+                title = "Afstand tot tag weergeven",
+                subtitle = "Geschatte afstand van de camera tot het midden van een herkende referentietag. Gebruikt het ingestelde tagformaat.",
+                checked = state.showTagDistances
+            ) { state.setTagDistancesVisible(!state.showTagDistances) }
             WorkflowNumberField(
                 "Standaard tagformaat (mm)",
                 tagSizeText,

@@ -249,6 +249,14 @@ internal class WorkflowAppState(context: Context) {
     private val repository = LocalProjectRepository(context)
     private val appSettings = AppSettings(context)
 
+    var showTagDistances by mutableStateOf(appSettings.showTagDistances)
+        private set
+
+    fun setTagDistancesVisible(visible: Boolean) {
+        showTagDistances = visible
+        appSettings.showTagDistances = visible
+    }
+
     var screen by mutableStateOf(WorkflowScreen.ProjectPicker)
 
     /** Tagfamilie voor de camera-detectie (app-breed, bewaard in instellingen). */
@@ -771,6 +779,7 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun updateAprilTagResult(rawResult: AprilTagFrameResult) {
         if (rawResult.calibrationRevision != arCalibrationRevision) return
+        if (rawResult.trackingFrameId < aprilTagResult.trackingFrameId) return
         if (rawResult.trackingFrameId != aprilTagResult.trackingFrameId) {
             // Saved rays and pending tag measurements belong to one tracking frame only.
             placementRays.clear()
@@ -782,6 +791,8 @@ fun setDefaultTagSize(sizeMm: Int) {
             lockTagSignature = emptyList()
             lockSinceMillis = 0L
             lockSamples = 0
+            lastLockDetectionSequence = 0L
+            resetCorrectionSettle()
             cursorJitterSamples.clear()
         }
         val now = System.currentTimeMillis()

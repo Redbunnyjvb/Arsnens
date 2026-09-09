@@ -28,6 +28,24 @@ class AnchorPoseFilterTest {
         assertNotNull(filter.anchor)
     }
 
+    @Test fun imageConfirmationCannotCancelAnExecutingCorrection() {
+        val filter = calibrated()
+        for (time in 600L..800L step 100L) filter.update(at(24.0), listOf(1), time, false)
+        filter.confirmImageConsistency()
+        for (time in 820L..1800L step 20L) filter.advance(time)
+        assertEquals(24.0, filter.anchor!!.translation()[0], 0.001)
+    }
+
+    @Test fun alternatingReferencesRequireGeometricConfirmation() {
+        for (consistent in listOf(true, false)) {
+            val filter = calibrated()
+            for (time in 600L..2500L step 100L) filter.update(at(20.0),
+                if (time % 200 == 0L) listOf(0) else listOf(0, 1), time, false,
+                consistentWithPendingImage = consistent)
+            assertEquals(if (consistent) 20.0 else 0.0, filter.anchor!!.translation()[0], 1.0)
+        }
+    }
+
     @Test fun millimeterNoiseDoesNotMoveAnEstablishedModel() {
         val filter = calibrated()
         for (i in 6..100) filter.update(at(if (i % 2 == 0) 2.0 else -2.0), listOf(1), i * 100L, false)

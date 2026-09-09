@@ -5,6 +5,7 @@ import com.example.arsens.data.*
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONObject
+import com.google.ar.core.TrackingState
 
 /** Exercises production fusion, projection and the production placement gate without a device. */
 class ArCoreFusionRegressionTest {
@@ -42,11 +43,11 @@ class ArCoreFusionRegressionTest {
 
     private fun fuse(fusion: ArCoreAprilTagFusion, data: AprilTagFrameResult, now: Long,
                      captureCamera: Transform3D = camera, currentCamera: Transform3D = captureCamera,
-                     tracking: Boolean = true, persistentTrackingFrame: Boolean = false): AprilTagFrameResult {
+                     tracking: Boolean = true, persistentTrackingFrame: Boolean = false, trackingFrameId: Long = 0L): AprilTagFrameResult {
         val captureGl = captureCamera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
         val currentGl = currentCamera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
         return fusion.fuse(data, captureGl, currentGl, currentGl.inverseRigid(), null, projection,
-            tracking, 1280, 960, now, persistentTrackingFrame)
+            tracking, 1280, 960, now, persistentTrackingFrame, trackingFrameId)
     }
 
     private fun calibrated(persistentTrackingFrame: Boolean = false): ArCoreAprilTagFusion = ArCoreAprilTagFusion(logDecision = {}).also { fusion ->
@@ -62,6 +63,103 @@ class ArCoreFusionRegressionTest {
         assertNotNull(result.displayProjection)
         assertTrue(result.anchorSettled)
         assertNull(sensorPlacementBlockReason(result, quality))
+    }
+
+    private fun withSecondReference(data: AprilTagFrameResult, actual: Transform3D,
+                                    captureCamera: Transform3D = camera): AprilTagFrameResult {
+        val extra = marker.copy(id = 1, positionMm = marker.positionMm.copy(x = 4133))
+        val image = markerCornersInProjectFrame(extra).map {
+            val p = (captureCamera * actual).transformPoint(doubleArrayOf(it.x, it.y, it.z))
+            AprilTagCorner((1000 * p[0] / p[2] + 640).toFloat(), (1000 * p[1] / p[2] + 480).toFloat())
+        }
+        return data.copy(referenceMarkers = listOf(marker, extra), poseMarkerIds = listOf(0, 1), poseMarkerCount = 2,
+            detections = data.detections + AprilTagDetection(1, image, image.first()))
+    }
+
+    @Test fun agreeingAlternatingTagSetsAccumulateOrdinaryCorrectionEvidence() {
+        val fusion = calibrated(true)
+        var result = AprilTagFrameResult()
+        for (time in 600L..2400L step 100L) {
+            val data = packet(time, shifted(20.0), shifted(20.0))
+            result = fuse(fusion, if (time % 200 == 0L) data else withSecondReference(data, shifted(20.0)),
+                time + 40, persistentTrackingFrame = true)
+        }
+        assertReady(result)
+        assertEquals(20.0, result.arFromTransformer!!.translation()[0], 1.0)
+    }
+
+    @Test fun contradictoryAlternatingTagSetsDoNotAccumulateCorrectionEvidence() {
+        val fusion = calibrated(true)
+        var result = AprilTagFrameResult()
+        for (time in 600L..2400L step 100L) {
+            val offset = shifted(if (time % 200 == 0L) 20.0 else -20.0)
+            val data = packet(time, offset, offset)
+            result = fuse(fusion, if (time % 200 == 0L) data else withSecondReference(data, offset),
+                time + 40, persistentTrackingFrame = true)
+        }
+        assertEquals(ArTrackingStatus.NeedsRecalibration, result.trackingStatus)
+        assertEquals(0.0, result.arFromTransformer!!.translation()[0], 0.001)
+    }
+
+    @Test fun pixelHoldDoesNotStopAnAlreadyConfirmedCorrectionShortOfItsTarget() {
+        val fusion = calibrated(true)
+        for (time in 600L..1500L step 100L) {
+            fuse(fusion, packet(time, shifted(24.0), shifted(24.0)), time + 40, persistentTrackingFrame = true)
+        }
+        var result = AprilTagFrameResult()
+        for (now in 1600L..2500L step 16L) result = fuse(fusion, AprilTagFrameResult(), now, persistentTrackingFrame = true)
+        assertReady(result)
+        assertEquals(24.0, result.arFromTransformer!!.translation()[0], 0.001)
+    }
+
+    @Test fun smallPixelResidualDoesNotHideConsistentDepthDrift() {
+        val fusion = ArCoreAprilTagFusion(logDecision = {})
+        val distantCamera = Transform3D(camera.values.copyOf().apply { this[11] = 1200.0 })
+        for (time in 100L..500L step 100L) fuse(fusion, packet(time, captureCamera = distantCamera), time + 40,
+            captureCamera = distantCamera, persistentTrackingFrame = true)
+        val depthDrift = Transform3D(identity.values.copyOf().apply { this[7] = 20.0 })
+        var result = AprilTagFrameResult()
+        for (time in 600L..2500L step 100L) result = fuse(fusion,
+            packet(time, depthDrift, depthDrift, distantCamera), time + 40,
+            captureCamera = distantCamera, persistentTrackingFrame = true)
+        assertReady(result)
+        assertTrue(result.anchorImageErrorPx!! < 1.5f)
+        assertEquals(20.0, result.arFromTransformer!!.translation()[1], 1.0)
+    }
+
+    @Test fun excludedReferenceCannotEnterTheFusionEvenWithAnOtherwiseValidPose() {
+        val fusion = calibrated(true)
+        for (time in 600L..2000L step 100L) {
+            val result = fuse(fusion, packet(time, shifted(20.0), shifted(20.0)).copy(rejectedMarkerIds = listOf(0)),
+                time + 40, persistentTrackingFrame = true)
+            assertEquals(0.0, result.arFromTransformer!!.translation()[0], 0.001)
+            assertNotNull(sensorPlacementBlockReason(result, computePlacementQuality(result, 1f, false, 0)))
+        }
+    }
+
+    @Test fun staleConflictingPacketDoesNotInvalidateCurrentCalibration() {
+        val fusion = calibrated(true)
+        val result = fuse(fusion, packet(600).copy(referenceConflict = true), 1200, persistentTrackingFrame = true)
+        assertReady(result)
+        assertEquals("stale-detection", result.fusionReason)
+    }
+
+    @Test fun largeSingleReferenceJumpCanRecoverThroughSmallEvidenceOrMultipleReferences() {
+        for (recoveryOffset in listOf(20.0, 70.0, 200.0)) {
+            val fusion = calibrated(true)
+            var result = AprilTagFrameResult()
+            for (time in 600L..2000L step 100L) result = fuse(fusion, packet(time, shifted(70.0), shifted(70.0)),
+                time + 40, persistentTrackingFrame = true)
+            assertEquals(ArTrackingStatus.NeedsRecalibration, result.trackingStatus)
+            for (time in 2100L..4200L step 100L) {
+                val offset = shifted(recoveryOffset)
+                val data = packet(time, offset, offset)
+                result = fuse(fusion, if (recoveryOffset > 30) withSecondReference(data, offset) else data,
+                    time + 40, persistentTrackingFrame = true)
+            }
+            assertReady(result)
+            assertEquals(recoveryOffset, result.arFromTransformer!!.translation()[0], 1.0)
+        }
     }
 
     @Test fun nativeAnchorKeepsPlacementAvailableForMinutesWithoutAnyVisibleTag() {
@@ -177,6 +275,134 @@ class ArCoreFusionRegressionTest {
         assertTrue(resumed.poseMarkerIds.isEmpty())
     }
 
+    @Test fun pausedNativeAnchorKeepsDetectingInAnIsolatedFrameAndNeedsMultipleReferences() {
+        var nextId = 100L
+        val recovery = NativeAnchorRecovery { ++nextId }
+        assertEquals(10L, recovery.captureFrameId(true, TrackingState.TRACKING, 10, 900))
+        val captureFrame = recovery.captureFrameId(true, TrackingState.PAUSED, 10, 1000)!!
+        assertNotEquals(10L, captureFrame)
+        val worldCamera = camera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
+        for (time in 1100L..2400L step 100L) {
+            assertFalse(recovery.observe(packet(time).copy(trackingFrameId = captureFrame), worldCamera, time + 40))
+        }
+        var ready = false
+        for (time in 2500L..2900L step 100L) {
+            ready = recovery.observe(withSecondReference(packet(time), identity).copy(trackingFrameId = captureFrame), worldCamera, time + 40)
+            if (time < 2900) assertFalse(ready)
+        }
+        assertTrue(ready)
+    }
+
+    @Test fun recoveryDiscardsEvidenceAfterCameraLossNativeResumeStopOrFrameReplacement() {
+        for (transition in listOf("camera-lost", "tracking", "stopped", "replaced")) {
+            var nextId = 100L
+            val recovery = NativeAnchorRecovery { ++nextId }
+            val oldFrame = recovery.captureFrameId(true, TrackingState.PAUSED, 10, 1000)!!
+            val worldCamera = camera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
+            for (time in 1100L..1400L step 100L) assertFalse(recovery.observe(
+                withSecondReference(packet(time), identity).copy(trackingFrameId = oldFrame), worldCamera, time + 40))
+            when (transition) {
+                "camera-lost" -> assertNull(recovery.captureFrameId(false, TrackingState.PAUSED, 10, 1450))
+                "tracking" -> assertEquals(10L, recovery.captureFrameId(true, TrackingState.TRACKING, 10, 1450))
+                "stopped" -> assertNull(recovery.captureFrameId(true, TrackingState.STOPPED, 10, 1450))
+                "replaced" -> recovery.captureFrameId(true, TrackingState.PAUSED, 11, 1450)
+            }
+            val newFrame = recovery.captureFrameId(true, TrackingState.PAUSED, if (transition == "replaced") 11 else 10, 1500)!!
+            assertNotEquals(oldFrame, newFrame)
+            assertFalse(recovery.observe(withSecondReference(packet(1600), identity).copy(trackingFrameId = oldFrame), worldCamera, 1640))
+            assertFalse(recovery.observe(withSecondReference(packet(1700), identity).copy(trackingFrameId = newFrame), worldCamera, 1740))
+        }
+    }
+
+    @Test fun nativeRecoveryToleratesABriefMissingTagButLongGapsNeedNewEvidence() {
+        for (gap in listOf(300L, 1000L)) {
+            val recovery = NativeAnchorRecovery { 101 }
+            val frameId = recovery.captureFrameId(true, TrackingState.PAUSED, 10, 1000)!!
+            val worldCamera = camera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
+            for (time in 1100L..1400L step 100L) recovery.observe(
+                withSecondReference(packet(time), identity).copy(trackingFrameId = frameId), worldCamera, time + 40)
+            assertFalse(recovery.observe(packet(1500).copy(trackingFrameId = frameId, transformerPose = null,
+                poseMarkerIds = emptyList()), worldCamera, 1540))
+            val nextTime = 1400L + gap
+            val ready = recovery.observe(withSecondReference(packet(nextTime), identity).copy(trackingFrameId = frameId),
+                worldCamera, nextTime + 40)
+            if (gap == 1000L) assertFalse(ready) else {
+                assertTrue(recovery.observe(withSecondReference(packet(2100), identity).copy(trackingFrameId = frameId),
+                    worldCamera, 2140))
+            }
+        }
+    }
+
+    @Test fun recoveryRejectsRepeatedStaleConflictingExcludedAndInconsistentPackets() {
+        val worldCamera = camera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
+        for (mode in listOf("repeat", "stale", "conflict", "excluded", "wrong-corners")) {
+            val recovery = NativeAnchorRecovery { 101 }
+            val frameId = recovery.captureFrameId(true, TrackingState.PAUSED, 10, 1000)!!
+            for (time in 1100L..3000L step 100L) {
+                val data = withSecondReference(packet(if (mode == "repeat") 1100 else time), identity).copy(trackingFrameId = frameId)
+                val invalid = when (mode) {
+                    "stale" -> data.copy(capturedAtElapsedMillis = time - 1000)
+                    "conflict" -> data.copy(referenceConflict = true)
+                    "excluded" -> data.copy(rejectedMarkerIds = listOf(0))
+                    "wrong-corners" -> data.copy(transformerPose = (camera * shifted(40.0)).toTransformerPose(0.1f))
+                    else -> data
+                }
+                assertFalse("$mode at $time", recovery.observe(invalid, worldCamera, time + 40))
+            }
+        }
+    }
+
+    @Test fun nearestTagSelectionStillUsesIndependentlyVerifiedReferencesForRecovery() {
+        val fusion = calibrated(true)
+        val recovery = NativeAnchorRecovery { 101 }
+        val frameId = recovery.captureFrameId(true, TrackingState.PAUSED, 10, 600)!!
+        val worldCamera = camera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
+        var recovered = false
+        var result = AprilTagFrameResult()
+        for (time in 700L..2400L step 100L) {
+            val data = withSecondReference(packet(time, shifted(70.0), shifted(70.0)), shifted(70.0))
+                .copy(poseMarkerIds = listOf(0), poseMarkerCount = 1, verifiedReferenceIds = listOf(0, 1))
+            result = fuse(fusion, data, time + 40, persistentTrackingFrame = true)
+            recovered = recovery.observe(data.copy(trackingFrameId = frameId), worldCamera, time + 40) || recovered
+        }
+        assertReady(result)
+        assertEquals(70.0, result.arFromTransformer!!.translation()[0], 1.0)
+        assertTrue(recovered)
+    }
+
+    @Test fun fusionCannotConsumeOldFramesAfterNativeAnchorReplacement() {
+        val fusion = calibrated(true)
+        var result = fuse(fusion, packet(600), 640, persistentTrackingFrame = true, trackingFrameId = 20)
+        assertNull(result.displayProjection)
+        for (time in 700L..1100L step 100L) result = fuse(fusion, packet(time).copy(trackingFrameId = 20), time + 40,
+            persistentTrackingFrame = true, trackingFrameId = 20)
+        assertReady(result)
+        val before = result.arFromTransformer!!.values.copyOf()
+        result = fuse(fusion, packet(1200, shifted(20.0), shifted(20.0)), 1240, persistentTrackingFrame = true, trackingFrameId = 20)
+        assertReady(result)
+        assertArrayEquals(before, result.arFromTransformer!!.values, 0.001)
+        assertEquals(1100L, result.detectionSequence)
+        assertEquals(20L, result.trackingFrameId)
+    }
+
+    @Test fun briefReferenceGapDoesNotLoseCorrectionEvidenceAndPausedTrackingDoesNotAdvanceIt() {
+        val fusion = calibrated(true)
+        fuse(fusion, packet(600, shifted(24.0), shifted(24.0)), 640, persistentTrackingFrame = true)
+        fuse(fusion, packet(700, shifted(24.0), shifted(24.0)), 740, persistentTrackingFrame = true)
+        fuse(fusion, packet(800).copy(transformerPose = null, poseMarkerIds = emptyList()), 840, persistentTrackingFrame = true)
+        var result = fuse(fusion, packet(900, shifted(24.0), shifted(24.0)), 940, persistentTrackingFrame = true)
+        assertEquals("corrected", result.fusionReason)
+        val executing = result.arFromTransformer!!.values.copyOf()
+        for (time in 1000L..1600L step 100L) {
+            result = fuse(fusion, AprilTagFrameResult(), time, tracking = false, persistentTrackingFrame = true)
+            assertNull(result.displayProjection)
+            assertArrayEquals(executing, result.arFromTransformer!!.values, 0.001)
+        }
+        for (time in 1700L..2700L step 20L) result = fuse(fusion, AprilTagFrameResult(), time, persistentTrackingFrame = true)
+        assertReady(result)
+        assertEquals(24.0, result.arFromTransformer!!.translation()[0], 0.001)
+    }
+
     @Test fun visible47mmTagWithAlternatingLowErrorPosesStaysPlaceable() {
         val fusion = calibrated()
         for (i in 6..250) {
@@ -226,6 +452,7 @@ class ArCoreFusionRegressionTest {
         val result = fuse(fusion, packet(600), 640, currentCamera = movedCamera)
         assertEquals("anchor-image-held", result.fusionReason)
         assertTrue(result.anchorImageErrorPx!! < 0.01f)
+        assertEquals(kotlin.math.hypot(600.0, 120.0).toFloat(), result.tagDistancesMm.getValue(0), 0.01f)
         assertArrayEquals(movedCamera.values, result.cameraCvFromTransformer!!.values, 1e-5)
         assertArrayEquals(camera.values, Transform3D.cameraCvFromTransformerPose(result.imageProjectionPose!!).values, 0.001)
         val predicted = fusion.predictedCameraPoseAt(movedCamera.inverseRigid() * Transform3D.cameraGlFromCameraCv())!!

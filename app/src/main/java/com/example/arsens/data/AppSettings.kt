@@ -22,6 +22,10 @@ class AppSettings(context: Context) {
             prefs.edit().putString(KEY_TAG_POSE_MODE, value).apply()
         }
 
+    var showTagDistances: Boolean
+        get() = prefs.getBoolean("show_tag_distances", false)
+        set(value) { prefs.edit().putBoolean("show_tag_distances", value).apply() }
+
     /** Standaard tagformaat (zwart vierkant) in mm voor nieuwe referentietags. */
     var defaultTagSizeMm: Int
         get() = prefs.getInt(KEY_TAG_SIZE, 100)

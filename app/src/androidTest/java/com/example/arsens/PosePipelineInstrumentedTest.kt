@@ -56,6 +56,17 @@ class PosePipelineInstrumentedTest {
         assertEquals(listOf(3), selection.rejectedIds)
     }
 
+    @Test fun nearestTagPoseIsAlsoCheckedAgainstTheOtherVisibleReference() {
+        val markers = listOf(
+            Marker(1, "apriltag", 100, MmPosition(150, 0, 100), tagRotationFor(TagPlane.Front)),
+            Marker(2, "apriltag", 100, MmPosition(820, 0, 800), tagRotationFor(TagPlane.Front)))
+        val selection = selectTransformerPoseFromAprilTags(markers.map { project(it, frontPose()) }, markers,
+            intrinsics, poseMode = TagPoseMode.NearestTag)
+        assertNotNull(selection.estimate)
+        assertEquals(1, selection.estimate!!.markerIds.size)
+        assertEquals(listOf(1, 2), selection.consensusIds)
+    }
+
     @Test fun staleCaptureAndRepeatedPacketCannotInitializeAnchor() {
         val fusion = ArCoreAprilTagFusion()
         val identity = Transform3D.identity()

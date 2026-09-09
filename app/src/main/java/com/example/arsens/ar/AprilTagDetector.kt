@@ -53,6 +53,8 @@ data class AprilTagFrameResult(
     /** Reference observations transported to the current camera, independently of the fused
      * anchor. Raw screenDetections remain paired with the capture for measurements/logging. */
     val trackedScreenDetections: List<AprilTagDetection> = emptyList(),
+    /** Current camera-to-tag-center distance, based on the measured reference pose, in mm. */
+    val tagDistancesMm: Map<Int, Float> = emptyMap(),
     val cameraIntrinsics: CameraIntrinsics? = null,
     val imageToViewMapper: ImageToViewMapper? = null,
     val imageProjectionPose: TransformerPose? = null,
@@ -60,6 +62,8 @@ data class AprilTagFrameResult(
     val knownMarkerCount: Int = 0,
     val poseMarkerCount: Int = 0,
     val poseMarkerIds: List<Int> = emptyList(),
+    /** All references checked against this pose, including in NearestTag mode. Excludes quarantine. */
+    val verifiedReferenceIds: List<Int> = emptyList(),
     val rejectedMarkerIds: List<Int> = emptyList(),
     val referenceConflict: Boolean = false,
     /** Monotonic capture time and sequence; repeated display frames are not new detections. */
@@ -71,6 +75,11 @@ data class AprilTagFrameResult(
     val referenceMarkers: List<Marker> = emptyList(),
     val anchorImageErrorPx: Float? = null,
     val anchorSettled: Boolean = false,
+    val correctionState: AnchorCorrectionState = AnchorCorrectionState.Uncalibrated,
+    val fusionDeltaMm: Double? = null,
+    val fusionDeltaDeg: Double? = null,
+    val fusionSamples: Int = 0,
+    val fusionDiagnostic: String? = null,
     val poseDiagnostic: String? = null,
     val transformerPose: TransformerPose? = null,
     val displayProjection: ArDisplayProjection? = null,
@@ -266,9 +275,10 @@ class AprilTagDetector(
                 knownMarkerCount = knownMarkers.size,
                 poseMarkerCount = poseEstimate?.markerIds?.distinct()?.size ?: 0,
                 poseMarkerIds = poseEstimate?.markerIds ?: emptyList(),
+                verifiedReferenceIds = if (poseEstimate != null) selection.consensusIds.filterNot { it in quarantined } else emptyList(),
                 rejectedMarkerIds = (selection.rejectedIds + quarantined.intersect(visibleKnownIds)).distinct().sorted(),
                 referenceConflict = referenceConflict,
-                referenceMarkers = knownMarkers.filter { it.id in (poseEstimate?.markerIds ?: emptyList()) },
+                referenceMarkers = knownMarkers.filter { poseEstimate != null && it.id in selection.consensusIds && it.id !in quarantined },
                 poseDiagnostic = diagnostic,
                 referencePointMm = poseEstimate?.let { estimate ->
                     knownMarkers.filter { it.id in estimate.markerIds }.takeIf { it.isNotEmpty() }?.let { markers ->
@@ -1207,7 +1217,8 @@ private object PoseDecisionLogger {
         val now = System.currentTimeMillis()
         val category = key.substringBefore('|')
         val previous = lastByCategory[category]
-        if (key == previous?.first && now - previous.second < POSE_DECISION_LOG_INTERVAL_MILLIS) return
+        if (previous != null && now - previous.second <
+            (if (key == previous.first) POSE_DECISION_LOG_INTERVAL_MILLIS else 500L)) return
         lastByCategory[category] = key to now
         if (warning) {
             Log.w("ARsensPose", message)

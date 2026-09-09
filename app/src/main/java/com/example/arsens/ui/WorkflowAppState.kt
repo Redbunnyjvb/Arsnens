@@ -146,6 +146,7 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.displayName
 import com.example.arsens.data.sensorTagConflict
 import com.example.arsens.data.resetSensorInstallation
 import com.example.arsens.data.updateSensorPlan
@@ -718,6 +719,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (selected == WorkMode.OnTheFly) {
             planSensorAtCursor = false
             resetSensorFormForNext()
+            cameraSensors.firstOrNull { it.status == SensorStatus.Pending }?.let(::selectCameraSensor)
             reseedTagPlacement()
             showTagOverlay = true
             showSensorOverlay = true
@@ -1081,6 +1083,7 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun selectTagPlane(plane: TagPlane) {
         scannedMeasuredPosition = null
+        if (selectedTagPlane != plane) clearCursorForPlaneChange()
         selectedTagPlane = plane
         activeMapView = plane.toMapView()
         reseedTagPlacement()
@@ -2396,7 +2399,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (saved != null) {
             if (!planSensorAtCursor) {
                 if (!preservesTarget) storePlacementRayFor(saved.id, saved.referenceTagId, placementRay, placementPlane)
-                selectSensorForEdit(saved)
+                selectNextUnplacedCameraSensor(saved.id)
             }
             val tagNote = sensorTag?.let { " · tag ${it.id}" }.orEmpty()
             val installed = log.results.firstOrNull { it.sensorId == saved.id }
@@ -2406,7 +2409,7 @@ fun setDefaultTagSize(sizeMm: Int) {
                 "Sensor ${saved.id} vastgelegd$tagNote · ${installed.distanceErrorMm} mm van doel " +
                     "(${if (installed.status == SensorStatus.Fail) "buiten" else "binnen"} radius ${saved.toleranceMm} mm)."
             } else {
-                "Sensor ${saved.id} vastgelegd$tagNote. Kies Nieuwe sensor voor het volgende punt."
+                "Sensor ${saved.id} vastgelegd$tagNote."
             }
         }
     }
@@ -2642,13 +2645,61 @@ fun setDefaultTagSize(sizeMm: Int) {
         scannedMeasuredPosition = null
     }
 
+    val cameraSensors: List<Sensor> get() = project.sensors.sortedBy { it.order }
+    val cameraSensor: Sensor? get() = project.sensors.firstOrNull { it.id == sensorId }
+    val cameraSensorLabel: String get() = cameraSensor?.displayName() ?: "Nieuwe sensor $sensorId"
+    val cameraSensorAction: String get() = when {
+        planSensorAtCursor -> "Doelgebied voorbereiden"
+        cameraSensor?.status?.let { it != SensorStatus.Pending } == true -> "Opnieuw vastleggen"
+        else -> "Vastleggen"
+    }
+    val canSelectPreviousCameraSensor: Boolean get() = cameraSensors.let { sensors ->
+        sensors.isNotEmpty() && sensors.indexOfFirst { it.id == sensorId } != 0
+    }
+    val canSelectNextCameraSensor: Boolean get() = cameraSensor != null
+
+    fun beginNewCameraSensor() {
+        beginNewSensor()
+        planSensorAtCursor = false
+        cameraPlacementTarget = CameraPlacementTarget.Sensor
+        message = null
+    }
+
+    fun stepCameraSensor(direction: Int) {
+        val sensors = cameraSensors
+        val index = sensors.indexOfFirst { it.id == sensorId }.let { if (it < 0) sensors.size else it }
+        val next = (index + direction.coerceIn(-1, 1)).coerceIn(0, sensors.size)
+        if (next == index) return
+        sensors.getOrNull(next)?.let(::selectCameraSensor) ?: beginNewCameraSensor()
+    }
+
+    private fun selectNextUnplacedCameraSensor(afterId: String) {
+        val sensors = cameraSensors
+        val start = sensors.indexOfFirst { it.id == afterId } + 1
+        val next = (sensors.drop(start) + sensors.take(start)).firstOrNull {
+            it.id != afterId && it.status == SensorStatus.Pending
+        }
+        next?.let(::selectCameraSensor) ?: beginNewCameraSensor()
+    }
+
     fun selectCameraSensor(sensor: Sensor) {
         selectSensorForEdit(sensor)
         planSensorAtCursor = false
         scannedMeasuredPosition = null
-        selectedTagPlane = sensorPlane(sensor)
+        val plane = sensorPlane(sensor)
+        if (selectedTagPlane != plane) clearCursorForPlaneChange()
+        selectedTagPlane = plane
         cameraPlacementTarget = CameraPlacementTarget.Sensor
-        message = "Sensor ${sensor.id} · ${sensor.name} geselecteerd. Richt op de werkelijke plek; buiten de radius mag ook."
+        message = if (sensor.status == SensorStatus.Pending) null else
+            "${sensor.displayName()} opnieuw vastleggen: richt op de nieuwe plek en druk op de opnameknop."
+    }
+
+    private fun clearCursorForPlaneChange() {
+        // The next render result intersects the new plane. A rapid second press must not
+        // record a cursor/ray computed on the previous sensor's face.
+        arCursorPosition = null
+        arCursorSource = "none"
+        cursorPlacementRay = null
     }
 
     fun openCameraForSensor(id: String?) {

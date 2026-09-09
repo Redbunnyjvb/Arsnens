@@ -26,6 +26,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -306,8 +310,10 @@ internal fun FullScreenCameraWorkflowShell(
     message: String?,
     primaryActionText: String,
     onPrimaryAction: () -> Unit,
-    placementTarget: CameraPlacementTarget? = null,
-    onPlacementTargetChange: ((CameraPlacementTarget) -> Unit)? = null,
+    onPreviousSensor: (() -> Unit)? = null,
+    onNextSensor: (() -> Unit)? = null,
+    previousSensorEnabled: Boolean = false,
+    nextSensorEnabled: Boolean = false,
     camera: @Composable BoxScope.() -> Unit,
     requestedMenuKey: String?,
     onMenuRequestConsumed: () -> Unit,
@@ -336,7 +342,7 @@ internal fun FullScreenCameraWorkflowShell(
     BackHandler(enabled = openMenuKey != null) {
         openMenuKey = null
     }
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
@@ -391,7 +397,7 @@ internal fun FullScreenCameraWorkflowShell(
         }
         // De vlak-/paneelkiezer staat nu als bovenste knop ("Paneel selector") in de linker
         // werkbalk en klapt uit als bottom-sheet (zie hieronder), niet meer als chip midden-boven.
-        if (!message.isNullOrBlank()) {
+        if (openMenuKey == null && !message.isNullOrBlank()) {
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)),
@@ -419,6 +425,7 @@ internal fun FullScreenCameraWorkflowShell(
                     .padding(start = 84.dp, end = 12.dp, bottom = 12.dp)
                     .fillMaxWidth()
                     .widthIn(max = 460.dp)
+                    .height((maxHeight * 0.68f).coerceAtMost(if (tallPanel) 600.dp else 460.dp))
             ) {
                 MaterialTheme(
                     colorScheme = WorkflowCameraDarkScheme,
@@ -441,7 +448,9 @@ internal fun FullScreenCameraWorkflowShell(
                             )
                             Surface(
                                 modifier = Modifier
-                                    .size(34.dp)
+                                    .size(48.dp)
+                                    .testTag("camera-menu-close")
+                                    .semantics { contentDescription = "Menu sluiten" }
                                     .clickable { openMenuKey = null },
                                 shape = RoundedCornerShape(999.dp),
                                 color = Color.White.copy(alpha = 0.12f)
@@ -454,7 +463,7 @@ internal fun FullScreenCameraWorkflowShell(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = if (tallPanel) 520.dp else 340.dp)
+                                .weight(1f)
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
@@ -569,7 +578,7 @@ internal fun FullScreenCameraWorkflowShell(
                     .padding(
                         start = 86.dp,
                         end = 86.dp,
-                        bottom = if (placementTarget != null) 154.dp else 94.dp
+                        bottom = 100.dp
                     )
                     .widthIn(max = 360.dp)
             )
@@ -578,8 +587,10 @@ internal fun FullScreenCameraWorkflowShell(
             WorkflowCameraPrimaryButton(
                 label = primaryActionText,
                 onClick = onPrimaryAction,
-                placementTarget = placementTarget,
-                onPlacementTargetChange = onPlacementTargetChange,
+                onPreviousSensor = onPreviousSensor,
+                onNextSensor = onNextSensor,
+                previousSensorEnabled = previousSensorEnabled,
+                nextSensorEnabled = nextSensorEnabled,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .safeDrawingPadding()
@@ -609,19 +620,19 @@ internal fun FullScreenCameraWorkflowShell(
                     .align(Alignment.BottomEnd)
                     .safeDrawingPadding()
                     .padding(end = 12.dp, bottom = 18.dp)
-                    .height(54.dp)
+                    .size(48.dp)
+                    .semantics { contentDescription = "Cursor centreren" }
                     .clickable(onClick = onRecenterCursor),
                 shape = RoundedCornerShape(14.dp),
                 color = WorkflowCameraPanelButton,
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Canvas(Modifier.size(22.dp)) { drawWorkflowCameraIcon("cursor", Color.White) }
-                    Text("Centreer", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
         }
@@ -787,55 +798,39 @@ internal fun WorkflowPlacementTargetSwitch(
 internal fun WorkflowCameraPrimaryButton(
     label: String,
     onClick: () -> Unit,
-    placementTarget: CameraPlacementTarget? = null,
-    onPlacementTargetChange: ((CameraPlacementTarget) -> Unit)? = null,
+    onPreviousSensor: (() -> Unit)? = null,
+    onNextSensor: (() -> Unit)? = null,
+    previousSensorEnabled: Boolean = false,
+    nextSensorEnabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val actionLabel = when {
-        label.equals("Tag", ignoreCase = true) -> "Plaats tag"
-        label.equals("Sensor", ignoreCase = true) -> "Plaats sensor"
-        label.equals("Plaats", ignoreCase = true) -> "Plaats sensor"
-        else -> label
-    }
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (onPreviousSensor != null) WorkflowSensorStepButton("Vorige sensor", "‹", previousSensorEnabled, onPreviousSensor)
         Surface(
-            modifier = Modifier
-                .size(68.dp)
-                .clickable(onClick = onClick),
-            shape = RoundedCornerShape(999.dp),
-            color = Color.White.copy(alpha = 0.92f),
-            border = BorderStroke(5.dp, Color.White.copy(alpha = 0.36f)),
-            shadowElevation = 8.dp
+            modifier = Modifier.size(68.dp).testTag("camera-capture")
+                .semantics { contentDescription = label }.clickable(onClick = onClick),
+            shape = RoundedCornerShape(999.dp), color = Color.White.copy(alpha = 0.92f),
+            border = BorderStroke(3.dp, Color.White.copy(alpha = 0.55f)), shadowElevation = 10.dp
         ) {
-            Canvas(Modifier.fillMaxSize().padding(14.dp)) {
-                drawCircle(ArSensBlue.copy(alpha = 0.18f), radius = size.minDimension * 0.42f, center = Offset(size.width / 2f, size.height / 2f))
-                drawCircle(ArSensBlue, radius = size.minDimension * 0.22f, center = Offset(size.width / 2f, size.height / 2f))
-                drawCircle(Color.White, radius = size.minDimension * 0.075f, center = Offset(size.width / 2f, size.height / 2f))
+            Canvas(Modifier.fillMaxSize().padding(16.dp)) {
+                drawCircle(ArSensBlue.copy(alpha = 0.18f))
+                drawCircle(ArSensBlue, radius = size.minDimension * 0.28f)
+                drawCircle(Color.White, radius = size.minDimension * 0.075f)
             }
         }
-        Surface(
-            modifier = Modifier.clickable(onClick = onClick),
-            shape = RoundedCornerShape(10.dp),
-            color = WorkflowCameraPanelButton,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
-        ) {
-            Text(
-                actionLabel,
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-            )
-        }
-        if (placementTarget != null && onPlacementTargetChange != null) {
-            WorkflowPlacementTargetSwitch(
-                selected = placementTarget,
-                onSelected = onPlacementTargetChange
-            )
+        if (onNextSensor != null) WorkflowSensorStepButton("Volgende sensor", "›", nextSensorEnabled, onNextSensor)
+    }
+}
+
+@Composable
+private fun WorkflowSensorStepButton(label: String, glyph: String, enabled: Boolean, onClick: () -> Unit) {
+    Surface(Modifier.size(48.dp).semantics { contentDescription = label }
+        .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(16.dp), color = WorkflowCameraPanelButton,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(glyph, color = Color.White.copy(alpha = if (enabled) 1f else 0.3f), fontSize = 32.sp)
         }
     }
 }

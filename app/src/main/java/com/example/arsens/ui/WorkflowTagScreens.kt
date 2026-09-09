@@ -156,10 +156,7 @@ internal fun WorkflowTagsScreen(state: WorkflowAppState) {
         subtitle = "",
         onBack = state::navigateBack,
         topActions = {
-            WorkflowCameraStatusPill(if (state.cameraPlacementTarget == CameraPlacementTarget.Sensor) "Sensor ${state.sensorId} · ${state.project.placementCountLabel}" else state.project.placementCountLabel)
-            // Opent de 2D-kaart met ALLE sensoren en tags — ook die waarvan de referentietag
-            // nu niet in beeld is (die worden in de live overlay bewust verborgen).
-            // Gevulde knoppen in de app-kleur (i.p.v. outline) zodat ze opvallen op het camerabeeld.
+            WorkflowCameraSensorPicker(state)
         },
         shortcutActions = listOf(
             WorkflowCameraShortcut(
@@ -178,19 +175,15 @@ internal fun WorkflowTagsScreen(state: WorkflowAppState) {
             )
         },
         message = state.message,
-        primaryActionText = if (state.cameraPlacementTarget == CameraPlacementTarget.Tag) "Tag" else if (state.planSensorAtCursor) "Plan sensor" else "Sensor zit hier",
-        onPrimaryAction = {
-            if (state.cameraPlacementTarget == CameraPlacementTarget.Tag) {
-                state.saveMeasuredTag()
-            } else {
-                state.saveSensorAtCursor()
-            }
-        },
-        placementTarget = state.cameraPlacementTarget,
-        onPlacementTargetChange = state::selectCameraPlacementTarget,
+        primaryActionText = "${state.cameraSensorLabel}: ${state.cameraSensorAction}",
+        onPrimaryAction = state::saveSensorAtCursor,
+        onPreviousSensor = { state.stepCameraSensor(-1) },
+        onNextSensor = { state.stepCameraSensor(1) },
+        previousSensorEnabled = state.canSelectPreviousCameraSensor,
+        nextSensorEnabled = state.canSelectNextCameraSensor,
         camera = {
             WorkflowCameraLayers(state, targetSensor = state.project.sensors.firstOrNull { it.id == state.sensorId }
-                .takeIf { state.cameraPlacementTarget == CameraPlacementTarget.Sensor && !state.planSensorAtCursor })
+                .takeUnless { state.planSensorAtCursor })
         },
         requestedMenuKey = state.cameraMenuRequest,
         onMenuRequestConsumed = state::consumeCameraMenuRequest,

@@ -76,6 +76,109 @@ class ArCoreFusionRegressionTest {
             detections = data.detections + AprilTagDetection(1, image, image.first()))
     }
 
+    @Test fun singleReferenceTranslationDriftWithWeakTiltDoesNotLockOutRecovery() {
+        val fusion = calibrated(true)
+        val drift = shifted(20.0)
+        // The corner observations support a 20 mm translation. A small planar tag's
+        // unconstrained PnP normal tilts by 5 degrees while its center remains consistent.
+        val noisyPose = drift * rotatedAtTag(5.0)
+        var result = AprilTagFrameResult()
+        for (time in 600L..2500L step 100L) {
+            result = fuse(fusion, packet(time, noisyPose, drift), time + 40, persistentTrackingFrame = true)
+        }
+        assertReady(result)
+        assertEquals(20.0, result.arFromTransformer!!.translation()[0], 1.0)
+        assertEquals(0.0, result.arFromTransformer!!.rotationAngleDegreesTo(identity), 0.01)
+    }
+
+    @Test fun translationFallbackStillRejectsLargeDisplacementsAndObservableRotation() {
+        val inPlaneRotation = Transform3D.cameraCvFromTransformerPose(TransformerPose(floatArrayOf(0f, 0f, 0f),
+            floatArrayOf(0f, Math.toRadians(7.0).toFloat(), 0f), 0.3f)).let { r ->
+            val p = r.transformPoint(center)
+            Transform3D(r.values.copyOf().apply { for (axis in 0..2) this[axis * 4 + 3] = center[axis] - p[axis] })
+        }
+        for (change in listOf(shifted(35.0) * rotatedAtTag(5.0), shifted(70.0),
+            shifted(20.0) * inPlaneRotation, shifted(20.0) * rotatedAtTag(20.0))) {
+            val fusion = calibrated(true)
+            var result = AprilTagFrameResult()
+            for (time in 600L..2400L step 100L) result = fuse(fusion, packet(time, change, change), time + 40,
+                persistentTrackingFrame = true)
+            assertEquals("reference-jump", result.fusionReason)
+            assertEquals(ArTrackingStatus.NeedsRecalibration, result.trackingStatus)
+            assertArrayEquals(identity.values, result.arFromTransformer!!.values, 1e-5)
+        }
+    }
+
+    @Test fun constrainedSingleAndFullMultiReferenceMeasurementsCanShareEvidence() {
+        val fusion = calibrated(true)
+        val drift = shifted(20.0)
+        var result = AprilTagFrameResult()
+        for (time in 600L..2400L step 100L) {
+            val data = if (time % 200 == 0L) packet(time, drift * rotatedAtTag(5.0), drift)
+                else withSecondReference(packet(time, drift, drift), drift)
+            result = fuse(fusion, data, time + 40, persistentTrackingFrame = true)
+        }
+        assertReady(result)
+        assertEquals(20.0, result.arFromTransformer!!.translation()[0], 1.0)
+    }
+
+    @Test fun translationFitNeedsCompleteFiniteCornersAnActiveReferenceAndSufficientImageSize() {
+        val drift = shifted(20.0)
+        val raw = camera * drift * rotatedAtTag(5.0)
+        val detection = packet(600, actualAnchor = drift).detections.single()
+        assertNotNull(fitSingleReferenceTranslation(camera, raw, intrinsics, marker, detection))
+        assertNull(fitSingleReferenceTranslation(camera, raw, intrinsics, marker.copy(active = false), detection))
+        assertNull(fitSingleReferenceTranslation(camera, raw, null, marker, detection))
+        assertNull(fitSingleReferenceTranslation(camera, raw, intrinsics, marker, detection.copy(id = 9)))
+        for (corners in listOf(detection.cornersPx.take(3), List(4) { detection.cornersPx.first() },
+            detection.cornersPx.mapIndexed { i, p -> if (i == 0) p.copy(xPx = Float.NaN) else p },
+            detection.cornersPx.mapIndexed { i, p -> if (i == 0) p.copy(xPx = p.xPx + 8f) else p })) {
+            assertNull(fitSingleReferenceTranslation(camera, raw, intrinsics, marker, detection.copy(cornersPx = corners)))
+        }
+        val tiny = detection.copy(cornersPx = detection.cornersPx.map {
+            AprilTagCorner(640 + (it.xPx - 640) / 4, 480 + (it.yPx - 480) / 4)
+        })
+        assertNull(fitSingleReferenceTranslation(camera, raw, intrinsics.copy(fx = 250f, fy = 250f), marker, tiny))
+    }
+
+    @Test fun constrainedCorrectionUsesCaptureCameraAndCompletesWithoutFurtherImages() {
+        val fusion = calibrated(true)
+        val movedCamera = camera * shifted(100.0)
+        val drift = shifted(20.0)
+        for (time in 600L..800L step 100L) {
+            fuse(fusion, packet(time, drift * rotatedAtTag(5.0), drift), time + 40,
+                currentCamera = movedCamera, persistentTrackingFrame = true)
+        }
+        var result = AprilTagFrameResult()
+        for (time in 900L..2200L step 16L) result = fuse(fusion, AprilTagFrameResult(), time,
+            currentCamera = movedCamera, persistentTrackingFrame = true)
+        assertReady(result)
+        assertEquals(20.0, result.arFromTransformer!!.translation()[0], 1.0)
+        assertEquals(0.0, result.arFromTransformer!!.rotationAngleDegreesTo(identity), 0.01)
+    }
+
+    @Test fun constrainedCorrectionRejectsStaleExcludedConflictingAndRepeatedEvidence() {
+        val drift = shifted(20.0)
+        val raw = drift * rotatedAtTag(5.0)
+        for (kind in listOf("stale", "excluded", "conflict", "repeated", "contradictory")) {
+            val fusion = calibrated(true)
+            var result = AprilTagFrameResult()
+            for (time in 600L..2400L step 100L) {
+                val data = when (kind) {
+                    "stale" -> packet(time - 400, raw, drift)
+                    "excluded" -> packet(time, raw, drift).copy(rejectedMarkerIds = listOf(0))
+                    "conflict" -> packet(time, raw, drift).copy(referenceConflict = true)
+                    "repeated" -> packet(600, raw, drift)
+                    else -> (if (time % 200 == 0L) drift else shifted(-20.0)).let {
+                        packet(time, it * rotatedAtTag(5.0), it)
+                    }
+                }
+                result = fuse(fusion, data, time + 40, persistentTrackingFrame = true)
+            }
+            assertArrayEquals(kind, identity.values, result.arFromTransformer!!.values, 1e-5)
+        }
+    }
+
     @Test fun agreeingAlternatingTagSetsAccumulateOrdinaryCorrectionEvidence() {
         val fusion = calibrated(true)
         var result = AprilTagFrameResult()

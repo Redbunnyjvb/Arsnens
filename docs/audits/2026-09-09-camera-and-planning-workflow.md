@@ -30,7 +30,7 @@ Bij **Sensor zit hier** wordt de werkelijke positie apart vastgelegd. Buiten de 
 - De kaart toont het gekozen trafovlak, de doelradius op schaal en waar beschikbaar de afzonderlijke gemeten positie.
 - Een sensor bewerken kan naam, radius, sensor-tag en instructie aanpassen. De ID blijft vast. Een leeg tagveld ontkoppelt de tag.
 - Via **Meer → Met camera plaatsen** neem je de gekozen sensor mee naar de camera. In de camera zijn **Sensor kiezen** en **Nieuwe sensor** expliciete acties.
-- Na bevestigen blijft de gekozen sensor geselecteerd. Een tweede tik maakt daardoor niet ongemerkt een nieuw nummer aan.
+- Na bevestigen wordt de volgende nog te plaatsen sensor in projectvolgorde geselecteerd. Als alles is vastgelegd, verschijnt een nieuwe sensor-ID. De teller bovenin opent een lijst met namen/ID's en statussen; de pijlen onderin kunnen ook geplaatste sensoren terugkiezen voor opnieuw vastleggen. Zie de vervolgaudit `2026-09-09-visible-reference-and-camera-controls.md`.
 - **Opnieuw te plaatsen** bewaart ID, naam, doel, radius en tagkoppeling; het actuele resultaat, de fysieke audit en tijdelijke correcties worden gewist. De huidige log bewaart één actuele bevestiging per sensor; dit is geen nieuw historisch logboek.
 
 ## Compatibiliteit en grenzen

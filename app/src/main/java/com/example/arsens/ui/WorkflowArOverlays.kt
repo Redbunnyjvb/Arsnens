@@ -137,6 +137,7 @@ import com.example.arsens.data.OriginCorner
 import com.example.arsens.data.Project
 import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.displayName
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlModel
 import com.example.arsens.data.StlParser
@@ -215,7 +216,14 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
     WorkflowCursorOverlay(
         cursor = state.arCursorPosition,
         insideTransformer = state.arCursorInsideTransformer,
-        label = state.operatorText(state.arCursorPosition),
+        label = "${targetSensor?.displayName() ?: state.cameraSensorLabel} · " +
+            (if (targetSensor?.status?.let { it != SensorStatus.Pending } == true) "Opnieuw vastleggen" else state.cameraSensorAction),
+        availabilityLabel = when {
+            !state.sensorPlacementReady -> "AR-uitlijning nog niet gereed"
+            state.arCursorPosition == null -> "Richt op ${state.selectedTagPlane.shortLabel}"
+            !state.arCursorInsideTransformer -> "Buiten trafo"
+            else -> state.operatorText(state.arCursorPosition)
+        },
         offset = state.arCursorScreenOffset,
         onOffsetChange = { state.arCursorScreenOffset = it }
     )
@@ -1582,6 +1590,7 @@ internal fun WorkflowCursorOverlay(
     cursor: MmPosition?,
     insideTransformer: Boolean,
     label: String,
+    availabilityLabel: String = "",
     offset: Offset = Offset.Zero,
     onOffsetChange: ((Offset) -> Unit)? = null
 ) {
@@ -1632,15 +1641,26 @@ internal fun WorkflowCursorOverlay(
         drawCircle(color, radius = 34f, center = center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f))
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             this.color = android.graphics.Color.WHITE
-            textSize = 24f
+            textSize = 12.dp.toPx()
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        val text = when {
-            cursor == null -> "geen pose"
-            !insideTransformer -> "buiten trafo"
-            else -> label
+        val maxWidth = (size.width - 24.dp.toPx()).coerceAtLeast(1f)
+        fun abbreviated(value: String): String {
+            if (paint.measureText(value) <= maxWidth) return value
+            val count = paint.breakText(value, true, maxWidth - paint.measureText("…"), null)
+            return value.take(count) + "…"
         }
-        drawContext.canvas.nativeCanvas.drawText(text, center.x + 40f, center.y + 8f, paint)
+        val lines = listOf(label, availabilityLabel).filter { it.isNotBlank() }.map(::abbreviated)
+        val padding = 8.dp.toPx()
+        val width = (lines.maxOfOrNull { paint.measureText(it) } ?: 0f) + padding * 2
+        val lineHeight = 17.dp.toPx()
+        val height = lineHeight * lines.size + padding * 2
+        val x = (center.x - width / 2).coerceIn(0f, (size.width - width).coerceAtLeast(0f))
+        val y = (center.y + 44f).coerceAtMost(size.height - height)
+        drawRoundRect(Color.Black.copy(alpha = 0.72f), Offset(x, y), Size(width, height), CornerRadius(padding))
+        lines.forEachIndexed { i, text ->
+            drawContext.canvas.nativeCanvas.drawText(text, x + padding, y + padding + lineHeight * (i + 0.8f), paint)
+        }
     }
 }
 

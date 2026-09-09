@@ -158,7 +158,7 @@ internal fun WorkflowSensorSheet(state: WorkflowAppState) {
         Text(selected?.displayName() ?: "Nieuwe sensor ${state.sensorId}", color = Color.White, fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { choosing = true }) { Text("Sensor kiezen") }
-            OutlinedButton(onClick = { state.beginNewSensor() }) { Text("Nieuwe sensor") }
+            OutlinedButton(onClick = { state.beginNewCameraSensor() }) { Text("Nieuwe sensor") }
         }
         if (selected == null) {
             OutlinedTextField(state.sensorId, { state.sensorId = it }, label = { Text("Sensor-ID") }, singleLine = true)

@@ -885,6 +885,20 @@ internal class ArCoreAprilTagFusion(
                         tagResult.referenceMarkers, tagResult.detections, evidenceIds)
                 }
                 lastAnchorImageErrorPx = imageError
+                // An unstable single-tag normal must not veto a small translation supported
+                // by all four corners. Keep the existing rotation; never widen the angle gate.
+                val constrainedCamera = if (!relocalizing && evidenceIds.size == 1 &&
+                    lastDeltaDeg != null && lastDeltaDeg!! > 1.5) {
+                    val id = evidenceIds.single()
+                    val marker = tagResult.referenceMarkers.singleOrNull { it.id == id && it.active }
+                    val detection = tagResult.detections.singleOrNull { it.id == id }
+                    val prior = anchorFilter.anchor
+                    if (marker != null && detection != null && prior != null) {
+                        fitSingleReferenceTranslation(captureArFromCameraCv!!.inverseRigid() * prior,
+                            Transform3D.cameraCvFromTransformerPose(tagPose), tagResult.cameraIntrinsics, marker, detection)
+                    } else null
+                } else null
+                val effectiveCandidate = constrainedCamera?.let { captureArFromCameraCv!! * it } ?: candidate
                 val pendingImageError = anchorFilter.initializationCandidate?.let { pending ->
                         anchorImageErrorPx(captureArFromCameraCv!!.inverseRigid() * pending, tagResult.cameraIntrinsics,
                             tagResult.referenceMarkers, tagResult.detections, evidenceIds)
@@ -899,10 +913,11 @@ internal class ArCoreAprilTagFusion(
                     lastDeltaMm != null && lastDeltaMm!! <= 8.0 &&
                     (anchorFilter.correctionGoal == null || (targetImageError != null && targetImageError <= ANCHOR_IMAGE_HOLD_MAX_PX))) {
                     anchorFilter.confirmImageConsistency()
-                } else anchorFilter.update(candidate, evidenceIds, nowMillis, relocalizing,
+                } else anchorFilter.update(effectiveCandidate, evidenceIds, nowMillis, relocalizing,
                     referencePoint, consistentWithPendingImage = pendingImageError?.let { it <= ANCHOR_IMAGE_HOLD_MAX_PX })
                 lastEvent = update.event
-                lastReason = update.reason
+                lastReason = if (constrainedCamera != null && update.reason != "anchor-image-held")
+                    "${update.reason}-rotation-held" else update.reason
                 anchorSettled = update.settled
                 lastSamples = update.sampleCount
                 if (update.event == "ACCEPT") {
@@ -1039,12 +1054,16 @@ internal class ArCoreAprilTagFusion(
             fusionDiagnostic = "${correctionState.label} · $lastEvent/$lastReason · tags ${lastDetection.poseMarkerIds} " +
                 "· bevestigd ${lastDetection.verifiedReferenceIds.ifEmpty { lastDetection.poseMarkerIds }} " +
                 "· uitgesloten ${lastDetection.rejectedMarkerIds} · leeftijd ${if (age == Long.MAX_VALUE) "—" else "$age ms"} " +
-                "· Δ ${lastDeltaMm?.shortMm() ?: "—"}/${lastDeltaDeg?.shortDeg() ?: "—"} · samples $lastSamples",
+                "· Δ ${lastDeltaMm?.shortMm() ?: "—"}/${lastDeltaDeg?.shortDeg() ?: "—"} · samples $lastSamples " +
+                "· hoekpunten ${lastAnchorImageErrorPx?.let { String.format(java.util.Locale.US, "%.1f px", it) } ?: "—"}",
             poseDiagnostic = when {
                 !arTracking -> "ARCore volgt de camera niet. Breng ook de omgeving in beeld om tracking te herstellen."
                 conflict -> "Referentietags spreken elkaar tegen. Scan gecontroleerde referenties om de uitlijning te bevestigen."
                 relocalizing -> "ARCore moet opnieuw uitlijnen. Scan een bekende referentietag."
-                anchorFilter.requiresRecalibration -> "Referentie blijft afwijken. Scan twee gecontroleerde referentietags samen, of bevestig de fysieke tagpositie en kies AR opnieuw ijken."
+                anchorFilter.requiresRecalibration ->
+                    (if (fresh) "Tag ${lastDetection.poseMarkerIds} gezien; " else "Laatste referentiemeting: ") +
+                    "${lastDeltaMm?.shortMm() ?: "—"}/${lastDeltaDeg?.shortDeg() ?: "—"} verschil. " +
+                    "Scan twee gecontroleerde referenties samen, of controleer de tagpositie en kies AR opnieuw ijken."
                 anchorFilter.anchor == null && lastDetection.poseMarkerIds.isNotEmpty() -> "Referentietag herkend; de eerste kalibratie wordt opgebouwd."
                 lastReason == "reference-jump" -> "Afwijkende tagmeting genegeerd; het bestaande AR-anker blijft staan."
                 !anchorSettled && pose != null -> "AR-uitlijning wordt bijgesteld; wacht tot de correctie klaar is."

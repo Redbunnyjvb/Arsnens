@@ -82,4 +82,45 @@ class PosePipelineInstrumentedTest {
             assertNull(result.displayProjection)
         }
     }
+
+    @Test fun nativePlanarPoseNoiseWithSmallTranslationRecoversInProductionFusion() {
+        val marker = Marker(0, "apriltag", 47, MmPosition(3933, 0, 0), tagRotationFor(TagPlane.Front))
+        val camera = Transform3D.cameraCvFromTransformerPose(TransformerPose(floatArrayOf(-3933f, 0f, 600f),
+            floatArrayOf((Math.PI / 2).toFloat(), 0f, 0f), 0f))
+        val capture = camera.inverseRigid() * Transform3D.cameraGlFromCameraCv()
+        val projection = floatArrayOf(1.5625f,0f,0f,0f, 0f,2.0833333f,0f,0f, 0f,0f,-1.0002f,-1f, 0f,0f,-20.002f,0f)
+        val fusion = ArCoreAprilTagFusion(logDecision = {})
+        fun feed(time: Long, detection: AprilTagDetection, measured: TransformerPose): AprilTagFrameResult {
+            val packet = AprilTagFrameResult(cameraIntrinsics = intrinsics, referenceMarkers = listOf(marker),
+                detections = listOf(detection), transformerPose = measured, poseMarkerIds = listOf(0),
+                referencePointMm = marker.positionMm, referenceDepthMm = 600f, poseMarkerCount = 1,
+                capturedAtElapsedMillis = time, detectionSequence = time)
+            return fusion.fuse(packet, capture, capture, capture.inverseRigid(), null, projection, true,
+                1280, 960, time + 40, persistentTrackingFrame = true)
+        }
+        for (time in 100L..500L step 100) feed(time, project(marker, camera.toTransformerPose(0f)), camera.toTransformerPose(0f))
+        val truth = Transform3D(camera.values.copyOf().apply { this[3] += 20.0 }).toTransformerPose(0f)
+        val random = java.util.Random(42)
+        var constrained = 0
+        var result = AprilTagFrameResult()
+        repeat(100) { index ->
+            val ideal = project(marker, truth)
+            val observation = ideal.copy(cornersPx = ideal.cornersPx.map {
+                AprilTagCorner(it.xPx + (random.nextGaussian() * 0.2).toFloat(), it.yPx + (random.nextGaussian() * 0.2).toFloat())
+            })
+            val selection = selectTransformerPoseFromAprilTags(listOf(observation), listOf(marker), intrinsics,
+                priorPosePerTag = mapOf(0 to fusion.predictedCameraPoseAt(capture)!!))
+            assertNotNull(selection.estimate)
+            result = feed(600 + index * 100L, observation, selection.estimate!!.pose)
+            if (result.fusionReason?.endsWith("rotation-held") == true) constrained++
+            assertNotEquals(ArTrackingStatus.NeedsRecalibration, result.trackingStatus)
+        }
+        assertTrue("The native samples must exercise the constrained path", constrained > 0)
+        assertNotNull(result.displayProjection)
+        assertNull(sensorPlacementBlockReason(result, computePlacementQuality(result, 1f, false, 0)))
+        val reference = doubleArrayOf(3933.0, 0.0, 0.0)
+        val fitted = result.arFromTransformer!!.transformPoint(reference)
+        assertEquals(3953.0, fitted[0], 3.0)
+        assertTrue(result.arFromTransformer!!.rotationAngleDegreesTo(Transform3D.identity()) < 1.5)
+    }
 }

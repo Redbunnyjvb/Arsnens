@@ -404,10 +404,11 @@ internal fun FullScreenCameraWorkflowShell(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .safeDrawingPadding()
-                .padding(start = 84.dp, end = 72.dp, bottom = 74.dp)
+                .padding(start = 84.dp, end = 72.dp, bottom = 100.dp)
                 .widthIn(max = 420.dp)
             ) {
-                Text(message, modifier = Modifier.padding(10.dp), fontSize = 13.sp)
+                Text(message, modifier = Modifier.padding(10.dp), fontSize = 13.sp,
+                    maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
         }
         if (openMenu != null) {
@@ -415,6 +416,7 @@ internal fun FullScreenCameraWorkflowShell(
             Surface(
                 shape = RoundedCornerShape(24.dp),
                 color = WorkflowCameraPanel,
+                contentColor = Color.White,
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
                 shadowElevation = 10.dp,
                 modifier = Modifier
@@ -569,7 +571,7 @@ internal fun FullScreenCameraWorkflowShell(
                 )
             }
         }
-        if (openMenuKey == null && !positionText.isNullOrBlank()) {
+        if (openMenuKey == null && message.isNullOrBlank() && !positionText.isNullOrBlank()) {
             WorkflowCameraPositionCard(
                 positionText = positionText,
                 modifier = Modifier

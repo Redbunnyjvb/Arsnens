@@ -40,7 +40,11 @@ class CameraControlsInstrumentedTest {
                 previousSensorEnabled = true, nextSensorEnabled = false,
                 requestedMenuKey = menu, onMenuRequestConsumed = {},
                 menus = listOf(WorkflowCameraMenu("ar", "AR model") { Text(diagnostic.value) }),
-                camera = { Box(Modifier.fillMaxSize().background(Color(0xFF53626B))) })
+                camera = {
+                    Box(Modifier.fillMaxSize().background(Color(0xFF53626B)))
+                    WorkflowCursorOverlay(MmPosition(300, 0, 400), true,
+                        "Sensor ${selected.value} · Temperatuur tank · Vastleggen", "X=300 mm, Y=0 mm, Z=400 mm")
+                })
         } }
     }
 

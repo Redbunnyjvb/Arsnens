@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.arsens.data.Sensor
+import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.displayName
 import com.example.arsens.data.placementCountLabel
 
@@ -47,7 +48,11 @@ internal fun WorkflowCameraSensorPicker(
                         leadingIcon = { Canvas(Modifier.size(12.dp)) { drawCircle(workflowStatusColor(sensor.status)) } },
                         text = { Column {
                             Text(sensor.displayName(), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(sensor.status.label, style = MaterialTheme.typography.labelMedium,
+                            Text(when (sensor.status) {
+                                SensorStatus.Pending -> "Te plaatsen"
+                                SensorStatus.Ok -> "Geplaatst"
+                                SensorStatus.Fail -> "Geplaatst · afwijking"
+                            }, style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         } },
                         trailingIcon = { if (sensor.id == selectedId) Text("✓") },

@@ -18,6 +18,26 @@ import org.junit.Test
 
 class PlacementQualityTest {
 
+    @Test
+    fun conflictingReferencesNeverShowGreenEvenWithPerfectReprojection() {
+        val result = AprilTagFrameResult(transformerPose = pose(0f), anchorSettled = true,
+            referenceConflict = true, trackingStatus = ArTrackingStatus.TagCalibration)
+        val quality = computePlacementQuality(result, 0f, true, 1)
+        assertEquals(QualityGrade.Unsafe, quality.grade)
+        assertTrue(quality.reasons.any { it.contains("spreken elkaar tegen") })
+    }
+
+    @Test
+    fun originDistanceIsNotUsedAsTagDepth() {
+        val result = AprilTagFrameResult(
+            transformerPose = TransformerPose(floatArrayOf(3000f, 0f, 2000f), floatArrayOf(0f, 0f, 0f), 2f),
+            referenceDepthMm = 2000f, cameraIntrinsics = CameraIntrinsics(1000f, 1000f, 640f, 480f),
+            anchorSettled = true, trackingStatus = ArTrackingStatus.TagCalibration
+        )
+        assertEquals(4f, computePlacementQuality(result, 0f, true, 1).reprojectionErrorMm!!, 0.001f)
+        assertNull(computePlacementQuality(result.copy(referenceDepthMm = null), 0f, true, 1).reprojectionErrorMm)
+    }
+
     private fun pose(reprojectionErrorPx: Float, distanceMm: Float = 1000f): TransformerPose =
         TransformerPose(
             translationMm = floatArrayOf(0f, 0f, distanceMm),
@@ -81,7 +101,7 @@ class PlacementQualityTest {
         )
         val q = computePlacementQuality(result, jitterMm = 25f, isStableLock = false, referenceTagId = 1)
         assertTrue(q.grade != QualityGrade.High)
-        assertTrue(q.reasons.any { it.contains("jitter") })
+        assertTrue(q.reasons.any { it.contains("cursorbeweging") })
     }
 
     @Test

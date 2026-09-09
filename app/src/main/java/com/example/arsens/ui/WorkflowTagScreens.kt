@@ -233,6 +233,10 @@ internal fun WorkflowTagSetupPanel(state: WorkflowAppState) {
     // bovenaan staan zodat de operator ziet of een tag in beeld is.
     val tags = state.savedAprilTags.sortedBy { it.id }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        state.aprilTagResult.poseDiagnostic?.let {
+            Text(it, color = Color(0xFFFFB020), fontSize = 13.sp)
+        }
+
         // Bekende tags die nu zichtbaar zijn maar géén bruikbare pose geven: dat is vrijwel altijd
         // een te scherende kijkhoek of een te kleine tag (gedegenereerde solvePnP-fit) — zeg dat
         // i.p.v. het misleidende "nog niet opgeslagen".

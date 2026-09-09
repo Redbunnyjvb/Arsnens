@@ -170,6 +170,7 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
         modifier = Modifier.fillMaxSize(),
         tagDictionary = state.tagDictionary,
         tagPoseMode = state.tagPoseMode,
+        calibrationRevision = state.arCalibrationRevision,
         // Alleen state schrijven (= hercompositie) wanneer de HUD daadwerkelijk getoond wordt.
         onPerfStats = { if (state.showDebugHud) state.arPerfStats = it }
     )
@@ -380,8 +381,9 @@ internal fun WorkflowAprilTagOverlay(
         // Sensor-tags (ID ≥ sensorTagStartId) krijgen bewust een andere kleur (groen) dan de
         // referentietags (cyaan), zodat in beeld direct te zien is wat een sensor is.
         val sensorTagColor = Color(0xFF00E676)
+        val trackedById = result.trackedScreenDetections.associateBy { it.id }
         val liveDetections = if (result.detectionAgeMillis <= DEBUG_DETECTION_HOLD_MILLIS) {
-            result.screenDetections
+            result.screenDetections.map { trackedById[it.id] ?: it }
         } else {
             emptyList()
         }
@@ -396,7 +398,9 @@ internal fun WorkflowAprilTagOverlay(
                 .map { it.asAprilTagCalibrationMarker(project.dimensionsMm) }
                 .forEach { marker ->
                     val currentFusedPoints = projectMarkerCornersCurrentFused(marker, result).toOffsets()
-                    val freshImagePoints = projectMarkerCornersFreshImage(marker, result).toOffsets()
+                    // Capture-space routes cannot be overlaid as if they were current pixels.
+                    val freshImagePoints = if (result.displayProjection == null && result.candidateDisplayProjection == null)
+                        projectMarkerCornersFreshImage(marker, result).toOffsets() else emptyList()
                     val candidateFusedPoints = projectMarkerCornersCandidateFused(marker, result).toOffsets()
                     drawCornerRoute(currentFusedPoints, currentFusedColor, if (marker.id in referenceIds) 7f else 4f, 6f, true)
                     drawCornerRoute(freshImagePoints, freshImageColor, 3f, 5f, false)
@@ -443,8 +447,8 @@ internal fun WorkflowAprilTagOverlay(
             drawContext.canvas.nativeCanvas.drawText(
                 when {
                     isSensorTag -> "Sensor-tag ${detection.id}"
-                    isReference -> "Ref ${detection.id} live"
-                    isKnown -> "Tag ${detection.id} live"
+                    detection.id in trackedById -> "Ref ${detection.id} gemeten"
+                    isKnown -> "Tag ${detection.id} opname ${result.detectionAgeMillis} ms"
                     else -> "Tag ${detection.id} nieuw"
                 },
                 center.x + 16f,
@@ -524,34 +528,43 @@ private fun logVisibleKnownTagProjectionDiagnostics(project: Project, result: Ap
         if (!TagProjectionDebugLogThrottle.shouldLog(marker.id, now)) return@forEach
 
         val freshImageCorners = projectMarkerCornersFreshImage(marker, result)
+        val captureFusedCorners = projectMarkerCornersAtCapture(marker, result)
         val currentFusedCorners = projectMarkerCornersCurrentFused(marker, result)
         val candidateFusedCorners = projectMarkerCornersCandidateFused(marker, result)
+        val trackedCorners = result.trackedScreenDetections.firstOrNull { it.id == marker.id }?.cornersPx
         val compareLiveCorners = result.detectionAgeMillis <= LIVE_DETECTION_FRESH_MILLIS
         val freshDelta = if (compareLiveCorners) {
             cornerDeltaStats(detection.cornersPx, freshImageCorners)
         } else {
             CornerDeltaStats(averagePx = null, maxPx = null)
         }
-        val currentDelta = if (compareLiveCorners) {
-            cornerDeltaStats(detection.cornersPx, currentFusedCorners)
+        val captureDelta = if (compareLiveCorners) {
+            cornerDeltaStats(detection.cornersPx, captureFusedCorners)
         } else {
             CornerDeltaStats(averagePx = null, maxPx = null)
         }
-        val candidateDelta = if (compareLiveCorners) {
-            cornerDeltaStats(detection.cornersPx, candidateFusedCorners)
+        val currentDelta = if (compareLiveCorners && trackedCorners != null) {
+            cornerDeltaStats(trackedCorners, currentFusedCorners)
+        } else {
+            CornerDeltaStats(averagePx = null, maxPx = null)
+        }
+        val candidateDelta = if (compareLiveCorners && trackedCorners != null) {
+            cornerDeltaStats(trackedCorners, candidateFusedCorners)
         } else {
             CornerDeltaStats(averagePx = null, maxPx = null)
         }
         Log.i(
             "ARSensTagDebug",
-            "tag=${marker.id} liveCorners=${detection.cornersPx.formatCornerList()} " +
-                "liveState=${if (compareLiveCorners) "fresh" else "stale-debug-only"} " +
+            "tag=${marker.id} captureCorners=${detection.cornersPx.formatCornerList()} " +
+                "captureState=${if (compareLiveCorners) "fresh" else "stale-debug-only"} " +
+                "trackedCorners=${trackedCorners?.formatCornerListOrDash() ?: "-"} " +
                 "freshImageCorners=${freshImageCorners.formatCornerListOrDash()} " +
                 "currentFusedCorners=${currentFusedCorners.formatCornerListOrDash()} " +
                 "candidateFusedCorners=${candidateFusedCorners.formatCornerListOrDash()} " +
-                "avgDeltaFreshImageVsLive=${freshDelta.formatAverage()} maxDeltaFreshImageVsLive=${freshDelta.formatMax()} " +
-                "avgDeltaCurrentFusedVsLive=${currentDelta.formatAverage()} maxDeltaCurrentFusedVsLive=${currentDelta.formatMax()} " +
-                "avgDeltaCandidateFusedVsLive=${candidateDelta.formatAverage()} maxDeltaCandidateFusedVsLive=${candidateDelta.formatMax()} " +
+                "avgDeltaFreshImageVsCapture=${freshDelta.formatAverage()} maxDeltaFreshImageVsCapture=${freshDelta.formatMax()} " +
+                "avgDeltaFusedVsCapture=${captureDelta.formatAverage()} maxDeltaFusedVsCapture=${captureDelta.formatMax()} " +
+                "avgDeltaCurrentFusedVsTracked=${currentDelta.formatAverage()} maxDeltaCurrentFusedVsTracked=${currentDelta.formatMax()} " +
+                "avgDeltaCandidateVsTracked=${candidateDelta.formatAverage()} maxDeltaCandidateVsTracked=${candidateDelta.formatMax()} " +
                 "transformerPose=${result.transformerPose.formatPose()} " +
                 "displayProjection=${result.displayProjection != null} " +
                 "candidateDisplayProjection=${result.candidateDisplayProjection != null} " +
@@ -561,6 +574,12 @@ private fun logVisibleKnownTagProjectionDiagnostics(project: Project, result: Ap
                 "fusion=${result.fusionEvent ?: "-"}:${result.fusionReason ?: "-"}"
         )
     }
+}
+
+private fun projectMarkerCornersAtCapture(marker: Marker, result: AprilTagFrameResult): List<AprilTagCorner> {
+    if (result.detectionAgeMillis > PER_TAG_POSE_FRESH_MILLIS || result.imageProjectionPose == null) return emptyList()
+    val mapper = result.imageToViewMapper ?: return emptyList()
+    return markerCornersInProjectFrame(marker).mapNotNull { projectPointToImage(it, result)?.let(mapper::map) }
 }
 
 private fun projectMarkerCornersFreshImage(marker: Marker, result: AprilTagFrameResult): List<AprilTagCorner> {
@@ -1209,7 +1228,7 @@ internal fun WorkflowStlArOverlay(state: WorkflowAppState) {
         return
     }
     if (pose == null) {
-        StlArStatusPill("Scan een AprilTag om het 3D-model te ankeren")
+        StlArStatusPill(result.poseDiagnostic ?: "Scan een bekende referentietag om het 3D-model te ankeren")
         return
     }
     // Het model loopt op ARCore door zonder verse tag; meld het zodra de kwaliteit terugloopt,

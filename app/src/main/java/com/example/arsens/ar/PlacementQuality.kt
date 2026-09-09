@@ -3,7 +3,6 @@ package com.example.arsens.ar
 import com.example.arsens.data.QualityGrade
 import com.example.arsens.data.SensorPlacementAudit
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
  * Live plaatsingskwaliteit: de RUWE, echt gemeten signalen voor de huidige AR-pose, plus een grade
@@ -12,7 +11,7 @@ import kotlin.math.sqrt
  * fysisch onderbouwde fit-fout (px × afstand/fx).
  *
  * Tijd weegt NIET expliciet mee in de grade — alleen impliciet via [trackingStatus] (TagCalibration
- * = tag net gezien; ArCoreTracking = recent; DriftPossible = ouder). Blokkeert het opslaan niet.
+ * = tag net gezien; ArCoreTracking = recent; DriftPossible = ouder).
  */
 data class PlacementQuality(
     val grade: QualityGrade,
@@ -78,7 +77,6 @@ fun computePlacementQuality(
     val reprojGood = reprojPx == null || reprojPx <= PlacementQualityTuning.REPROJ_GOOD_PX
     val reprojOk = reprojPx == null || reprojPx <= PlacementQualityTuning.REPROJ_OK_PX
     val jitterGood = (jitterMm ?: 0f) <= PlacementQualityTuning.JITTER_GOOD_MM
-    val jitterOk = (jitterMm ?: 0f) <= PlacementQualityTuning.JITTER_OK_MM
     val motionGood = (motionMm ?: 0f) <= PlacementQualityTuning.MOTION_WARN_MM &&
         (motionDeg ?: 0f) <= PlacementQualityTuning.MOTION_WARN_DEG
 
@@ -91,7 +89,7 @@ fun computePlacementQuality(
             result.rejectedMarkerIds.isEmpty() ->
             QualityGrade.High
         (status == ArTrackingStatus.TagCalibration || status == ArTrackingStatus.ArCoreTracking) &&
-            reprojOk && jitterOk ->
+            reprojOk ->
             QualityGrade.Medium
         else -> QualityGrade.Low
     }
@@ -104,7 +102,7 @@ fun computePlacementQuality(
             add("pose-fit ${reprojPx.roundToInt()} px")
         }
         if ((jitterMm ?: 0f) > PlacementQualityTuning.JITTER_GOOD_MM) {
-            add("jitter ${(jitterMm ?: 0f).roundToInt()} mm")
+            add("cursorbeweging ${(jitterMm ?: 0f).roundToInt()} mm")
         }
         if ((motionMm ?: 0f) > PlacementQualityTuning.MOTION_WARN_MM ||
             (motionDeg ?: 0f) > PlacementQualityTuning.MOTION_WARN_DEG
@@ -116,6 +114,9 @@ fun computePlacementQuality(
             ArTrackingStatus.NeedsRecalibration -> add("herkalibratie nodig")
             ArTrackingStatus.NoPose -> add("geen tag-pose")
             else -> Unit
+        }
+        if (result.nativeAnchorTracking && result.calibrationAgeMillis > 10_000L) {
+            add("referentie niet recent gecontroleerd; ARCore volgt verder")
         }
     }
 
@@ -136,8 +137,22 @@ fun computePlacementQuality(
     )
 }
 
-/** Reprojectiefout (px) → mm op tag-diepte: px × afstand/fx. Afstand = ‖tag-translatie‖ (mm),
- *  fx in pixels. Fysisch onderbouwde conversie i.p.v. een vaste factor. */
+/** One decision for button state and save validation, with the actual blocking reason. */
+fun sensorPlacementBlockReason(result: AprilTagFrameResult, quality: PlacementQuality?): String? = when {
+    result.displayProjection == null || !result.arTracking -> result.poseDiagnostic ?: result.errorMessage
+        ?: "Nog geen AR-uitlijning. Scan een opgeslagen referentietag."
+    result.referenceConflict -> result.poseDiagnostic ?: "Referentietags spreken elkaar tegen. Controleer hun opgeslagen posities."
+    result.trackingStatus == ArTrackingStatus.NeedsRecalibration -> result.poseDiagnostic
+        ?: "De uitlijning blijft afwijken. Scan andere referenties of kies AR opnieuw ijken."
+    !result.anchorSettled -> result.poseDiagnostic ?: "De eerste kalibratie of een ankercorrectie is nog bezig."
+    result.trackingStatus !in listOf(ArTrackingStatus.TagCalibration, ArTrackingStatus.ArCoreTracking) ->
+        "De laatste bevestigde kalibratie is te oud. Scan opnieuw een referentietag."
+    quality?.grade !in listOf(QualityGrade.High, QualityGrade.Medium) ->
+        quality?.reasons?.takeIf { it.isNotEmpty() }?.joinToString("; ") ?: "De plaatsingskwaliteit wordt nog bepaald."
+    else -> null
+}
+
+/** Local fit indication: pixels × camera-space tag depth / focal length. Never total accuracy. */
 private fun reprojectionErrorMm(
     referenceDepthMm: Float?,
     intrinsics: CameraIntrinsics?,

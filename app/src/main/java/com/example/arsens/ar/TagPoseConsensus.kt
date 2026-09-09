@@ -8,7 +8,7 @@ data class TagConsensus<T>(val hypothesis: TagPoseHypothesis<T>, val inlierIds: 
 /**
  * A readable tag is not evidence that its stored position is correct. Require a strict
  * majority of agreeing tags before using multiple references. Equally large, different
- * groups are ambiguous; a lower fit error must not silently choose one of them.
+ * groups need a clearly better fit; tiny error differences must not choose the winner.
  */
 fun <T> selectTagConsensus(
     visibleIds: Set<Int>,
@@ -23,12 +23,26 @@ fun <T> selectTagConsensus(
         }.sorted()
         if (inliers.size < required) null else TagConsensus(hypothesis, inliers)
     }
-    val largest = candidates.maxOfOrNull { it.inlierIds.size } ?: return null
-    val finalists = candidates.filter { it.inlierIds.size == largest }
-    if (finalists.map { it.inlierIds }.distinct().size != 1) return null
-    return finalists.minBy { candidate ->
+    if (candidates.isEmpty()) return null
+    fun error(candidate: TagConsensus<T>) =
         candidate.inlierIds.sumOf { candidate.hypothesis.errorByTag.getValue(it).toDouble() }
+            .div(candidate.inlierIds.size)
+    val allGroups = candidates.groupBy { it.inlierIds }.values.map { group -> group.minBy { error(it) } }
+    fun clearlyBetter(a: TagConsensus<T>, b: TagConsensus<T>) =
+        error(b) - error(a) >= 0.5 && error(a) <= error(b) * 0.5
+    fun uniqueBest(groups: List<TagConsensus<T>>): TagConsensus<T>? {
+        val ordered = groups.sortedBy { error(it) }
+        return ordered.first().takeIf { ordered.size == 1 || clearlyBetter(it, ordered[1]) }
     }
+    val largest = allGroups.maxOf { it.inlierIds.size }
+    val primary = uniqueBest(allGroups.filter { it.inlierIds.size == largest }) ?: return null
+    // A low-error compromise across all tags must not defeat a demonstrably cleaner
+    // majority. Still require a clear residual margin, so ordinary subpixel noise does
+    // not continuously exclude the third tag from an otherwise consistent board.
+    val cleaner = allGroups.filter { it.inlierIds.size < largest && clearlyBetter(it, primary) }
+    if (cleaner.isEmpty()) return primary
+    val cleanerSize = cleaner.maxOf { it.inlierIds.size }
+    return uniqueBest(allGroups.filter { it.inlierIds.size == cleanerSize })
 }
 
 /** A rejected reference cannot take over simply because the other tags leave the image. */

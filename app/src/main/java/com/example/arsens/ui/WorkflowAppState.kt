@@ -263,8 +263,7 @@ internal class WorkflowAppState(context: Context) {
         message = "AprilTag-dictionary: ${option.label}. De camera detecteert nu alleen tags uit deze familie."
     }
 
-    /** Pose-selectiestrategie (app-breed): dichtstbijzijnde tag (robuust) of multi-tag (vereist
-     *  mm-exact ingemeten tagposities). Geprinte 2×2-clusters worden altijd gezamenlijk opgelost. */
+    /** Alle strategieën controleren zichtbare referenties onderling vóór ankerupdates. */
     var tagPoseMode by mutableStateOf(TagPoseMode.fromName(appSettings.tagPoseModeName))
         private set
 
@@ -399,8 +398,6 @@ fun setDefaultTagSize(sizeMm: Int) {
     var stlMeshes by mutableStateOf<Map<String, StlMesh>>(emptyMap())
 
     var aprilTagResult by mutableStateOf(AprilTagFrameResult())
-    var heldAprilTagResult by mutableStateOf(AprilTagFrameResult())
-    private var heldAprilTagAtMillis: Long = 0
     private var lastObjectCursorAtMillis: Long = 0
     var tagId by mutableStateOf("")
     var tagX by mutableStateOf("0")
@@ -469,12 +466,13 @@ fun setDefaultTagSize(sizeMm: Int) {
     var sensorZ by mutableStateOf("0")
     var sensorTolerance by mutableStateOf("50")
     var planSensorAtCursor by mutableStateOf(false)
+    var arCalibrationRevision by mutableStateOf(0)
+        private set
     private var cursorPlacementRay: RayMm? = null
+    val sensorPlacementBlockReason: String?
+        get() = com.example.arsens.ar.sensorPlacementBlockReason(aprilTagResult, placementQuality)
     val sensorPlacementReady: Boolean
-        get() = aprilTagResult.displayProjection != null && aprilTagResult.anchorSettled &&
-            !aprilTagResult.referenceConflict && aprilTagResult.trackingStatus in listOf(
-                ArTrackingStatus.TagCalibration, ArTrackingStatus.ArCoreTracking
-            ) && placementQuality?.grade in listOf(com.example.arsens.data.QualityGrade.High, com.example.arsens.data.QualityGrade.Medium)
+        get() = sensorPlacementBlockReason == null
     var sensorInstruction by mutableStateOf("")
     /** Formulierveld: AprilTag-ID die fysiek óp de sensor geplakt is (leeg = geen). */
     var sensorTagId by mutableStateOf("")
@@ -586,19 +584,10 @@ fun setDefaultTagSize(sizeMm: Int) {
             .filter { it.isAprilTagCalibrationMarker() }
             .map { it.asAprilTagCalibrationMarker(project.dimensionsMm) }
 
+    // ARCore already bridges missing tag detections. Reusing an old camera projection when
+    // tracking itself is lost would make the model stick to the screen for three seconds.
     val overlayAprilTagResult: AprilTagFrameResult
-        get() {
-            val now = System.currentTimeMillis()
-            val liveHasTracking = aprilTagResult.hasOverlayPose()
-            val liveHasDetection = aprilTagResult.hasAnyDetection()
-            val heldIsFresh = heldAprilTagResult.hasOverlayPose() && now - heldAprilTagAtMillis < 3_000
-            return when {
-                liveHasTracking -> aprilTagResult
-                heldIsFresh -> heldAprilTagResult
-                liveHasDetection -> aprilTagResult
-                else -> aprilTagResult
-            }
-        }
+        get() = aprilTagResult
 
     val recentTagIds: List<Int>
         get() = overlayAprilTagResult.detections
@@ -781,16 +770,25 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun updateAprilTagResult(rawResult: AprilTagFrameResult) {
+        if (rawResult.calibrationRevision != arCalibrationRevision) return
+        if (rawResult.trackingFrameId != aprilTagResult.trackingFrameId) {
+            // Saved rays and pending tag measurements belong to one tracking frame only.
+            placementRays.clear()
+            scannedMeasuredPosition = null
+            cursorPlacementRay = null
+            arCursorUsesDepth = false
+            lastObjectCursorAtMillis = 0L
+            lastPlacementReference = null
+            lockTagSignature = emptyList()
+            lockSinceMillis = 0L
+            lockSamples = 0
+            cursorJitterSamples.clear()
+        }
         val now = System.currentTimeMillis()
-        // Demp de solvePnP-poses vóór ze de state in gaan: alle overlays (sensoren, tags,
-        // STL-model én cursor) lezen daardoor hetzelfde rustige beeld.
-        val result = smoothArPoses(rawResult, now)
+        // All overlays and placements share the anchor filtered in ARCore world space.
+        val result = rawResult
         aprilTagResult = result
         logFrameAuditOverlay(now, result)
-        if (result.hasOverlayPose()) {
-            heldAprilTagResult = result
-            heldAprilTagAtMillis = now
-        }
         if (tagScanArmed && result.detections.isNotEmpty()) {
             captureVisibleTagForSetup(result)
         }
@@ -2248,14 +2246,14 @@ fun setDefaultTagSize(sizeMm: Int) {
             order = existingSensor?.order ?: nextOrder,
             id = id,
             name = name,
-            side = target?.side ?: tagPlaneForSurfacePosition(savedPosition).name,
-            normal = target?.normal ?: tagPlaneOutwardNormal(tagPlaneForSurfacePosition(savedPosition)),
+            side = target?.side ?: (if (placement != null) selectedTagPlane else tagPlaneForSurfacePosition(savedPosition)).name,
+            normal = target?.normal ?: tagPlaneOutwardNormal(if (placement != null) selectedTagPlane else tagPlaneForSurfacePosition(savedPosition)),
             positionMm = savedPosition,
-            toleranceMm = tolerance,
-            instruction = sensorInstruction.trim(),
+            toleranceMm = target?.toleranceMm ?: tolerance,
+            instruction = target?.instruction ?: sensorInstruction.trim(),
             status = if (markInstalled) SensorStatus.Ok else existingSensor?.status ?: SensorStatus.Pending,
-            // Koppel aan een referentietag zodat de overlay altijd via die specifieke tag
-            // geprojecteerd wordt. On-the-fly: de actief gescande tag. Voorbereid: de
+            // Bewaar de referentietag als plaatsingsherkomst; de overlay deelt het wereldanker.
+            // On-the-fly: de actief gescande tag. Voorbereid: de
             // dichtstbijzijnde tag (zo verschijnt de sensor bij die tag zodra hij gescand wordt).
             referenceTagId = sensorReferenceTagId
                 ?: existingSensor?.referenceTagId
@@ -2296,16 +2294,16 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun saveSensorAtCursor() {
         if (!sensorPlacementReady) {
-            message = "Nog niet vastleggen: houd de telefoon rustig en scan overeenkomende referentietags."
+            message = sensorPlacementBlockReason ?: "De AR-uitlijning is nog niet beschikbaar."
             return
         }
         val cursor = arCursorPosition
         if (cursor == null) {
-            message = "Sensor niet opgeslagen: geen objectvlak onder de AR-cursor. Scan een bekende tag en richt de cursor op de trafo."
+            message = "Sensor niet opgeslagen: richt de AR-cursor op het gekozen trafovlak."
             return
         }
         if (arCursorSource != "surface" && arCursorSource != "depth") {
-            message = "Sensor niet opgeslagen: richt de cursor op het trafovlak met een verse tag-pose. Een oude cursor wordt niet opgeslagen."
+            message = "Sensor niet opgeslagen: de actuele AR-cursor raakt het gekozen trafovlak niet."
             return
         }
         if (!arCursorInsideTransformer) {
@@ -2673,9 +2671,12 @@ fun setDefaultTagSize(sizeMm: Int) {
         setCursorFromCurrentSensor()
     }
 
+    private fun sensorPlane(sensor: Sensor): TagPlane =
+        TagPlane.entries.firstOrNull { it.name.equals(sensor.side, true) } ?: tagPlaneForSurfacePosition(sensor.positionMm)
+
     fun setCursorFromCurrentSensor() {
         currentSensor?.let {
-            selectedTagPlane = tagPlaneForSurfacePosition(it.positionMm)
+            selectedTagPlane = sensorPlane(it)
             setCursorFieldsFromBox(it.positionMm)
         }
     }
@@ -2686,7 +2687,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     fun confirmSensorByScannedTag() {
         val result = aprilTagResult
         if (!sensorPlacementReady) {
-            message = "Wacht op een stabiele kalibratie voordat je een sensor meet."
+            message = sensorPlacementBlockReason ?: "De AR-uitlijning is nog niet beschikbaar."
             return
         }
         if (!result.hasFreshDetection()) {
@@ -2704,7 +2705,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             return
         }
         val measured = imagePoseRayForPixel(result, detection.centerPx.xPx, detection.centerPx.yPx)?.let {
-            intersectTagPlaneExact(it, tagPlaneForSurfacePosition(sensor.positionMm), project.dimensionsMm)
+            intersectTagPlaneExact(it, sensorPlane(sensor), project.dimensionsMm)
         }
         if (measured == null || !measured.insideBox(project.dimensionsMm)) {
             message = "Kon de positie van tag ${detection.id} niet op de trafo bepalen. Houd een referentietag in beeld en kom dichter/rechter voor de sensor."
@@ -2770,10 +2771,6 @@ fun setDefaultTagSize(sizeMm: Int) {
         saveProject()
         message = "Tag #$tagId → ${operatorText(next)}."
     }
-
-    /** Tag-id waarvoor nog een modeloppervlak-snap moet draaien (gezet na on-the-fly opslaan;
-     *  het camerascherm voert hem async uit zodra de meshes geladen zijn). */
-    var pendingTagSnapId by mutableStateOf<Int?>(null)
 
     /**
      * Zet de OPGESLAGEN tagpositie op het werkelijke modeloppervlak: vanaf buiten de trafo wordt
@@ -3180,18 +3177,17 @@ fun setDefaultTagSize(sizeMm: Int) {
         )
     }
 
-    /** Dempt per-tag en gefuseerde poses tegen trillen; zie [TagPoseSmoother] voor de tunables. */
-    private val tagPoseSmoother = TagPoseSmoother()
-
-private fun smoothArPoses(result: AprilTagFrameResult, now: Long): AprilTagFrameResult = result
+    fun recalibrateAr() {
+        resetArPoseState()
+        message = "AR opnieuw ijken: houd de telefoon rustig en scan de gecontroleerde referentietags."
+    }
 
     private fun resetArPoseState() {
         scannedMeasuredPosition = null
         cursorPlacementRay = null
-        tagPoseSmoother.reset()
+        arCalibrationRevision++
+        lastLockDetectionSequence = 0L
         aprilTagResult = AprilTagFrameResult()
-        heldAprilTagResult = AprilTagFrameResult()
-        heldAprilTagAtMillis = 0L
         lastObjectCursorAtMillis = 0L
         arCursorPosition = null
         arCursorInsideTransformer = true

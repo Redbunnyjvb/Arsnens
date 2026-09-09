@@ -187,6 +187,10 @@ internal fun WorkflowSensorSheet(state: WorkflowAppState) {
                 state.saveSensorAtCursor()
             }
         )
+        if (!cursorReady) Text(
+            state.sensorPlacementBlockReason ?: "Richt de cursor op het gekozen trafovlak.",
+            color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp
+        )
     }
 }
 

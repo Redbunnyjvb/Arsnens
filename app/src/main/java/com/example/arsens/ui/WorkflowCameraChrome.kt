@@ -1319,6 +1319,11 @@ internal fun stlArGroupSubtitle(group: StlArPartGroup): String =
 internal fun WorkflowArOptionsSheet(state: WorkflowAppState) {
     val scope = rememberCoroutineScope()
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedButton(onClick = state::recalibrateAr, modifier = Modifier.fillMaxWidth()) {
+            Text("AR opnieuw ijken")
+        }
+        state.aprilTagResult.poseDiagnostic?.let { Text(it, color = Color.White, fontSize = 13.sp) }
+
         if (state.project.stlModels.isEmpty()) {
             Text(
                 "Geen 3D-assembly in dit project. Importeer de delen via de kaart " +

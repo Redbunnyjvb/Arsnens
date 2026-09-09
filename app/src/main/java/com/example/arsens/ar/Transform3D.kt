@@ -1,9 +1,9 @@
 package com.example.arsens.ar
 
-import org.opencv.calib3d.Calib3d
-import org.opencv.core.CvType
-import org.opencv.core.Mat
 import kotlin.math.acos
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 data class Transform3D(
@@ -109,6 +109,18 @@ data class Transform3D(
         return Transform3D(blended).orthonormalized()
     }
 
+    /** Blend around the observed reference, so a distant project origin cannot move it. */
+    fun blendRigidAtPoint(target: Transform3D, alpha: Double, point: DoubleArray): Transform3D {
+        val fraction = alpha.coerceIn(0.0, 1.0)
+        val blended = blendRigidToward(target, fraction)
+        val from = transformPoint(point)
+        val to = target.transformPoint(point)
+        val actual = blended.transformPoint(point)
+        return Transform3D(blended.values.copyOf().apply {
+            for (axis in 0..2) this[axis * 4 + 3] += from[axis] * (1.0 - fraction) + to[axis] * fraction - actual[axis]
+        })
+    }
+
     fun blendTranslationToward(target: Transform3D, alpha: Double): Transform3D {
         val clamped = alpha.coerceIn(0.0, 1.0)
         val out = values.copyOf()
@@ -143,23 +155,31 @@ data class Transform3D(
     }
 
     fun toTransformerPose(reprojectionErrorPx: Float): TransformerPose {
-        val rotation = Mat(3, 3, CvType.CV_64F).apply {
-            put(0, 0, values[0], values[1], values[2])
-            put(1, 0, values[4], values[5], values[6])
-            put(2, 0, values[8], values[9], values[10])
+        // Matrix -> quaternion -> rotation vector is stable at both zero and pi. This
+        // conversion runs every display frame; it needs no native matrices or Android API.
+        val m = values
+        val trace = m[0] + m[5] + m[10]
+        val q = if (trace > 0.0) {
+            val s = sqrt(trace + 1.0) * 2.0
+            doubleArrayOf(s / 4.0, (m[9] - m[6]) / s, (m[2] - m[8]) / s, (m[4] - m[1]) / s)
+        } else if (m[0] > m[5] && m[0] > m[10]) {
+            val s = sqrt(1.0 + m[0] - m[5] - m[10]) * 2.0
+            doubleArrayOf((m[9] - m[6]) / s, s / 4.0, (m[1] + m[4]) / s, (m[2] + m[8]) / s)
+        } else if (m[5] > m[10]) {
+            val s = sqrt(1.0 + m[5] - m[0] - m[10]) * 2.0
+            doubleArrayOf((m[2] - m[8]) / s, (m[1] + m[4]) / s, s / 4.0, (m[6] + m[9]) / s)
+        } else {
+            val s = sqrt(1.0 + m[10] - m[0] - m[5]) * 2.0
+            doubleArrayOf((m[4] - m[1]) / s, (m[2] + m[8]) / s, (m[6] + m[9]) / s, s / 4.0)
         }
-        val rvec = Mat()
-        Calib3d.Rodrigues(rotation, rvec)
-        val pose = TransformerPose(
+        if (q[0] < 0.0) for (i in q.indices) q[i] = -q[i]
+        val length = sqrt(q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+        val factor = if (length < 1e-12) 2.0 else 2.0 * atan2(length, q[0]) / length
+        return TransformerPose(
             translationMm = floatArrayOf(values[3].toFloat(), values[7].toFloat(), values[11].toFloat()),
-            rotationVector = FloatArray(3) { index ->
-                rvec.get(index, 0)?.firstOrNull()?.toFloat() ?: 0f
-            },
+            rotationVector = FloatArray(3) { (q[it + 1] * factor).toFloat() },
             reprojectionErrorPx = reprojectionErrorPx
         )
-        rotation.release()
-        rvec.release()
-        return pose
     }
 
     companion object {
@@ -195,24 +215,23 @@ data class Transform3D(
             )
 
         fun cameraCvFromTransformerPose(pose: TransformerPose): Transform3D {
-            val rvec = Mat(3, 1, CvType.CV_64F).apply {
-                put(0, 0, pose.rotationVector[0].toDouble())
-                put(1, 0, pose.rotationVector[1].toDouble())
-                put(2, 0, pose.rotationVector[2].toDouble())
-            }
-            val rotation = Mat()
-            Calib3d.Rodrigues(rvec, rotation)
+            val vector = pose.rotationVector.map { it.toDouble() }
+            val angle = sqrt(vector.sumOf { it * it })
             val out = identity().values.copyOf()
-            for (row in 0 until 3) {
-                for (col in 0 until 3) {
-                    out[row * 4 + col] = rotation.get(row, col)?.firstOrNull() ?: 0.0
+            if (angle != 0.0) {
+                val axis = vector.map { it / angle }
+                val c = cos(angle)
+                val s = sin(angle)
+                val oneMinusC = 2.0 * sin(angle / 2.0) * sin(angle / 2.0)
+                val skew = arrayOf(doubleArrayOf(0.0, -axis[2], axis[1]),
+                    doubleArrayOf(axis[2], 0.0, -axis[0]), doubleArrayOf(-axis[1], axis[0], 0.0))
+                for (row in 0..2) for (col in 0..2) {
+                    out[row * 4 + col] = (if (row == col) c else 0.0) + axis[row] * axis[col] * oneMinusC + skew[row][col] * s
                 }
             }
             out[3] = pose.translationMm[0].toDouble()
             out[7] = pose.translationMm[1].toDouble()
             out[11] = pose.translationMm[2].toDouble()
-            rvec.release()
-            rotation.release()
             return Transform3D(out)
         }
     }

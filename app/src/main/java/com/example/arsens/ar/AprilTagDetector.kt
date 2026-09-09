@@ -41,10 +41,18 @@ enum class ArTrackingStatus(val label: String) {
 }
 
 data class AprilTagFrameResult(
+    val calibrationRevision: Int = 0,
+    /** Changes when the native tracking reference is replaced; session rays cannot cross it. */
+    val trackingFrameId: Long = 0L,
+    val nativeAnchorTracking: Boolean = false,
+    val calibrationAgeMillis: Long = Long.MAX_VALUE,
     val imageWidth: Int = 0,
     val imageHeight: Int = 0,
     val detections: List<AprilTagDetection> = emptyList(),
     val screenDetections: List<AprilTagDetection> = emptyList(),
+    /** Reference observations transported to the current camera, independently of the fused
+     * anchor. Raw screenDetections remain paired with the capture for measurements/logging. */
+    val trackedScreenDetections: List<AprilTagDetection> = emptyList(),
     val cameraIntrinsics: CameraIntrinsics? = null,
     val imageToViewMapper: ImageToViewMapper? = null,
     val imageProjectionPose: TransformerPose? = null,
@@ -58,7 +66,12 @@ data class AprilTagFrameResult(
     val capturedAtElapsedMillis: Long? = null,
     val detectionSequence: Long = 0L,
     val referenceDepthMm: Float? = null,
+    val referencePointMm: MmPosition? = null,
+    /** Immutable reference geometry from the same capture as detections. */
+    val referenceMarkers: List<Marker> = emptyList(),
+    val anchorImageErrorPx: Float? = null,
     val anchorSettled: Boolean = false,
+    val poseDiagnostic: String? = null,
     val transformerPose: TransformerPose? = null,
     val displayProjection: ArDisplayProjection? = null,
     val candidateDisplayProjection: ArDisplayProjection? = null,
@@ -86,12 +99,12 @@ data class AprilTagFrameResult(
      *  [transformerPose] niet gesmoothed, dus de directe matrix omzeilt geen smoothing. Buiten
      *  ARCore-leading mode null → de overlay houdt het bestaande solvePnP-pad. */
     val cameraCvFromTransformer: Transform3D? = null,
-    /** Cameraverplaatsing tussen het grijpen van het camerabeeld en het verwerken/fuseren van de
-     *  detectie (ARCore-pose bij capture vs. nu). Hoog = de telefoon bewoog tijdens de detectie →
-     *  de tag-pose is minder betrouwbaar. Voedt de plaatsingskwaliteit. Null = geen tag-packet. */
+    /** Motion between capture and processing, for diagnostics. Capture pose compensates it;
+     * this is not a measurement of image blur and must not block the current AR cursor. */
     val motionDuringDetectionMm: Float? = null,
     val motionDuringDetectionDeg: Float? = null,
-    /** Anker transformer→ARCore-wereld (alleen gezet als gekalibreerd; zelfde transform waaruit
+    /** Transformer→shared tracking reference (native anchor-local in the ARCore route).
+     *  Only comparable within the same trackingFrameId; same transform used by
      *  [displayProjection]/[cameraCvFromTransformer] volgen). Voor straal-replay-driftcorrectie:
      *  samen met de bij plaatsing bewaarde transformer-straal reconstrueert dit de anker-
      *  onafhankelijke camerastraal in ARCore's wereld. */
@@ -176,7 +189,8 @@ class AprilTagDetector(
         gray: Mat,
         knownMarkers: List<Marker>,
         cameraIntrinsics: CameraIntrinsics = approximateCameraIntrinsics(gray.width(), gray.height()),
-        poseMode: TagPoseMode = TagPoseMode.DEFAULT
+        poseMode: TagPoseMode = TagPoseMode.DEFAULT,
+        predictedCameraPose: TransformerPose? = null
     ): AprilTagFrameResult {
         return runCatching {
             val corners = mutableListOf<Mat>()
@@ -206,7 +220,8 @@ class AprilTagDetector(
                 cameraIntrinsics = cameraIntrinsics,
                 preferredLocalMarkerId = preferredLocalAnchorId,
                 poseMode = poseMode,
-                priorPosePerTag = recentPosePerTag.mapValues { it.value.first }
+                priorPosePerTag = if (predictedCameraPose != null) knownMarkers.associate { it.id to predictedCameraPose }
+                    else recentPosePerTag.mapValues { it.value.first }
             )
             val visibleKnownIds = detections.map { it.id }.toSet()
                 .intersect(knownMarkers.filter { it.active }.map { it.id }.toSet())
@@ -216,6 +231,16 @@ class AprilTagDetector(
             }
             val referenceConflict = selection.referenceConflict ||
                 (poseEstimate == null && visibleKnownIds.any { it in quarantined })
+            val diagnostic = when {
+                poseEstimate != null -> null
+                visibleKnownIds.any { it in quarantined } -> "Tag ${quarantined.intersect(visibleKnownIds).sorted()} is uitgesloten; scan ook twee gecontroleerde referentietags."
+                else -> selection.diagnostic
+            }
+            PoseDecisionLogger.info(
+                key = "detect|${detections.map { it.id }}|${poseEstimate?.markerIds}|$diagnostic",
+                message = "detected=${detections.map { it.id }} known=${knownMarkers.knownMarkerLogSummary()} " +
+                    "poseTags=${poseEstimate?.markerIds ?: emptyList<Int>()} excluded=$quarantined reason=${diagnostic ?: "verified"}"
+            )
             poseEstimate?.posePerTag?.forEach { (id, pose) ->
                 recentPosePerTag[id] = pose to nowMillis
             }
@@ -243,6 +268,15 @@ class AprilTagDetector(
                 poseMarkerIds = poseEstimate?.markerIds ?: emptyList(),
                 rejectedMarkerIds = (selection.rejectedIds + quarantined.intersect(visibleKnownIds)).distinct().sorted(),
                 referenceConflict = referenceConflict,
+                referenceMarkers = knownMarkers.filter { it.id in (poseEstimate?.markerIds ?: emptyList()) },
+                poseDiagnostic = diagnostic,
+                referencePointMm = poseEstimate?.let { estimate ->
+                    knownMarkers.filter { it.id in estimate.markerIds }.takeIf { it.isNotEmpty() }?.let { markers ->
+                        MmPosition(markers.map { it.positionMm.x }.average().roundToInt(),
+                            markers.map { it.positionMm.y }.average().roundToInt(),
+                            markers.map { it.positionMm.z }.average().roundToInt())
+                    }
+                },
                 referenceDepthMm = pose?.let { accepted ->
                     val camera = Transform3D.cameraCvFromTransformerPose(accepted)
                     knownMarkers.filter { it.id in (poseEstimate.markerIds) }.map { marker ->
@@ -316,7 +350,8 @@ internal data class AprilTagPoseSelection(
     val estimate: AprilTagPoseEstimate? = null,
     val consensusIds: List<Int> = emptyList(),
     val rejectedIds: List<Int> = emptyList(),
-    val referenceConflict: Boolean = false
+    val referenceConflict: Boolean = false,
+    val diagnostic: String? = null
 )
 
 internal fun selectTransformerPoseFromAprilTags(
@@ -331,12 +366,14 @@ internal fun selectTransformerPoseFromAprilTags(
     val matched = detections.filter { it.id in markersById }
     // Duplicate printed IDs cannot define two independent reference points.
     if (matched.groupingBy { it.id }.eachCount().any { it.value > 1 }) {
-        return AprilTagPoseSelection(referenceConflict = true)
+        return AprilTagPoseSelection(referenceConflict = true, diagnostic = "Dezelfde tag-ID staat meer dan één keer in beeld.")
     }
     val known = matched.map { detection ->
         KnownAprilTagDetection(detection, markersById.getValue(detection.id), polygonAreaPx(detection.cornersPx))
     }
-    if (known.isEmpty()) return AprilTagPoseSelection()
+    if (known.isEmpty()) return AprilTagPoseSelection(diagnostic = if (detections.isEmpty())
+        "Geen tag herkend. Houd de hele zwarte rand en witte marge in beeld."
+        else "Tag ${detections.map { it.id }} herkend, maar geen actieve referentietag op een opgeslagen positie.")
     val locals = known.mapNotNull { tag ->
         val estimate = solveSingleAprilTagPose(tag, cameraIntrinsics, priorPosePerTag[tag.marker.id])
             ?: solveKnownAprilTagPose(listOf(tag), cameraIntrinsics) ?: return@mapNotNull null
@@ -346,24 +383,48 @@ internal fun selectTransformerPoseFromAprilTags(
         LocalPoseCandidate(tag, estimate, localReferenceScore(tag, estimate.pose.reprojectionErrorPx))
     }
     val visibleIds = known.map { it.marker.id }.toSet()
-    if (locals.isEmpty()) return AprilTagPoseSelection(referenceConflict = known.size > 1)
+    if (locals.isEmpty()) return AprilTagPoseSelection(diagnostic = "Referentietag herkend, maar pose-fit onvoldoende. Kijk rechter op de tag en controleer maat en oriëntatie.")
     fun errors(pose: TransformerPose) = known.associate { tag ->
         tag.marker.id to reprojectionErrorForPose(pose, listOf(tag), cameraIntrinsics)
     }
     // Validate an independently estimated reference against the OTHER tags before refitting.
     // Fitting all tags first can hide a moved tag inside a low-error compromise.
-    val hypotheses = locals.map { TagPoseHypothesis(it.estimate, errors(it.estimate.pose)) }
+    val hypotheses = locals.map { TagPoseHypothesis(it.estimate, errors(it.estimate.pose)) }.toMutableList()
+    // A small planar tag alone has weak orientation observability. Pair hypotheses keep
+    // correct boards usable under subpixel noise; every hypothesis is checked against ALL
+    // visible tags, and each corner of a supported tag must fit. Bound work on dense boards.
+    val seeds = known.sortedByDescending { it.readabilityScore }.take(8)
+    for (i in seeds.indices) for (j in i + 1 until seeds.size) {
+        val pair = solveKnownAprilTagPose(listOf(seeds[i], seeds[j]), cameraIntrinsics) ?: continue
+        if (pair.pose.isUsable()) hypotheses += TagPoseHypothesis(pair, errors(pair.pose))
+    }
+    // All-corner hypotheses resolve the weak planar orientation of small individual tags.
+    // Admit this seed only with a tighter bound on EVERY tag, never on the global average.
+    if (known.size >= 3) {
+        solveKnownAprilTagPose(known, cameraIntrinsics)?.let { joint ->
+            val residuals = errors(joint.pose)
+            if (residuals.values.all { it.isFinite() && it <= 1.5f }) {
+                hypotheses += TagPoseHypothesis(joint, residuals)
+            }
+        }
+    }
     val consensus = selectTagConsensus(visibleIds, hypotheses)
-        ?: return AprilTagPoseSelection(referenceConflict = known.size > 1)
+        ?: return AprilTagPoseSelection(referenceConflict = known.size > 1, diagnostic = if (known.size > 1)
+            "Referentietags spreken elkaar tegen; controleer positie, vlak en oriëntatie."
+            else "Tagpose past onvoldoende op alle vier hoeken. Kom dichter bij de tag.")
     val inliers = known.filter { it.marker.id in consensus.inlierIds }
     val localInliers = locals.filter { it.known.marker.id in consensus.inlierIds }
-    val best = localInliers.maxBy { it.score }
+    val best = localInliers.maxByOrNull { it.score }
     val preferred = localInliers.firstOrNull { it.known.marker.id == preferredLocalMarkerId }
-    val local = preferred?.takeIf { best.score <= it.score * LOCAL_ANCHOR_SWITCH_SCORE_RATIO } ?: best
-    val estimate = if (inliers.size >= 2 && poseMode != TagPoseMode.NearestTag) {
+    val local = preferred?.takeIf { best != null && best.score <= it.score * LOCAL_ANCHOR_SWITCH_SCORE_RATIO } ?: best
+    val localFitsGroup = local?.let { candidate ->
+        val residuals = errors(candidate.estimate.pose)
+        consensus.inlierIds.all { residuals.getValue(it) <= MAX_STRONG_MULTI_TAG_REPROJECTION_PX }
+    } ?: false
+    val estimate = if (inliers.size >= 2 && (poseMode != TagPoseMode.NearestTag || !localFitsGroup)) {
         solveKnownAprilTagPose(inliers, cameraIntrinsics)
             ?: return AprilTagPoseSelection(referenceConflict = true)
-    } else local.estimate
+    } else local?.estimate ?: consensus.hypothesis.pose
     val finalErrors = errors(estimate.pose)
     // Refitting must not invalidate any member of the selected consensus.
     if (!estimate.pose.isUsable() || consensus.inlierIds.any {
@@ -481,7 +542,7 @@ private fun solveSingleAprilTagPose(
         )
     }
 
-    val chosenIppe = ippeCandidates
+    val chosenIppe = ippeCandidates.filter { poseProjectsInFront(it, objectPoints) }
         .takeIf { it.isNotEmpty() }
         ?.let { chooseSingleTagSolution(it, priorPose) }
     var chosen = chosenIppe
@@ -555,7 +616,8 @@ private fun solveSqPnpPose(
     cameraMatrix: Mat,
     distCoeffs: MatOfDouble,
     objMat: MatOfPoint3f,
-    imgMat: MatOfPoint2f
+    imgMat: MatOfPoint2f,
+    method: Int = Calib3d.SOLVEPNP_SQPNP
 ): TransformerPose? {
     val rvec = Mat()
     val tvec = Mat()
@@ -569,10 +631,15 @@ private fun solveSqPnpPose(
                 rvec,
                 tvec,
                 false,
-                Calib3d.SOLVEPNP_SQPNP
+                method
             )
         }.getOrDefault(false)
         if (!ok) return null
+        if (objectPoints.size > 4) {
+            // Refine the joint pose on the original corners. The initial planar homography
+            // is sensitive to noise and must not be mistaken for disagreement between tags.
+            runCatching { Calib3d.solvePnPRefineLM(objMat, imgMat, cameraMatrix, distCoeffs, rvec, tvec) }
+        }
         val error = reprojectionErrorMm(
             objectPoints = objectPoints,
             imagePoints = imagePoints,
@@ -582,11 +649,12 @@ private fun solveSqPnpPose(
             tvec = tvec
         )
         if (!error.isFinite()) return null
-        TransformerPose(
+        val pose = TransformerPose(
             translationMm = FloatArray(3) { i -> tvec.get(i, 0)?.firstOrNull()?.toFloat() ?: 0f },
             rotationVector = FloatArray(3) { i -> rvec.get(i, 0)?.firstOrNull()?.toFloat() ?: 0f },
             reprojectionErrorPx = error
         )
+        pose.takeIf { poseProjectsInFront(it, objectPoints) }
     } finally {
         rvec.release()
         tvec.release()
@@ -597,115 +665,36 @@ private fun solveKnownAprilTagPose(
     knownDetections: List<KnownAprilTagDetection>,
     cameraIntrinsics: CameraIntrinsics
 ): AprilTagPoseEstimate? {
-    val objectPoints = mutableListOf<Point3>()
-    val imagePoints = mutableListOf<Point>()
-    knownDetections.forEach { known ->
-        markerCornersInProjectFrame(known.marker).zip(known.detection.cornersPx).forEach { (objectPoint, imagePoint) ->
-            objectPoints += Point3(objectPoint.x, objectPoint.y, objectPoint.z)
-            imagePoints += Point(imagePoint.xPx.toDouble(), imagePoint.yPx.toDouble())
-        }
+    val objectPoints = knownDetections.flatMap { known ->
+        markerCornersInProjectFrame(known.marker).map { Point3(it.x, it.y, it.z) }
     }
-
-    if (objectPoints.size < 4) return null
-
+    val imagePoints = knownDetections.flatMap { known ->
+        known.detection.cornersPx.map { Point(it.xPx.toDouble(), it.yPx.toDouble()) }
+    }
+    if (objectPoints.size < 4 || objectPoints.size != imagePoints.size) return null
     val cameraMatrix = cameraIntrinsics.toOpenCvCameraMatrix()
-    val distCoeffs = MatOfDouble(0.0, 0.0, 0.0, 0.0)
-    val rvec = Mat()
-    val tvec = Mat()
-    val method = solvePnpMethodFor(objectPoints)
-    if (ENABLE_VERBOSE_APRILTAG_LOGS) {
-        Log.v("AprilTagDetector", "solvePnP tags=${knownDetections.map { it.marker.id }} method=$method")
-    }
-    val ok = Calib3d.solvePnP(
-        MatOfPoint3f(*objectPoints.toTypedArray()),
-        MatOfPoint2f(*imagePoints.toTypedArray()),
-        cameraMatrix,
-        distCoeffs,
-        rvec,
-        tvec,
-        false,
-        method
-    )
-
-    if (!ok) {
-        Log.e("AprilTagDetector", "solvePnP failed")
+    val distortion = MatOfDouble(0.0, 0.0, 0.0, 0.0)
+    val objMat = MatOfPoint3f(*objectPoints.toTypedArray())
+    val imgMat = MatOfPoint2f(*imagePoints.toTypedArray())
+    return try {
+        val base = solveSqPnpPose(objectPoints, imagePoints, cameraMatrix, distortion, objMat, imgMat, solvePnpMethodFor(objectPoints))
+        val retry = if (base == null || base.reprojectionErrorPx > LOCAL_POSE_RETRY_REPROJECTION_PX) {
+            solveSqPnpPose(objectPoints, imagePoints, cameraMatrix, distortion, objMat, imgMat)
+        } else null
+        val pose = listOfNotNull(base, retry).minByOrNull { it.reprojectionErrorPx } ?: return null
+        AprilTagPoseEstimate(pose, knownDetections.map { it.marker.id }.distinct().sorted())
+    } finally {
         cameraMatrix.release()
-        distCoeffs.release()
-        rvec.release()
-        tvec.release()
-        return null
+        distortion.release()
+        objMat.release()
+        imgMat.release()
     }
+}
 
-    var error = reprojectionErrorMm(
-        objectPoints = objectPoints,
-        imagePoints = imagePoints,
-        cameraMatrix = cameraMatrix,
-        distCoeffs = distCoeffs,
-        rvec = rvec,
-        tvec = tvec
-    )
-    var bestRvec = rvec
-    var bestTvec = tvec
-    val baseError = error
-    var rvecRetry: Mat? = null
-    var tvecRetry: Mat? = null
-    // Tweede kans bij een onbruikbare fit: een vlakke tag onder een scherende kijkhoek (typisch
-    // een tag op het BOVENVLAK gezien vanaf de grond) geeft een gedegenereerde homografie en
-    // daarmee een wild verkeerde IPPE-oplossing (reprojectie honderden px). SQPnP is een globale
-    // oplosser zonder dat lokale minimum — houd de beste van de twee.
-    if (error > LOCAL_POSE_RETRY_REPROJECTION_PX) {
-        rvecRetry = Mat()
-        tvecRetry = Mat()
-        val retryOk = runCatching {
-            Calib3d.solvePnP(
-                MatOfPoint3f(*objectPoints.toTypedArray()),
-                MatOfPoint2f(*imagePoints.toTypedArray()),
-                cameraMatrix,
-                distCoeffs,
-                rvecRetry,
-                tvecRetry,
-                false,
-                Calib3d.SOLVEPNP_SQPNP
-            )
-        }.getOrDefault(false)
-        if (retryOk) {
-            val retryError = reprojectionErrorMm(
-                objectPoints = objectPoints,
-                imagePoints = imagePoints,
-                cameraMatrix = cameraMatrix,
-                distCoeffs = distCoeffs,
-                rvec = rvecRetry,
-                tvec = tvecRetry
-            )
-            if (retryError < error) {
-                error = retryError
-                bestRvec = rvecRetry
-                bestTvec = tvecRetry
-            }
-            PoseDecisionLogger.info(
-                key = "pnp-retry|${knownDetections.map { it.marker.id }}|${if (retryError < baseError) "sqpnp" else "base"}",
-                message = "pose=pnp-retry tags=${knownDetections.map { it.marker.id }} baseErr=${baseError.shortPx()} sqpnpErr=${retryError.shortPx()} chosen=${if (retryError < baseError) "sqpnp" else "base"}"
-            )
-        }
-    }
-    val translation = FloatArray(3) { index -> bestTvec.get(index, 0)?.firstOrNull()?.toFloat() ?: 0f }
-    val rotation = FloatArray(3) { index -> bestRvec.get(index, 0)?.firstOrNull()?.toFloat() ?: 0f }
-
-    cameraMatrix.release()
-    distCoeffs.release()
-    rvec.release()
-    tvec.release()
-    rvecRetry?.release()
-    tvecRetry?.release()
-
-    return AprilTagPoseEstimate(
-        pose = TransformerPose(
-            translationMm = translation,
-            rotationVector = rotation,
-            reprojectionErrorPx = error
-        ),
-        markerIds = knownDetections.map { it.marker.id }.distinct()
-    )
+private fun poseProjectsInFront(pose: TransformerPose, points: List<Point3>): Boolean {
+    if (!pose.isUsable()) return false
+    val camera = Transform3D.cameraCvFromTransformerPose(pose)
+    return points.all { camera.transformPoint(doubleArrayOf(it.x, it.y, it.z))[2] > 1.0 }
 }
 
 private fun reprojectionErrorForPose(
@@ -1155,8 +1144,9 @@ private fun reprojectionErrorMm(
     maximum: Boolean = false
 ): Float {
     val projected = MatOfPoint2f()
+    val objectsMat = MatOfPoint3f(*objectPoints.toTypedArray())
     Calib3d.projectPoints(
-        MatOfPoint3f(*objectPoints.toTypedArray()),
+        objectsMat,
         rvec,
         tvec,
         cameraMatrix,
@@ -1168,6 +1158,7 @@ private fun reprojectionErrorMm(
         hypot(projectedPoint.x - imagePoint.x, projectedPoint.y - imagePoint.y)
     }
     projected.release()
+    objectsMat.release()
     return (if (maximum) errors.maxOrNull() ?: Double.POSITIVE_INFINITY else errors.average()).toFloat()
 }
 
@@ -1188,7 +1179,7 @@ private const val ENABLE_VERBOSE_APRILTAG_LOGS = false
 private const val MAX_STRONG_MULTI_TAG_REPROJECTION_PX = 3.0f
 
 /** Boven deze enkel-tag reprojectiefout proberen we een tweede oplosser (SQPnP). */
-private const val LOCAL_POSE_RETRY_REPROJECTION_PX = 25.0f
+private const val LOCAL_POSE_RETRY_REPROJECTION_PX = 2.0f
 
 /** Zo lang blijft de laatst gekozen tag-pose bruikbaar als temporele prior voor de
  *  ambiguïteits-keuze; daarna (tag lang uit beeld) beslist de reprojectiefout weer alleen. */
@@ -1202,8 +1193,7 @@ private const val REFERENCE_MIN_EDGE_PX = 40.0
 private const val REFERENCE_AREA_SIDE_PX = 120.0
 
 private object PoseDecisionLogger {
-    private var lastKey: String = ""
-    private var lastMillis: Long = 0L
+    private val lastByCategory = mutableMapOf<String, Pair<String, Long>>()
 
     fun info(key: String, message: String) {
         log(key, message, warning = false)
@@ -1215,9 +1205,10 @@ private object PoseDecisionLogger {
 
     private fun log(key: String, message: String, warning: Boolean) {
         val now = System.currentTimeMillis()
-        if (key == lastKey && now - lastMillis < POSE_DECISION_LOG_INTERVAL_MILLIS) return
-        lastKey = key
-        lastMillis = now
+        val category = key.substringBefore('|')
+        val previous = lastByCategory[category]
+        if (key == previous?.first && now - previous.second < POSE_DECISION_LOG_INTERVAL_MILLIS) return
+        lastByCategory[category] = key to now
         if (warning) {
             Log.w("ARsensPose", message)
         } else {

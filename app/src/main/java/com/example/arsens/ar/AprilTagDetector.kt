@@ -117,7 +117,9 @@ data class AprilTagFrameResult(
      *  [displayProjection]/[cameraCvFromTransformer] volgen). Voor straal-replay-driftcorrectie:
      *  samen met de bij plaatsing bewaarde transformer-straal reconstrueert dit de anker-
      *  onafhankelijke camerastraal in ARCore's wereld. */
-    val arFromTransformer: Transform3D? = null
+    val arFromTransformer: Transform3D? = null,
+    val standaloneWallPacket: com.example.arsens.ar.calibration.StandaloneWallPacket? = null,
+    val wallScanFrame: com.example.arsens.ar.calibration.WallScanFrame? = null
 )
 
 /**

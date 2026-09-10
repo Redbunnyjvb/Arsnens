@@ -128,6 +128,8 @@ import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
 import com.example.arsens.data.placementCountLabel
 import com.example.arsens.data.displayName
+import com.example.arsens.data.ReferenceGeometryMode
+import com.example.arsens.data.WallDimensionSource
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -364,6 +366,7 @@ internal fun WorkflowStartScreen(state: WorkflowAppState) {
                     )
                 }
             }
+            item { WorkflowReferenceMethodCard(state) }
             item { WorkflowAssemblyCard(state) }
         }
         // Onderste navigatiebalk verwijderd — navigatie zit nu in het hamburger-menu (top bar).
@@ -836,17 +839,23 @@ internal fun ArSensCreateProjectCard(state: WorkflowAppState) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
+            WorkflowReferenceMethodChoice(state.newReferenceGeometryMode, state.newWallDimensionSource,
+                { state.newReferenceGeometryMode = it }, { state.newWallDimensionSource = it })
+            if (state.newReferenceGeometryMode != ReferenceGeometryMode.ScannedWalls || state.newWallDimensionSource == WallDimensionSource.Entered) {
             Text("Trafo-afmetingen", color = ArSensInk, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 WorkflowNumberField("Lengte", state.lengthMm, { state.lengthMm = it }, Modifier.weight(1f))
                 WorkflowNumberField("Breedte", state.widthMm, { state.widthMm = it }, Modifier.weight(1f))
                 WorkflowNumberField("Hoogte", state.heightMm, { state.heightMm = it }, Modifier.weight(1f))
             }
+            } else Text("Afmetingen worden pas na je goedkeuring van de scan opgeslagen.")
             Button(onClick = state::createProject, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                 Text("Project aanmaken")
             }
             Text(
-                "Met een 3D-assembly? Maak het project aan en importeer de delen via de kaart " +
+                if (state.newReferenceGeometryMode == ReferenceGeometryMode.ScannedWalls)
+                    "Bij Wanden scannen blijven de tankmaten beschermd tegen wijzigingen door 3D-import."
+                else "Met een 3D-assembly? Maak het project aan en importeer de delen via de kaart " +
                     "„3D-model (assembly)” — de trafo-afmetingen worden dan van de tank overgenomen, " +
                     "tenzij je ze op het projectscherm vergrendelt.",
                 color = ArSensMuted,

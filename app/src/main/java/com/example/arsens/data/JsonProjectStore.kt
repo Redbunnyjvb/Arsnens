@@ -14,6 +14,9 @@ object JsonProjectStore {
             .put("model_file", project.modelFile)
             .put("dimensions_mm", project.dimensionsMm.toJsonArray())
             .put("dimensions_locked", project.dimensionsLocked)
+            .put("reference_geometry_mode", project.referenceGeometryMode.wireName)
+            .put("wall_dimension_source", project.wallDimensionSource.wireName)
+            .apply { project.wallCalibration?.let { put("wall_calibration", it.toWallJson()) } }
             .put("coordinate_frame", coordinateFrameToJson(project.coordinateFrame))
             .put("sensors", JSONArray(project.sensors.map(::sensorToJson)))
             .put("markers", JSONArray(project.markers.map(::markerToJson)))
@@ -39,6 +42,11 @@ object JsonProjectStore {
             modelFile = json.optString("model_file", "transformer_model.glb"),
             dimensionsMm = json.optJSONArray("dimensions_mm")?.toMmPosition() ?: MmPosition(10000, 5000, 3200),
             dimensionsLocked = json.optBoolean("dimensions_locked", false),
+            referenceGeometryMode = ReferenceGeometryMode.entries.firstOrNull { it.wireName == json.optString("reference_geometry_mode") }
+                ?: ReferenceGeometryMode.KnownTagPositions,
+            wallDimensionSource = WallDimensionSource.entries.firstOrNull { it.wireName == json.optString("wall_dimension_source") }
+                ?: WallDimensionSource.Entered,
+            wallCalibration = json.optJSONObject("wall_calibration")?.readWallCalibration(),
             coordinateFrame = json.optJSONObject("coordinate_frame")?.toCoordinateFrame()
                 ?: CoordinateFrameSettings(),
             sensors = sensors.sortedBy { it.order },

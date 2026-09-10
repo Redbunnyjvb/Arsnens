@@ -52,7 +52,9 @@ De diagnostiek bewaart ruwe mm/graden, samples, gebruikte/uitgesloten tags en me
 
 Aanvullende regressies controleren grotere verplaatsingen/waarneembare rotaties, ongeldige of te kleine hoekbeelden, overeenkomende en tegenstrijdige tagsets, uitsluiting, stale/herhaalde pakketten, bewegende opname-/weergavecamera en afronden zonder nieuwe beelden. Native OpenCV wordt op de emulator met deterministische hoekpuntruis en de echte fusionketen getest. Bedieningsproeven gebruiken de echte Compose-componenten met een stilstaand testvlak; opslagproeven gebruiken echte WorkflowAppState en geïsoleerde JSON-opslag.
 
-Definitieve testresultaten volgen na afronding van de controles.
+Definitief: 195 JVM-tests, 0 failures/errors/skipped; `testDebugUnitTest`, `assembleDebug` en `assembleDebugAndroidTest` geslaagd (`app/build/camera-update-final-build.txt`). 20 emulatortests geslaagd op API 37 in aparte runs: 3 bediening (`camera-controls-final-tests.txt`), 7 opslag/werkwijze + 5 native pose (`camera-state-pose-final-tests.txt`), 5 kaartbediening (`camera-map-final-tests.txt`). Schermafbeeldingen van cursor, sensorlijst en menu zijn visueel gecontroleerd.
+
+De eerste gecombineerde emulatorrun stopte tijdens de laatste kaarttest door LOW_MEMORY (vastgesteld met Android ApplicationExitInfo); daarom opnieuw in kleinere groepen uitgevoerd. Een eerdere UI-test legde ook de onduidelijke oude statuslabels bloot; de lijst toont nu Te plaatsen / Geplaatst / Geplaatst · afwijking. Definitieve runs slagen.
 
 ## Nog op de telefoon meten
 

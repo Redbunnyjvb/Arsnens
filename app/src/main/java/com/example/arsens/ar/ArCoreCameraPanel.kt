@@ -53,6 +53,7 @@ import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import com.example.arsens.ar.calibration.*
 import org.opencv.objdetect.Objdetect
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -79,6 +80,7 @@ fun ArCoreCameraPanel(
     tagDictionary: TagDictionaryOption = TagDictionaryOption.DEFAULT,
     tagPoseMode: TagPoseMode = TagPoseMode.DEFAULT,
     calibrationRevision: Int = 0,
+    wallScanRequest: WallScanRequest? = null,
     onPerfStats: (ArPerfStats) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -98,6 +100,7 @@ fun ArCoreCameraPanel(
     val latestDictionary by rememberUpdatedState(tagDictionary)
     val latestPoseMode by rememberUpdatedState(tagPoseMode)
     val latestCalibrationRevision by rememberUpdatedState(calibrationRevision)
+    val latestWallScanRequest by rememberUpdatedState(wallScanRequest)
     val latestOnPerfStats by rememberUpdatedState(onPerfStats)
     val renderer = remember {
         ArCoreCameraRenderer(
@@ -107,6 +110,7 @@ fun ArCoreCameraPanel(
             tagDictionaryId = { latestDictionary.openCvId },
             tagPoseMode = { latestPoseMode },
             calibrationRevision = { latestCalibrationRevision },
+            wallScanRequest = { latestWallScanRequest },
             onPerfStats = { latestOnPerfStats(it) }
         )
     }
@@ -140,7 +144,7 @@ fun ArCoreCameraPanel(
             AndroidView(factory = { surfaceView }, modifier = Modifier.fillMaxSize())
         } else {
             Column(
-                modifier = Modifier.padding(20.dp),
+                modifier = Modifier.then(if (wallScanRequest != null) Modifier.align(Alignment.TopCenter).padding(top = 100.dp) else Modifier).padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -163,6 +167,7 @@ private class ArCoreCameraRenderer(
     private val tagDictionaryId: () -> Int = { Objdetect.DICT_APRILTAG_36h11 },
     private val tagPoseMode: () -> TagPoseMode = { TagPoseMode.DEFAULT },
     private val calibrationRevision: () -> Int = { 0 },
+    private val wallScanRequest: () -> WallScanRequest? = { null },
     private val onPerfStats: (ArPerfStats) -> Unit = {}
 ) : GLSurfaceView.Renderer {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -174,6 +179,8 @@ private class ArCoreCameraRenderer(
     private val fusion = ArCoreAprilTagFusion()
     private var session: Session? = null
     private var nativeAnchor: Anchor? = null
+    private var activeWallSessionId: Long? = null
+    private var heldWallPacket: AprilTagDetectionPacket? = null
     private var trackingFrameId = trackingFrameIds.incrementAndGet()
     private val nativeRecovery = NativeAnchorRecovery { trackingFrameIds.incrementAndGet() }
     private var anchorCreationError: String? = null
@@ -343,9 +350,19 @@ private class ArCoreCameraRenderer(
             .fromOpenGlColumnMajor(viewMatrix)
             .withScaledTranslation(METERS_TO_MILLIMETERS)
 
-        val markers = knownMarkers().toList()
+        val wallRequest = wallScanRequest()
+        if (activeWallSessionId != wallRequest?.sessionId) {
+            resetTrackingReference()
+            activeWallSessionId = wallRequest?.sessionId
+        }
+        val markers = if (wallRequest == null) knownMarkers().toList() else emptyList()
         refreshDetectorIfNeeded()
         resetFusionIfMarkersChanged(markers)
+        if (wallRequest != null) {
+            postWallScanFrame(frame, wallRequest, arFromCameraGl, cameraGlFromAr, projectionMatrix,
+                cameraTracking, frameCalibrationRevision)
+            return
+        }
         if (nativeAnchor?.trackingState == TrackingState.STOPPED) resetTrackingReference()
         val nowMillis = SystemClock.elapsedRealtime()
         val expectedCaptureFrameId = nativeRecovery.captureFrameId(cameraTracking, nativeAnchor?.trackingState, trackingFrameId, nowMillis)
@@ -408,7 +425,57 @@ private class ArCoreCameraRenderer(
     }
 
 
+    private fun postWallScanFrame(frame: Frame, request: WallScanRequest, arFromCameraGl: Transform3D,
+        cameraGlFromAr: Transform3D, projection: FloatArray, cameraTracking: Boolean, revision: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (nativeAnchor?.trackingState == TrackingState.STOPPED) resetTrackingReference()
+        var packet = pollLatestDetectionPacket(knownMarkerSignatures)?.takeIf {
+            it.result.trackingFrameId == trackingFrameId && it.result.standaloneWallPacket?.sessionId == request.sessionId
+        }
+        if (nativeAnchor == null && cameraTracking && packet != null) {
+            val first = packet.result.standaloneWallPacket?.tags?.firstOrNull {
+                it.shortestEdgePx >= 40f && it.reprojectionErrorPx <= 1.5f
+            }
+            if (first != null) {
+                // Reuse native-anchor creation at the unknown tag's local origin. This is
+                // only a temporary scan reference, never a transformer pose for placement.
+                establishTrackingReference(packet.copy(result = packet.result.copy(
+                    transformerPose = first.cameraCvFromTag.toTransformerPose(first.reprojectionErrorPx),
+                    referencePointMm = MmPosition(0,0,0))))
+                packet = null // Collect only later images captured in the anchor's own frame.
+            }
+        }
+        val anchorPose = nativeAnchor?.takeIf { it.trackingState == TrackingState.TRACKING }?.pose?.toMillimeterTransform()
+        val tracking = cameraTracking && anchorPose != null
+        val reference = anchorPose?.let(::TrackingReferenceFrame)
+        val fromCamera = reference?.cameraPose(arFromCameraGl) ?: arFromCameraGl
+        val toCamera = reference?.viewPose(cameraGlFromAr) ?: cameraGlFromAr
+        val up = anchorPose?.inverseRigid()?.wallDirection(WallVector(0.0,1.0,0.0)) ?: WallVector(0.0,1.0,0.0)
+        if (cameraTracking && (nativeAnchor == null || tracking)) {
+            submitTagDetectionIfNeeded(frame, fromCamera, emptyList(), trackingFrameId, null, request, up)
+        }
+        if (packet != null) heldWallPacket = packet
+        val held = heldWallPacket?.takeIf { it.result.trackingFrameId == trackingFrameId }
+        val raw = held?.result
+        val observations = if (tracking && raw?.capturedAtElapsedMillis != null &&
+            now - raw.capturedAtElapsedMillis in 0L..DETECTION_FRESH_MILLIS) {
+            val capture = held!!.arFromCameraGlAtCapture * Transform3D.cameraGlFromCameraCv()
+            raw.standaloneWallPacket!!.tags.map { tag -> WallTagObservation(tag.tagId, tag.sizeMm,
+                raw.capturedAtElapsedMillis, raw.detectionSequence, trackingFrameId,
+                capture * tag.cameraCvFromTag, capture, raw.standaloneWallPacket.referenceUp,
+                tag.reprojectionErrorPx, tag.shortestEdgePx) }
+        } else emptyList()
+        val scan = WallScanFrame(request.sessionId, trackingFrameId, tracking, observations,
+            if (tracking) ArDisplayProjection.fromOpenGlCamera(surfaceWidth, surfaceHeight, projection, toCamera) else null)
+        publishResultToMain((raw ?: AprilTagFrameResult()).copy(
+            calibrationRevision = revision, trackingFrameId = trackingFrameId,
+            transformerPose = null, displayProjection = null, arTracking = tracking, nativeAnchorTracking = tracking,
+            trackingStatus = ArTrackingStatus.NoPose, wallScanFrame = scan,
+            poseDiagnostic = anchorCreationError ?: if (tracking) "Wandscan actief" else "Zoek tracking en scan een tag voor de wandreferentie."))
+    }
+
     private fun resetTrackingReference() {
+        heldWallPacket = null
         nativeAnchor?.detach()
         nativeAnchor = null
         trackingFrameId = trackingFrameIds.incrementAndGet()
@@ -544,7 +611,9 @@ private class ArCoreCameraRenderer(
         arFromCameraGlAtCapture: Transform3D,
         markers: List<Marker>,
         captureFrameId: Long,
-        predictedCameraPose: TransformerPose?
+        predictedCameraPose: TransformerPose?,
+        wallRequest: WallScanRequest? = null,
+        referenceUp: WallVector = WallVector(0.0,1.0,0.0)
     ) {
         // Stap 4: backpressure (detectionInFlight) + tijd-gebaseerde cadans op elapsedRealtime().
         if (detectionInFlight) return
@@ -593,7 +662,7 @@ private class ArCoreCameraRenderer(
                 poseMode = tagPoseMode(),
                 capturedAtElapsedMillis = nowElapsed,
                 detectionSequence = frame.timestamp
-            )
+            ).copy(wallRequest = wallRequest, referenceUp = referenceUp)
         } finally {
             image.close()
         }
@@ -650,7 +719,11 @@ private class ArCoreCameraRenderer(
                 cameraIntrinsics = frame.intrinsics,
                 poseMode = frame.poseMode,
                 predictedCameraPose = frame.predictedCameraPose
-            ).withScreenDetections(frame.imageToViewMapper).copy(
+            ).let { result ->
+                result.copy(standaloneWallPacket = frame.wallRequest?.let { request ->
+                    StandaloneWallPacket(request.sessionId, solveStandaloneWallTags(result.detections, frame.intrinsics, request), frame.referenceUp)
+                })
+            }.withScreenDetections(frame.imageToViewMapper).copy(
                 capturedAtElapsedMillis = frame.capturedAtElapsedMillis,
                 detectionSequence = frame.detectionSequence,
                 trackingFrameId = frame.trackingFrameId
@@ -1188,6 +1261,8 @@ private class ArCoreBackgroundRenderer {
 }
 
 private data class PendingAprilTagFrame(
+    val wallRequest: WallScanRequest? = null,
+    val referenceUp: WallVector = WallVector(0.0,1.0,0.0),
     val width: Int,
     val height: Int,
     val luma: ByteArray,

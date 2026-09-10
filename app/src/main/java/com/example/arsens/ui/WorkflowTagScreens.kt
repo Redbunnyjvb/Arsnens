@@ -125,6 +125,9 @@ import com.example.arsens.data.ProjectSummary
 import com.example.arsens.data.Sensor
 import com.example.arsens.data.placementCountLabel
 import com.example.arsens.data.displayName
+import com.example.arsens.data.ReferenceGeometryMode
+import com.example.arsens.data.hasWallCalibration
+import com.example.arsens.data.needsWallCalibration
 import com.example.arsens.data.SensorStatus
 import com.example.arsens.data.StlMesh
 import com.example.arsens.data.StlModel
@@ -150,10 +153,15 @@ import kotlin.math.sin
 
 @Composable
 internal fun WorkflowTagsScreen(state: WorkflowAppState) {
+    if (state.wallScanActive || state.project.needsWallCalibration) {
+        WorkflowWallCalibrationScreen(state)
+        return
+    }
     val menus = workflowTagCameraMenus(state)
     FullScreenCameraWorkflowShell(
         title = state.project.projectName,
-        subtitle = "",
+        subtitle = if (state.project.referenceGeometryMode == ReferenceGeometryMode.ScannedWalls)
+            if (state.sensorPlacementReady) "Wandreferentie ✓" else "Tankreferentie opgeslagen · scan een bekende referentietag" else "",
         onBack = state::navigateBack,
         topActions = {
             WorkflowCameraSensorPicker(state)
@@ -224,6 +232,15 @@ internal fun workflowTagCameraMenus(state: WorkflowAppState): List<WorkflowCamer
 
 @Composable
 internal fun WorkflowTagSetupPanel(state: WorkflowAppState) {
+    if (state.project.referenceGeometryMode == ReferenceGeometryMode.ScannedWalls) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Gekalibreerde wandtags", color = Color.White)
+            state.savedAprilTags.forEach { Text("Tag ${it.id} · ${it.sizeMm} mm · ${it.positionMm}", color = Color.White) }
+            Text("Deze geometrie komt uit de wandscan. Bekende tagposities kun je als methode kiezen op het projectscherm.", color = Color.White)
+            OutlinedButton(state::beginWallScan, Modifier.fillMaxWidth()) { Text("Tankreferentie opnieuw kalibreren") }
+        }
+        return
+    }
     // Tags-paneel zoals de afbeelding: vlak-kruis + 5x5 grid naast elkaar, handmatige coördinaten,
     // lijst met gerelateerde tags en de blauwe "Plaats tag"-knop. De scanstatus blijft compact
     // bovenaan staan zodat de operator ziet of een tag in beeld is.

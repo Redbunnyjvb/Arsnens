@@ -69,7 +69,9 @@ class LocalProjectRepository(private val context: Context) {
 
     fun newProject(): Project = createProject("", MmPosition(10000, 5000, 3200))
 
-    fun createProject(name: String, dimensionsMm: MmPosition): Project {
+    fun createProject(name: String, dimensionsMm: MmPosition,
+        referenceGeometryMode: ReferenceGeometryMode = ReferenceGeometryMode.KnownTagPositions,
+        wallDimensionSource: WallDimensionSource = WallDimensionSource.Entered): Project {
         val cleanName = name.ifBlank { "Nieuw transformatorproject" }.trim()
         val id = uniqueProjectId(cleanName)
         activeProjectId = id
@@ -78,6 +80,9 @@ class LocalProjectRepository(private val context: Context) {
             projectName = cleanName,
             modelFile = "transformer_model.glb",
             dimensionsMm = dimensionsMm,
+            referenceGeometryMode = referenceGeometryMode,
+            wallDimensionSource = wallDimensionSource,
+            dimensionsLocked = referenceGeometryMode == ReferenceGeometryMode.ScannedWalls,
             sensors = emptyList(),
             markers = emptyList()
         )

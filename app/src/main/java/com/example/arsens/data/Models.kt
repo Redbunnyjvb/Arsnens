@@ -219,7 +219,10 @@ data class Project(
      *  mag [dimensionsMm] dan niet overschrijven met de tankafmetingen. */
     val dimensionsLocked: Boolean = false,
     val coordinateFrame: CoordinateFrameSettings = CoordinateFrameSettings(),
-    val stlModels: List<StlModel> = emptyList()
+    val stlModels: List<StlModel> = emptyList(),
+    val referenceGeometryMode: ReferenceGeometryMode = ReferenceGeometryMode.KnownTagPositions,
+    val wallDimensionSource: WallDimensionSource = WallDimensionSource.Entered,
+    val wallCalibration: WallCalibrationData? = null
 )
 
 data class InstallationResult(

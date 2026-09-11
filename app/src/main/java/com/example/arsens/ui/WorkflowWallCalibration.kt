@@ -117,10 +117,10 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                     if (!state.wallScanActive) {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("Wanden scannen", style = MaterialTheme.typography.titleLarge)
-                            Text("Plak tags vlak op de tankwand en spreid ze horizontaal. Kies het vlak en de zwarte tagmaat; de camera meet de tagposities.")
+                            Text("Plak minstens één tag vlak op elke benodigde wand. Kies het vlak en de zwarte tagmaat; de camera meet de tagposities.")
                             Text(if (state.project.wallDimensionSource == WallDimensionSource.Scanned)
-                                "Scan alle vier zijwanden, met minstens twee verspreide tags per wand. Koppel daarna het deksel met één boventag. Geef de gewenste zijwandhoogte onder het deksel op."
-                                else "Je ingevoerde afmetingen blijven behouden. Scan twee aangrenzende zijwanden, met minstens twee tags per wand. Koppel daarna het deksel met één boventag.")
+                                "Scan alle vier zijwanden, met minstens één tag per wand. Koppel daarna het deksel met één boventag. Geef de gewenste zijwandhoogte onder het deksel op."
+                                else "Je ingevoerde afmetingen blijven behouden. Scan twee aangrenzende zijwanden, met minstens één tag per wand. Koppel daarna het deksel met één boventag.")
                         }
                         Button(state::beginWallScan, Modifier.fillMaxWidth()) { Text("Scan beginnen") }
                     } else if (state.wallScanSolution != null) {
@@ -129,6 +129,10 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                             Text("Controleer de tankcontour", style = MaterialTheme.typography.titleLarge)
                             Text("${solution.dimensionsMm.x} × ${solution.dimensionsMm.y} × ${solution.dimensionsMm.z} mm")
                             Text("Deksel gekoppeld · ${solution.quality.usedTagIds.size} tags gebruikt")
+                            if (state.wallAssignments.filter { it.wall != CalibrationWall.Top && it.tagId in solution.quality.usedTagIds }
+                                    .groupBy { it.wall }.values.any { it.size == 1 }) {
+                                Text("Eén tag op een zijwand: extra tags bieden meer onderlinge controle.", style = MaterialTheme.typography.bodySmall)
+                            }
                             Text("Vergelijk de lijnen met de echte tankranden. De zijmetingen blijven vast terwijl je extra boventags opneemt.")
                             solution.quality.let { q ->
                                 Text(String.format(Locale.getDefault(), "Wand RMS %.1f mm · max %.1f mm · normaal %.1f°",
@@ -172,8 +176,8 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                                 Text("Kies Boven en leg de dekseltag vast. Bekijk de zijtag en boventag samen of na elkaar; de camera koppelt ze in hetzelfde tankframe.",
                                     style = MaterialTheme.typography.bodySmall)
                             } else Text(if (state.wallScanSource == WallDimensionSource.Scanned)
-                                "Twee verspreide tags per zijwand. Vier zijwanden bepalen lengte en breedte."
-                                else "Twee verspreide tags per wand, op twee aangrenzende zijwanden.", style = MaterialTheme.typography.bodySmall)
+                                "Eén tag per zijwand is voldoende. Vier zijwanden bepalen lengte en breedte."
+                                else "Eén tag per wand is voldoende. Scan twee aangrenzende zijwanden.", style = MaterialTheme.typography.bodySmall)
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             TextButton({ settings = "size" }) { Text("Tagmaat ${state.wallScanSize} mm") }

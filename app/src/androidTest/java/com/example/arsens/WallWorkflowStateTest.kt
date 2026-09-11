@@ -176,4 +176,25 @@ class WallWorkflowStateTest {
         assertFalse(0 in state.wallReadyTagIds)
     }
 
+    @Test fun oneTagPerRequiredWallCanBeCapturedSolvedAndSavedInBothModes() {
+        for(source in WallDimensionSource.entries) {
+            create(source);state.beginWallScan();state.wallScanSize="100";state.wallSideHeight="1000"
+            val ids=if(source==WallDimensionSource.Entered) listOf(0,4,8) else listOf(0,2,4,6,8)
+            state.updateWallScanFrame(packet(1))
+            WallTestGeometry.tags.filter { it.assignment.tagId in ids }.forEach {
+                state.selectWallScanFace(it.assignment.wall);state.assignWallTag(it.assignment.tagId)
+            }
+            repeat(9) { SystemClock.sleep(100);state.updateWallScanFrame(packet(it+2L)) }
+            assertEquals(ids,state.wallReadyTagIds.sorted())
+            state.solveWallFootprint();assertNotNull(state.wallScanMessage,state.wallScanFootprint)
+            state.startWallTopStage();state.solveWallScan()
+            assertNotNull(state.wallScanMessage,state.wallScanSolution)
+            assertEquals(WallTestGeometry.dimensions,state.wallScanSolution!!.dimensionsMm)
+            state.acceptWallScan()
+            assertTrue(state.project.hasWallCalibration)
+            assertEquals(ids,state.project.wallCalibration!!.quality.usedTagIds)
+            assertEquals(state.project,store.state().project)
+        }
+    }
+
 }

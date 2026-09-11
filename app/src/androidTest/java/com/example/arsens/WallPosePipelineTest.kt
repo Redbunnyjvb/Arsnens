@@ -24,7 +24,8 @@ class WallPosePipelineTest {
             val capture=tag.referenceFromTag*localCamera.inverseRigid()
             tag.copy(referenceFromTag=capture*observed.cameraCvFromTag)
         }
-        val solution=WallCalibrationSolver.solve(MmPosition(0,0,0),WallDimensionSource.Scanned,nativeTags,geometry.datum).solution!!
+        for(scanTags in listOf(nativeTags,nativeTags.filter { it.assignment.tagId % 2 == 0 })) {
+        val solution=WallCalibrationSolver.solve(MmPosition(0,0,0),WallDimensionSource.Scanned,scanTags,geometry.datum).solution!!
         assertEquals(geometry.dimensions,solution.dimensionsMm)
         assertTrue(solution.referenceFromProject.distanceTo(geometry.frame)<2)
         // Reopening must work from either a side reference OR a top reference alone.
@@ -51,6 +52,7 @@ class WallPosePipelineTest {
         assertNull(sensorPlacementBlockReason(fused,computePlacementQuality(fused,1f,false,0)))
         assertNull(estimateTransformerPoseFromAprilTags(listOf(seen.copy(id=99)),solution.markers,intrinsics))
         }
+    }
     }
     @Test fun sensorRangeAndDuplicateIdsAreNeverLearnedAsWallReferences() {
         assertTrue(OpenCvRuntime.ensureLoaded())

@@ -46,9 +46,9 @@ object WallCalibrationSolver {
         val groups = tags.groupBy { it.assignment.wall }
         val requiredWalls = if (source == WallDimensionSource.Scanned) CalibrationWall.entries.filter { requireTop || it.axis != 2 } else groups.keys.toList()
         if (requiredWalls.none { it.axis == 0 } || requiredWalls.none { it.axis == 1 } ||
-            requiredWalls.any { groups[it].orEmpty().size < if(it.axis==2) 1 else 2 })
-            return fail(if (source == WallDimensionSource.Scanned) "Scan minstens twee verspreide tags op elk van de vier zijwanden."
-                else "Scan minstens twee verspreide tags per wand, op twee aangrenzende zijwanden.")
+            requiredWalls.any { groups[it].isNullOrEmpty() })
+            return fail(if (source == WallDimensionSource.Scanned) "Scan minstens één tag op elk van de vier zijwanden."
+                else "Scan minstens één tag per wand, op twee aangrenzende zijwanden.")
         val base = if (abs(up.x) < 0.8) WallVector(1.0, 0.0, 0.0) else WallVector(0.0, 0.0, 1.0)
         val u = (base - up * base.dot(up)).unit()!!
         val v = up.cross(u).unit()!!
@@ -63,7 +63,11 @@ object WallCalibrationSolver {
         groups.filterKeys { it.axis != 2 }.forEach { (wall, points) ->
             for (i in points.indices) for (j in 0 until i) {
                 val d = points[i].center - points[j].center
-                val horizontal = (d - up * d.dot(up)).unit() ?: continue
+                val baseline = d - up * d.dot(up)
+                // Short baselines amplify position noise into an unreliable heading. They are
+                // valid plane samples; only skip their optional center-to-center yaw seed.
+                if (baseline.length() < max(100.0, max(points[i].assignment.sizeMm, points[j].assignment.sizeMm).toDouble())) continue
+                val horizontal = baseline.unit() ?: continue
                 val x = if (wall.axis == 1) horizontal else horizontal.cross(up)
                 seeds += angleOf(x); seeds += angleOf(x * -1.0)
             }
@@ -117,17 +121,9 @@ object WallCalibrationSolver {
         }
         if (lower != null && lower !in used) return fail("Een hoogtereferentie wijkt af. Controleer de tag of kies een andere datumtag.")
         val usedGroups = used.groupBy { it.assignment.wall }
-        if (requiredWalls.any { usedGroups[it].orEmpty().size < if(it.axis==2) 1 else 2 }) return fail("Na uitsluiten blijven te weinig tags over. Scan een extra tag op de betreffende wand.")
-        for ((wall, points) in usedGroups) {
-            if (wall.axis == 2) continue // Top tags may be placed anywhere; side walls already fix yaw.
-            val along = if (wall.axis == 0) best.y else best.x
-            val spread = if (wall.axis == 2) points.maxOf { a -> points.maxOf { b ->
-                val d = a.center - b.center
-                (d - up*d.dot(up)).length()
-            } } else points.maxOf { it.center.dot(along) } - points.minOf { it.center.dot(along) }
-            val extent = if (wall.axis == 2) min(best.width,best.length) else if (wall.axis == 0) best.width else best.length
-            if (spread < max(100.0, extent * 0.1)) return fail("Tags op ${wall.label} staan horizontaal te dicht bij elkaar. Spreid ze verder over de wand.")
-        }
+        if (requiredWalls.any { usedGroups[it].isNullOrEmpty() }) return fail("Na uitsluiten blijven te weinig tags over. Scan een extra tag op de betreffende wand.")
+        // One stable tag supplies a plane normal and offset. Adjacent/opposite wall
+        // requirements above still make the contour observable; spacing is not an acceptance gate.
         val origin = best.x * best.ox + best.y * best.oy + up * zOrigin
         fun matrix(x: WallVector, y: WallVector, z: WallVector, t: WallVector) = Transform3D(doubleArrayOf(
             x.x,y.x,z.x,t.x, x.y,y.y,z.y,t.y, x.z,y.z,z.z,t.z, 0.0,0.0,0.0,1.0))

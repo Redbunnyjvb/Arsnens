@@ -105,11 +105,9 @@ class WallCalibrationTest {
         assertFalse(solution.markers.any { it.id==10 })
         assertArrayEquals(frame.values,solution.referenceFromProject.values,0.05)
     }
-    @Test fun missingDatumDuplicateIdsOrInsufficientHorizontalSpreadCannotBeAccepted() {
+    @Test fun missingDatumOrDuplicateIdsCannotBeAccepted() {
         assertNull(solve(datum=WallVerticalDatum(99,200)).solution)
         assertNull(solve(tags()+tags()[0]).solution)
-        val close = tags().map { if(it.assignment.tagId==1) it.copy(referenceFromTag=tags()[0].referenceFromTag) else it }
-        assertNull(solve(close).solution)
         assertNull(solve(datum=WallVerticalDatum(0,-1)).solution)
         assertNull(solve(datum=WallVerticalDatum(0,2001)).solution)
     }
@@ -249,6 +247,55 @@ class WallCalibrationTest {
         val json=WallCalibrationData(calibratedAt="lid",dimensionsMm=dimensions,dimensionSource=WallDimensionSource.Scanned,
             assignments=tags().map { it.assignment },datum=datum,quality=linked.quality).toWallJson()
         assertEquals(datum,json.readWallCalibration()!!.datum)
+    }
+
+    @Test fun oneTagOnEachRequiredFaceWorksForBothDimensionSources() {
+        val datum=WallVerticalDatum(-1,0,sideHeightMm=1000)
+        for(source in WallDimensionSource.entries) {
+            val ids=if(source==WallDimensionSource.Entered) listOf(0,4,8) else listOf(0,2,4,6,8)
+            val minimal=tags().filter { it.assignment.tagId in ids }
+            val footprint=WallCalibrationSolver.solveFootprint(dimensions,source,minimal,datum)
+            assertNotNull(footprint.reason,footprint.solution)
+            val result=solve(minimal,source,datum)
+            assertNotNull(result.reason,result.solution)
+            assertEquals(dimensions,result.solution!!.dimensionsMm)
+            assertArrayEquals(frame.values,result.solution!!.referenceFromProject.values,0.02)
+            assertEquals(ids,result.solution!!.quality.usedTagIds)
+        }
+    }
+    @Test fun smallCabinetAcceptsTagsWithOnlySixtyMillimetresHorizontalSpread() {
+        val small=MmPosition(300,240,300)
+        val compact=tags().map { t ->
+            val id=t.assignment.tagId
+            val original=points[id].second
+            val first=points[id-id%2].second
+            var point=WallVector(original.x*0.3,original.y*0.3,original.z*0.3)
+            if(id%2==1 && t.assignment.wall.axis!=2) point=if(t.assignment.wall.axis==0)
+                point.copy(y=first.y*0.3+60) else point.copy(x=first.x*0.3+60)
+            val world=frame.wallPoint(point)
+            t.copy(assignment=t.assignment.copy(sizeMm=40),referenceFromTag=Transform3D(t.referenceFromTag.values.copyOf().apply {
+                this[3]=world.x;this[7]=world.y;this[11]=world.z
+            }))
+        }
+        for(source in WallDimensionSource.entries) {
+            val result=WallCalibrationSolver.solve(small,source,compact,WallVerticalDatum(-1,0,sideHeightMm=300))
+            assertNotNull(result.reason,result.solution)
+            assertEquals(small,result.solution!!.dimensionsMm)
+            assertArrayEquals(frame.values,result.solution!!.referenceFromProject.values,0.02)
+        }
+    }
+    @Test fun singleTagModeStillRequiresAdjacentWallsAndRejectsAConflictingOnlyReference() {
+        val datum=WallVerticalDatum(-1,0,sideHeightMm=1000)
+        assertNull(solve(tags().filter { it.assignment.tagId in listOf(0,8) },datum=datum).solution)
+        assertNull(solve(tags().filter { it.assignment.tagId in listOf(0,2,8) },datum=datum).solution)
+        assertNull(solve(tags().filter { it.assignment.tagId in listOf(0,4,8) },WallDimensionSource.Scanned,datum).solution)
+        val bad=tags().filter { it.assignment.tagId in listOf(0,2,4,6,8) }.map { t ->
+            if(t.assignment.tagId!=6) t else {
+                val flipped=Transform3D.cameraCvFromTransformerPose(TransformerPose(floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,Math.PI.toFloat()),0f))
+                t.copy(referenceFromTag=t.referenceFromTag*flipped)
+            }
+        }
+        assertNull(solve(bad,WallDimensionSource.Scanned,datum).solution)
     }
 
 }

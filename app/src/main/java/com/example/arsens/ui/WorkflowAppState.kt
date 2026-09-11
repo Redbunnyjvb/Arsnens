@@ -521,7 +521,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     var sensorX by mutableStateOf("0")
     var sensorY by mutableStateOf("0")
     var sensorZ by mutableStateOf("0")
-    var sensorTolerance by mutableStateOf("50")
+    var sensorTolerance by mutableStateOf("25")
     var planSensorAtCursor by mutableStateOf(false)
     var arCalibrationRevision by mutableStateOf(0)
         private set
@@ -783,7 +783,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         showSensorOverlay = project.sensors.isNotEmpty()
         if (tagId.isBlank()) tagId = nextAprilTagId().toString()
         if (sensorName.isBlank()) sensorName = "sens"
-        if (sensorTolerance.isBlank()) sensorTolerance = "50"
+        if (sensorTolerance.isBlank()) sensorTolerance = "25"
         open2DModel(WorkflowScreen.Start, Model2DPurpose.PreparedSetup, pushHistory = false)
         message = null
     }
@@ -795,7 +795,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             if (tagId.isBlank()) tagId = nextAprilTagId().toString()
         } else {
             if (sensorName.isBlank()) sensorName = "sens"
-            if (sensorTolerance.isBlank()) sensorTolerance = "50"
+            if (sensorTolerance.isBlank()) sensorTolerance = "25"
         }
         message = null
     }
@@ -3264,7 +3264,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         sensorX = "0"
         sensorY = "0"
         sensorZ = "0"
-        sensorTolerance = "50"
+        sensorTolerance = "25"
         sensorInstruction = ""
         sensorTagId = ""
         // Voorkom dat de referentietag van een vorige (on-the-fly) plaatsing lekt naar de

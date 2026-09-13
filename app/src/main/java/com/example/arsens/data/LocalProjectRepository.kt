@@ -191,6 +191,8 @@ class LocalProjectRepository(private val context: Context) {
     fun importSensorsFromCsv(uri: Uri): List<Sensor> =
         SensorCsv.importSensorsFromCsv(readUri(uri))
 
+    fun readProgram(uri: Uri): ARSensProgram = ARSensProgramImport.parse(readUri(uri))
+
     fun exportSensorsCsv(project: Project): File {
         val file = File(activeProjectDir(), "sensors_export.csv")
         file.writeText("\uFEFF" + SensorCsv.sensorsToCsv(project.sensors))

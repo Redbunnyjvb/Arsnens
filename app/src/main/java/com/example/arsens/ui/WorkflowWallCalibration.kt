@@ -128,7 +128,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("Controleer de tankcontour", style = MaterialTheme.typography.titleLarge)
                             Text("${solution.dimensionsMm.x} × ${solution.dimensionsMm.y} × ${solution.dimensionsMm.z} mm")
-                            Text("Deksel gekoppeld · ${solution.quality.usedTagIds.size} tags gebruikt")
+                            Text("${if (solution.quality.topOverlapVerified) "Deksel rechtstreeks gekoppeld" else "Deksel nog niet geverifieerd"} · ${solution.quality.usedTagIds.size} tags gebruikt")
                             if (state.wallAssignments.filter { it.wall != CalibrationWall.Top && it.tagId in solution.quality.usedTagIds }
                                     .groupBy { it.wall }.values.any { it.size == 1 }) {
                                 Text("Eén tag op een zijwand: extra tags bieden meer onderlinge controle.", style = MaterialTheme.typography.bodySmall)
@@ -144,7 +144,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                         }
                         OutlinedButton(state::resumeWallScan, Modifier.fillMaxWidth()) { Text("Extra boventags opnemen") }
                         Button(state::acceptWallScan, Modifier.fillMaxWidth().testTag("accept-wall-calibration"),
-                            enabled = state.wallScanFrame?.tracking == true) { Text("Kalibratie gebruiken") }
+                            enabled = state.wallScanFrame?.tracking == true && solution.quality.topOverlapVerified) { Text("Kalibratie gebruiken") }
                     } else {
                         Text(if (state.wallScanFootprint == null) "1 · Zijkanten scannen" else "2 · Deksel koppelen",
                             style = MaterialTheme.typography.titleMedium)
@@ -158,7 +158,8 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                                     contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
                                     border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Text(wall.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                        Text(wall.label + if (state.wallAssignments.any { it.wall == wall && it.tagId in state.wallReadyTagIds }) " ✓" else "",
+                                            style = MaterialTheme.typography.labelMedium, maxLines = 1)
                                     }
                                 }
                             }
@@ -173,7 +174,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                             if (state.wallScanFootprint != null) {
                                 val footprint = state.wallScanFootprint!!
                                 Text("Contour ${footprint.dimensionsMm.x} × ${footprint.dimensionsMm.y} mm", style = MaterialTheme.typography.titleSmall)
-                                Text("Kies Boven en leg de dekseltag vast. Bekijk de zijtag en boventag samen of na elkaar; de camera koppelt ze in hetzelfde tankframe.",
+                                Text("Kies Boven en leg de dekseltag vast. Houd een opgenomen zijtag en de boventag tegelijk in beeld tot de directe koppeling bevestigd is.",
                                     style = MaterialTheme.typography.bodySmall)
                             } else Text(if (state.wallScanSource == WallDimensionSource.Scanned)
                                 "Eén tag per zijwand is voldoende. Vier zijwanden bepalen lengte en breedte."
@@ -236,9 +237,10 @@ private fun WallCaptureTagChoice(state: WorkflowAppState, modifier: Modifier) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         TextButton({ expanded = true }, enabled = state.wallSeenTags.isNotEmpty()) {
-            Text(state.wallCaptureTag?.let { "Tag ${it.tagId} ▾" } ?: "Geen tag in beeld")
+            Text(state.wallSelectedTagId?.let { "Tag $it${if (state.wallCaptureTag == null) " · uit beeld" else ""} ▾" } ?: "Geen tag geselecteerd")
         }
         DropdownMenu(expanded, { expanded = false }) {
+            DropdownMenuItem(text = { Text("Volgende kandidaat") }, onClick = { state.nextWallCandidate(); expanded = false })
             state.wallSeenTags.sortedBy { it.tagId }.forEach { tag ->
                 DropdownMenuItem(text = { Text("Tag ${tag.tagId}") }, onClick = { state.wallSelectedTagId = tag.tagId; expanded = false })
             }

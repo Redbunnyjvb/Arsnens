@@ -72,6 +72,10 @@ data class Sensor(
  * gecorrigeerde, actuele plek is) bewaart dit de ORIGINELE plaatsing plus de bijstelling, zodat het
  * rapport kan tonen dát er gecorrigeerd is, met hoeveel en op welk anker.
  */
+typealias SensorDefinition = Sensor
+data class PlannedTarget(val positionMm: MmPosition, val toleranceMm: Int)
+val Sensor.plannedTarget: PlannedTarget? get() = if (origin == PlacementOrigin.Prepared) PlannedTarget(positionMm, toleranceMm) else null
+
 data class SensorDriftCorrection(
     /** Positie zoals oorspronkelijk LIVE geplaatst, vóór enige correctie. */
     val asPlacedPositionMm: MmPosition,
@@ -222,7 +226,16 @@ data class Project(
     val stlModels: List<StlModel> = emptyList(),
     val referenceGeometryMode: ReferenceGeometryMode = ReferenceGeometryMode.KnownTagPositions,
     val wallDimensionSource: WallDimensionSource = WallDimensionSource.Entered,
-    val wallCalibration: WallCalibrationData? = null
+    val wallCalibration: WallCalibrationData? = null,
+    val schemaVersion: Int = 2,
+    val projectId: String = java.util.UUID.randomUUID().toString(),
+    val dimensionValues: List<DimensionValue> = emptyList(),
+    val geometryRevisions: List<GeometryRevision> = emptyList(),
+    val sessions: List<MeasurementSession> = emptyList(),
+    val activeSessionId: String? = null,
+    val measurementDraft: MeasurementDraft? = null,
+    val referenceGraph: ReferenceGraph = ReferenceGraph(),
+    val migrationSource: String? = null
 )
 
 data class InstallationResult(

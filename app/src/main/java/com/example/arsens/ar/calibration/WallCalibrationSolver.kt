@@ -7,15 +7,19 @@ import kotlin.math.*
 /** Fits ONE rectangular frame. Gravity fixes Z; a robust one-dimensional solve fixes yaw.
  * No free intersection of noisy, independently tilted planes and no sensor coordinate edits. */
 object WallCalibrationSolver {
-    fun solve(dimensions: MmPosition, source: WallDimensionSource, tags: List<WallTagEstimate>, datum: WallVerticalDatum): WallSolveResult =
-        solveInternal(dimensions, source, tags, datum, requireTop = true)
+    fun solve(dimensions: MmPosition, source: WallDimensionSource, tags: List<WallTagEstimate>, datum: WallVerticalDatum,
+        dimensionValues: List<DimensionValue> = emptyList()): WallSolveResult =
+        solveInternal(dimensions, source, tags, datum, requireTop = true, dimensionValues)
 
-    fun solveFootprint(dimensions: MmPosition, source: WallDimensionSource, tags: List<WallTagEstimate>, datum: WallVerticalDatum): WallSolveResult =
-        solveInternal(dimensions, source, tags.filter { it.assignment.wall != CalibrationWall.Top }, datum, requireTop = false)
+    fun solveFootprint(dimensions: MmPosition, source: WallDimensionSource, tags: List<WallTagEstimate>, datum: WallVerticalDatum,
+        dimensionValues: List<DimensionValue> = emptyList()): WallSolveResult =
+        solveInternal(dimensions, source, tags.filter { it.assignment.wall != CalibrationWall.Top }, datum, requireTop = false, dimensionValues)
 
     private fun solveInternal(dimensions: MmPosition, source: WallDimensionSource, tags: List<WallTagEstimate>,
-        datum: WallVerticalDatum, requireTop: Boolean): WallSolveResult {
+        datum: WallVerticalDatum, requireTop: Boolean, dimensionValues: List<DimensionValue>): WallSolveResult {
         fun fail(reason: String) = WallSolveResult(reason = reason)
+        fun scanned(axis: String) = dimensionValues.firstOrNull { it.axis == axis }?.let { it.source == DimensionSource.SCANNED }
+            ?: (source == WallDimensionSource.Scanned)
         if (tags.map { it.assignment.tagId }.distinct().size != tags.size) return fail("Dubbele tag-ID in wandscan.")
         if (source == WallDimensionSource.Entered && listOf(dimensions.x, dimensions.y, dimensions.z).any { it <= 0 })
             return fail("Voer geldige afmetingen in.")
@@ -44,7 +48,9 @@ object WallCalibrationSolver {
         // Linking the lid fixes Z without requiring a tag or sensor on the underside.
         val zOrigin = lowerOrigin ?: if (requireTop) topLevel!! - height else tags.minOf { it.center.dot(up) }
         val groups = tags.groupBy { it.assignment.wall }
-        val requiredWalls = if (source == WallDimensionSource.Scanned) CalibrationWall.entries.filter { requireTop || it.axis != 2 } else groups.keys.toList()
+        val requiredWalls = (groups.keys + CalibrationWall.entries.filter {
+            (it.axis == 0 && scanned("x")) || (it.axis == 1 && scanned("y")) || (requireTop && it.axis == 2)
+        }).toList()
         if (requiredWalls.none { it.axis == 0 } || requiredWalls.none { it.axis == 1 } ||
             requiredWalls.any { groups[it].isNullOrEmpty() })
             return fail(if (source == WallDimensionSource.Scanned) "Scan minstens één tag op elk van de vier zijwanden."
@@ -79,19 +85,20 @@ object WallCalibrationSolver {
             val y = up.cross(x)
             fun coordinates(wall: CalibrationWall) = used.filter { it.assignment.wall == wall }.map { it.center.dot(if (wall.axis == 0) x else y) }
             val ox: Double; val oy: Double; val length: Double; val width: Double
-            if (source == WallDimensionSource.Scanned) {
-                val left = coordinates(CalibrationWall.Left); val right = coordinates(CalibrationWall.Right)
-                val front = coordinates(CalibrationWall.Front); val back = coordinates(CalibrationWall.Back)
-                if (listOf(left, right, front, back).any { it.isEmpty() }) return null
-                ox = wallMedian(left); oy = wallMedian(front)
-                length = wallMedian(right) - ox; width = wallMedian(back) - oy
-            } else {
-                length = dimensions.x.toDouble(); width = dimensions.y.toDouble()
-                val xs = used.filter { it.assignment.wall.axis == 0 }.map { it.center.dot(x) - if (it.assignment.wall.positive) length else 0.0 }
-                val ys = used.filter { it.assignment.wall.axis == 1 }.map { it.center.dot(y) - if (it.assignment.wall.positive) width else 0.0 }
-                if (xs.isEmpty() || ys.isEmpty()) return null
-                ox = wallMedian(xs); oy = wallMedian(ys)
+            fun axisFit(axis: Int, scan: Boolean, known: Int, direction: WallVector): Pair<Double, Double>? {
+                val negative = used.filter { it.assignment.wall.axis == axis && !it.assignment.wall.positive }.map { it.center.dot(direction) }
+                val positive = used.filter { it.assignment.wall.axis == axis && it.assignment.wall.positive }.map { it.center.dot(direction) }
+                if (scan) {
+                    if (negative.isEmpty() || positive.isEmpty()) return null
+                    val origin = wallMedian(negative)
+                    return origin to wallMedian(positive) - origin
+                }
+                if (known <= 0 || (negative.isEmpty() && positive.isEmpty())) return null
+                return wallMedian(negative + positive.map { it - known }) to known.toDouble()
             }
+            val xf = axisFit(0, scanned("x"), dimensions.x, x) ?: return null
+            val yf = axisFit(1, scanned("y"), dimensions.y, y) ?: return null
+            ox = xf.first; length = xf.second; oy = yf.first; width = yf.second
             if (length !in 100.0..100000.0 || width !in 100.0..100000.0) return null
             val residuals = tags.map { tag ->
                 val wall = tag.assignment.wall

@@ -111,6 +111,7 @@ import com.example.arsens.ar.ScreenPointPx
 import com.example.arsens.ar.tagPlacementFor
 import com.example.arsens.ar.tagRotationFor
 import com.example.arsens.data.CoordinateFrameSettings
+import com.example.arsens.data.*
 import com.example.arsens.data.FloatVector
 import com.example.arsens.data.InstallationResult
 import com.example.arsens.data.LocalProjectRepository
@@ -145,9 +146,9 @@ import kotlin.math.sin
 
 @Composable
 internal fun WorkflowReportScreen(state: WorkflowAppState) {
-    val tags = state.savedAprilTags.sortedBy { it.id }
-    val sensors = state.project.sensors.sortedBy { it.order }
-    val mapper = state.project.coordinateMapper()
+    val tags = state.reportProject.markers.filter { it.isAprilTagCalibrationMarker() }.sortedBy { it.id }
+    val sensors = state.reportProject.sensors.sortedBy { it.order }
+    val mapper = state.reportProject.coordinateMapper()
     // Voor de 3D-model-kaart: meshes lazy laden zodat de echte afmetingen (mm) getoond worden.
     LaunchedEffect(state.project.stlModels) { state.ensureStlMeshesLoaded() }
     WorkflowShell(
@@ -156,6 +157,7 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
         onBack = state::navigateBack,
         overflowItems = workflowTopBarMenuItems(state)
     ) {
+        item { WorkflowSessionHistory(state) }
         item { WorkflowReportProjectCard(state) }
         item {
             WorkflowReportSectionCard(title = "Tags", count = tags.size) {
@@ -386,7 +388,8 @@ internal fun WorkflowReportEmpty(text: String) {
 @Composable
 internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
     TransformerMapWorkspace(
-        project = state.project, log = state.log, onBack = state::navigateBack,
+        project = state.reportProject, log = state.log, onBack = state::navigateBack,
+        readOnly = state.reportSessionId != null,
         initialView = state.activeMapView, onViewChanged = { state.activeMapView = it }, message = state.message,
         onPlaceSensorPoint = state::saveSensorAtBoxPosition,
         onMoveSensorPoint = state::moveSensorToBoxPosition,

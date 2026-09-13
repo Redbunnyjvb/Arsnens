@@ -41,6 +41,15 @@ class WallCalibrationTest {
         assertArrayEquals(frame.values,solution.referenceFromProject.values,0.02)
         assertEquals(dimensions,solution.dimensionsMm)
     }
+    @Test fun hybridStlLengthAndScannedWidthPreserveChosenLength() {
+        val source = listOf(DimensionValue("x", 1000, DimensionSource.STL, confirmedByOperator = true),
+            DimensionValue("y", 0, DimensionSource.SCANNED), DimensionValue("z", 1000, DimensionSource.MANUAL, confirmedByOperator = true))
+        val subset = tags().filter { it.assignment.wall != CalibrationWall.Right }
+        val result = WallCalibrationSolver.solve(MmPosition(1000,0,1000), WallDimensionSource.Scanned, subset,
+            WallVerticalDatum(-1,0,sideHeightMm=1000), source)
+        assertNotNull(result.reason, result.solution)
+        assertEquals(dimensions, result.solution!!.dimensionsMm)
+    }
     @Test fun scanningDimensionsUsesFourWallsTopAndOneBottomDatum() {
         val solution = WallCalibrationSolver.solve(MmPosition(0,0,0),WallDimensionSource.Scanned,tags(),datum).solution!!
         assertEquals(dimensions,solution.dimensionsMm)

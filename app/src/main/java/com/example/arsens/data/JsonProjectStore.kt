@@ -10,6 +10,9 @@ object JsonProjectStore {
 
     private fun projectJson(project: Project): JSONObject =
         JSONObject()
+            .put("schema_version", project.schemaVersion)
+            .put("project_id", project.projectId)
+            .put("overhaul", OverhaulJson.write(project))
             .put("project_name", project.projectName)
             .put("model_file", project.modelFile)
             .put("dimensions_mm", project.dimensionsMm.toJsonArray())
@@ -37,7 +40,10 @@ object JsonProjectStore {
         val json = JSONObject(jsonText)
         val sensors = json.getJSONArray("sensors").mapObjects(::sensorFromJson)
         val markers = json.optJSONArray("markers")?.mapObjects(::markerFromJson) ?: markersFallback
-        return Project(
+        require(json.optInt("schema_version", 1) in 1..2) { "Deze projectversie wordt nog niet ondersteund." }
+        val project = Project(
+            projectId = json.optString("project_id").ifBlank { java.util.UUID.randomUUID().toString() },
+            migrationSource = if (json.optInt("schema_version", 1) == 1) "LEGACY" else null,
             projectName = json.optString("project_name", "Transformer A"),
             modelFile = json.optString("model_file", "transformer_model.glb"),
             dimensionsMm = json.optJSONArray("dimensions_mm")?.toMmPosition() ?: MmPosition(10000, 5000, 3200),
@@ -53,6 +59,7 @@ object JsonProjectStore {
             markers = markers,
             stlModels = json.optJSONArray("stl_models")?.mapObjects(::stlModelFromJson).orEmpty()
         )
+        return OverhaulJson.read(project, json.optJSONObject("overhaul"))
     }
 
     fun markersToJson(markers: List<Marker>): String =
@@ -111,16 +118,16 @@ object JsonProjectStore {
     fun saveProjectToJson(projectDir: File, project: Project): File {
         projectDir.mkdirs()
         val file = File(projectDir, "project.json")
-        file.writeText(projectToJson(project))
-        File(projectDir, "markers.json").writeText(markersToJson(project.markers))
-        File(projectDir, "sensors.json").writeText(projectToJson(project))
+        atomicWrite(file, projectToJson(project))
+        atomicWrite(File(projectDir, "markers.json"), markersToJson(project.markers))
+        atomicWrite(File(projectDir, "sensors.json"), projectToJson(project))
         return file
     }
 
     fun saveInstallationLog(projectDir: File, log: InstallationLog): File {
         projectDir.mkdirs()
         val file = File(projectDir, "installation_log.json")
-        file.writeText(logToJson(log))
+        atomicWrite(file, logToJson(log))
         return file
     }
 
@@ -142,13 +149,14 @@ object JsonProjectStore {
     fun arsensDir(context: Context): File =
         File(context.filesDir, "arsens").also { it.mkdirs() }
 
-    private fun sensorToJson(sensor: Sensor): JSONObject =
+    internal fun sensorToJson(sensor: Sensor): JSONObject =
         JSONObject()
             .put("order", sensor.order)
             .put("id", sensor.id)
             .put("name", sensor.name)
             .put("side", sensor.side)
             .put("position_mm", sensor.positionMm.toJsonArray())
+            .put("planned_target", sensor.plannedTarget?.let { JSONObject().put("position_mm", it.positionMm.toJsonArray()).put("tolerance_mm", it.toleranceMm) } ?: JSONObject.NULL)
             .put("normal", sensor.normal.toJsonArray())
             .put("tolerance_mm", sensor.toleranceMm)
             .put("instruction", sensor.instruction)
@@ -161,7 +169,7 @@ object JsonProjectStore {
                 sensor.driftCorrection?.let { put("drift_correction", driftCorrectionToJson(it)) }
             }
 
-    private fun sensorFromJson(json: JSONObject): Sensor =
+    internal fun sensorFromJson(json: JSONObject): Sensor =
         Sensor(
             order = json.optInt("order", 0),
             id = json.optString("id"),
@@ -198,7 +206,7 @@ object JsonProjectStore {
             poseMarkerIds = json.optJSONArray("pose_marker_ids")?.toIntList() ?: emptyList()
         )
 
-    private fun placementToJson(audit: SensorPlacementAudit): JSONObject =
+    internal fun placementToJson(audit: SensorPlacementAudit): JSONObject =
         JSONObject()
             .put("grade", audit.grade.wireName)
             .put("tracking_status", audit.trackingStatus)
@@ -219,7 +227,7 @@ object JsonProjectStore {
                 audit.fusionReason?.let { put("fusion_reason", it) }
             }
 
-    private fun placementFromJson(json: JSONObject): SensorPlacementAudit =
+    internal fun placementFromJson(json: JSONObject): SensorPlacementAudit =
         SensorPlacementAudit(
             grade = QualityGrade.fromWireName(json.optString("grade")),
             trackingStatus = json.optString("tracking_status"),
@@ -309,7 +317,7 @@ object JsonProjectStore {
             flipZ = optBoolean("flip_z", false)
         )
 
-    private fun resultToJson(result: InstallationResult): JSONObject =
+    internal fun resultToJson(result: InstallationResult): JSONObject =
         JSONObject()
             .put("sensor_id", result.sensorId)
             .put("expected_position_mm", result.expectedPositionMm.toJsonArray())
@@ -324,7 +332,7 @@ object JsonProjectStore {
             .put("photo_file", result.photoFile)
             .put("confirmed_at", result.confirmedAt)
 
-    private fun resultFromJson(json: JSONObject): InstallationResult =
+    internal fun resultFromJson(json: JSONObject): InstallationResult =
         InstallationResult(
             sensorId = json.optString("sensor_id"),
             expectedPositionMm = json.getJSONArray("expected_position_mm").toMmPosition(),

@@ -272,106 +272,7 @@ internal fun WorkflowProjectPickerScreen(state: WorkflowAppState) {
 }
 
 @Composable
-internal fun WorkflowStartScreen(state: WorkflowAppState) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ArSensBackground)
-            .safeDrawingPadding()
-    ) {
-        ArSensBlueprintBackground(
-            modifier = Modifier.fillMaxSize(),
-            skylineTop = true
-        )
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ArSensIconButton(icon = ArSensGlyph.Back, onClick = state::closeProject)
-                    Spacer(Modifier.weight(1f))
-                    // Zelfde hamburger-menu als de top bars op de overige schermen.
-                    ArSensHomeMenuButton(items = workflowTopBarMenuItems(state))
-                }
-            }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(state.project.projectName, color = ArSensInk, fontSize = 27.sp, fontWeight = FontWeight.Bold)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Text(
-                            "Laatst bijgewerkt: ${formatProjectUpdatedAt(state.activeProjectUpdatedAtMillis)}",
-                            color = ArSensMuted,
-                            fontSize = 14.sp
-                        )
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .background(Color(0xFF52D39B), RoundedCornerShape(50))
-                        )
-                    }
-                }
-            }
-            item { Spacer(Modifier.height(84.dp)) }
-            item { WorkflowMessage(state.message) }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    ArSensFeatureTile(
-                        title = "Camera",
-                        body = "Sensoren plaatsen en vastleggen",
-                        icon = ArSensGlyph.Navigation,
-                        tint = ArSensBlue,
-                        onClick = { state.chooseMode(WorkMode.OnTheFly) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(158.dp)
-                    )
-                    ArSensFeatureTile(
-                        title = "2D",
-                        body = "Bekijken, meten en voorbereiden",
-                        icon = ArSensGlyph.Checklist,
-                        tint = ArSensTeal,
-                        onClick = { state.chooseMode(WorkMode.Prepared) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(158.dp)
-                    )
-                }
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    ArSensFeatureTile(
-                        title = "3D weergave",
-                        body = "Bekijk en meet in 3D",
-                        icon = ArSensGlyph.Cube,
-                        tint = ArSensBlue,
-                        onClick = { state.go(WorkflowScreen.Stl) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(158.dp)
-                    )
-                    ArSensFeatureTile(
-                        title = "Rapport",
-                        body = "Analyseer en deel rapporten",
-                        icon = ArSensGlyph.Report,
-                        tint = Color(0xFF7A5CFF),
-                        onClick = { state.go(WorkflowScreen.Report) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(158.dp)
-                    )
-                }
-            }
-            item { WorkflowReferenceMethodCard(state) }
-            item { WorkflowAssemblyCard(state) }
-        }
-        // Onderste navigatiebalk verwijderd — navigatie zit nu in het hamburger-menu (top bar).
-    }
-}
+internal fun WorkflowStartScreen(state: WorkflowAppState) = WorkflowProjectOverview(state)
 
 /** Hamburger-knop voor de home-schermen (zelfde stijl als de overige icoonknoppen daar):
  *  opent een DropdownMenu met dezelfde [ArSensMenuItem]-regels als de glazen top bar. */
@@ -839,7 +740,10 @@ internal fun ArSensCreateProjectCard(state: WorkflowAppState) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
-            WorkflowReferenceMethodChoice(state.newReferenceGeometryMode, state.newWallDimensionSource,
+            Text("Begin met een naam. Daarna laad je een STL, kies je de maten en scan je de contour.", color = ArSensMuted)
+            var advanced by remember { mutableStateOf(false) }
+            TextButton({ advanced = !advanced }) { Text(if (advanced) "Minder opties" else "Maten of tagposities vooraf invoeren") }
+            if (advanced) WorkflowReferenceMethodChoice(state.newReferenceGeometryMode, state.newWallDimensionSource,
                 { state.newReferenceGeometryMode = it }, { state.newWallDimensionSource = it })
             if (state.newReferenceGeometryMode != ReferenceGeometryMode.ScannedWalls || state.newWallDimensionSource == WallDimensionSource.Entered) {
             Text("Trafo-afmetingen", color = ArSensInk, fontWeight = FontWeight.Bold)
@@ -855,9 +759,7 @@ internal fun ArSensCreateProjectCard(state: WorkflowAppState) {
             Text(
                 if (state.newReferenceGeometryMode == ReferenceGeometryMode.ScannedWalls)
                     "Bij Wanden scannen blijven de tankmaten beschermd tegen wijzigingen door 3D-import."
-                else "Met een 3D-assembly? Maak het project aan en importeer de delen via de kaart " +
-                    "„3D-model (assembly)” — de trafo-afmetingen worden dan van de tank overgenomen, " +
-                    "tenzij je ze op het projectscherm vergrendelt.",
+                else "Kies na het aanmaken per maat of handmatige invoer, STL of de scan leidend is.",
                 color = ArSensMuted,
                 fontSize = 12.sp
             )
@@ -884,12 +786,11 @@ internal fun WorkflowAssemblyCard(state: WorkflowAppState) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("3D-model (assembly)", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text("2 · CAD / STL", color = ArSensInk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             WorkflowStlLoadBar(state)
             if (state.project.stlModels.isEmpty()) {
                 Text(
-                    "Importeer de 3D-delen (tank, deksel, kern…). De app neemt de tankafmetingen " +
-                        "over als trafo-afmetingen en lijnt de delen automatisch uit.",
+                    "Importeer tank, deksel en eventuele andere delen. Controleer daarna de rol, units en oriëntatie in 3D. Kies bij Maten welke tankmaten je wilt gebruiken.",
                     color = ArSensMuted,
                     fontSize = 13.sp
                 )

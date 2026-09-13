@@ -135,6 +135,7 @@ import com.example.arsens.ar.tagPlacementFor
 import com.example.arsens.ar.tagPositionFor
 import com.example.arsens.ar.tagRotationFor
 import com.example.arsens.data.AppSettings
+import com.example.arsens.data.*
 import com.example.arsens.data.CoordinateFrameSettings
 import com.example.arsens.data.FloatVector
 import com.example.arsens.data.InstallationResult
@@ -394,13 +395,24 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
     var mode by mutableStateOf(WorkMode.Prepared)
     var cameraPlacementTarget by mutableStateOf(CameraPlacementTarget.Sensor)
-    var project by mutableStateOf(repository.loadInitialProject())
-    var log by mutableStateOf(repository.loadLog(project.projectName))
+    var project by mutableStateOf(repository.loadInitialProject().let { it.migrateLegacyMeasurements(repository.loadLog(it.projectName)) })
+    var log by mutableStateOf(repository.loadLog(project.projectName).let { legacy ->
+        (project.activeSession ?: project.sessions.lastOrNull())?.let { session ->
+            legacy.copy(startedAt = session.startedAt, operator = session.operator, results = session.currentResults())
+        } ?: legacy
+    })
     var projects by mutableStateOf(repository.listProjects())
     var activeProjectUpdatedAtMillis by mutableStateOf(repository.activeProjectSummary()?.updatedAtMillis)
     var newProjectName by mutableStateOf("")
-    var newReferenceGeometryMode by mutableStateOf(ReferenceGeometryMode.KnownTagPositions)
-    var newWallDimensionSource by mutableStateOf(WallDimensionSource.Entered)
+    var newReferenceGeometryMode by mutableStateOf(ReferenceGeometryMode.ScannedWalls)
+    var newWallDimensionSource by mutableStateOf(WallDimensionSource.Scanned)
+    var sessionName by mutableStateOf("")
+    var sessionOperator by mutableStateOf("")
+    var sessionPurpose by mutableStateOf("")
+    var programPreview by mutableStateOf<ARSensProgram?>(null)
+    var reportSessionId by mutableStateOf<String?>(null)
+    var armedSensorId by mutableStateOf<String?>(null)
+    var armedAction by mutableStateOf(MeasurementAction.PLACE)
     var wallScanActive by mutableStateOf(false)
     var wallScanId by mutableStateOf(0L)
     var wallScanSource by mutableStateOf(WallDimensionSource.Entered)
@@ -422,11 +434,14 @@ fun setDefaultTagSize(sizeMm: Int) {
     private var wallFootprintSamples: List<WallTagEstimate> = emptyList()
     private var wallFootprintDatum: WallVerticalDatum? = null
     var wallScanMessage by mutableStateOf<String?>(null)
-    private val wallSession = WallCalibrationSession()
+    private val wallSession = PersistentReferenceScan()
+    private var wallCandidateId: Int? = null
+    private var wallCandidateFrames = 0
     private var wallSolvedFrameId: Long? = null
     private var wallSolvedDatum: WallVerticalDatum? = null
     private var wallSolvedAssignments: List<WallTagAssignment> = emptyList()
     private var wallSolvedSource = WallDimensionSource.Entered
+    private var wallSolvedGraph = ReferenceGraph()
     private var wallEvidenceSequence = -1L
     private var wallLastFrameMillis = 0L
     private var wallRequestBaseRevision = 0
@@ -638,7 +653,7 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     val knownAprilTags: List<Marker>
         get() = savedAprilTags
-            .filter { it.active }
+            .filter { it.active && it.id < sensorTagStartId && project.sensors.none { sensor -> sensor.sensorTagId == it.id } }
 
     val savedAprilTags: List<Marker>
         get() = project.markers
@@ -668,9 +683,10 @@ fun setDefaultTagSize(sizeMm: Int) {
             refreshProjects()
             return
         }
-        project = loaded
+        project = loaded.migrateLegacyMeasurements(repository.loadLog(loaded.projectName))
         syncDimensionsFromProject()
         log = repository.loadLog(project.projectName)
+        refreshSessionResults()
         activeProjectUpdatedAtMillis = summary.updatedAtMillis
         resetArPoseState()
         message = "Project geopend: ${project.projectName}"
@@ -746,8 +762,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         project = repository.createProject(name, dimensions, newReferenceGeometryMode, newWallDimensionSource)
         log = repository.loadLog(project.projectName)
         newProjectName = ""
-        newReferenceGeometryMode = ReferenceGeometryMode.KnownTagPositions
-        newWallDimensionSource = WallDimensionSource.Entered
+        newReferenceGeometryMode = ReferenceGeometryMode.ScannedWalls
+        newWallDimensionSource = WallDimensionSource.Scanned
         syncDimensionsFromProject()
         resetArPoseState()
         refreshProjects()
@@ -765,6 +781,8 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun chooseMode(selected: WorkMode) {
+        reportSessionId = null
+        refreshSessionResults()
         mode = selected
         cameraPlacementTarget = if (selected == WorkMode.OnTheFly) CameraPlacementTarget.Sensor else CameraPlacementTarget.Tag
         navHistory.clear()
@@ -801,7 +819,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun go(target: WorkflowScreen) {
-        if (target in listOf(WorkflowScreen.Stl, WorkflowScreen.ReportMap2D, WorkflowScreen.Install) &&
+        if (target in listOf(WorkflowScreen.ReportMap2D, WorkflowScreen.Install) &&
             listOf(project.dimensionsMm.x, project.dimensionsMm.y, project.dimensionsMm.z).any { it <= 0 }) {
             screen = WorkflowScreen.Tags
             message = "Bepaal eerst de tankafmetingen via Wanden scannen."
@@ -998,7 +1016,7 @@ fun setDefaultTagSize(sizeMm: Int) {
      *  bewaarde camerastraal op het gecorrigeerde frame en werkt [Sensor.positionMm] bij. Eén keer
      *  per sensor (de straal wordt daarna gewist). Werkt alleen binnen dezelfde ARCore-sessie. */
     private fun maybeAutoCorrectSensors(result: AprilTagFrameResult) {
-        if (!autoCorrectSensorDrift || placementRays.isEmpty()) { resetCorrectionSettle(); return }
+        if (project.sessions.isNotEmpty() || !autoCorrectSensorDrift || placementRays.isEmpty()) { resetCorrectionSettle(); return }
         val anchorNow = result.arFromTransformer ?: run { resetCorrectionSettle(); return }
         if (!result.anchorSettled || result.referenceConflict || result.trackingStatus != ArTrackingStatus.TagCalibration ||
             result.detectionAgeMillis > PlacementQualityTuning.LOCK_FRESH_AGE_MILLIS
@@ -1851,7 +1869,7 @@ fun setDefaultTagSize(sizeMm: Int) {
      * De STL-delen van een assembly hebben elk hun EIGEN lokale oorsprong (vastgesteld bij de
      * 1485-assembly), dus zonder deze stap staan ze kriskras. Daarna fijnslijpen via de 3D-editor.
      */
-    suspend fun autoAlignAssembly(adoptTankDimensions: Boolean = true) {
+    suspend fun autoAlignAssembly(adoptTankDimensions: Boolean = false) {
         val built = buildTankFrame(adoptTankDimensions)
         if (built == null) {
             message = "Geen geldige 3D-meshes om uit te lijnen."
@@ -2310,7 +2328,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         saveSensorPointInternal(markInstalled = false)
     }
 
-    private fun saveSensorPointInternal(markInstalled: Boolean, placement: SensorPlacementAudit? = null, plane: TagPlane? = null): Sensor? {
+    private fun saveSensorPointInternal(markInstalled: Boolean, placement: SensorPlacementAudit? = null, plane: TagPlane? = null, tagMeasured: Boolean = false): Sensor? {
+        if (markInstalled && !canMeasure(sensorId)) return null
         val operatorPosition = operatorPositionOrNull(sensorX, sensorY, sensorZ)
         val tolerance = sensorTolerance.toIntOrNull()
         val id = sensorId.ifBlank { nextSensorId() }.trim()
@@ -2320,12 +2339,12 @@ fun setDefaultTagSize(sizeMm: Int) {
             return null
         }
         val boxPosition = project.coordinateMapper().operatorToBox(operatorPosition)
-        if (!boxPosition.insideBox(project.dimensionsMm)) {
+        if (!(if (markInstalled) boxPosition.insideMeasurementEnvelope(project.dimensionsMm) else boxPosition.insideBox(project.dimensionsMm))) {
             message = "Sensorpositie valt buiten de trafo-box. Controleer origin/asrichting of meet-XYZ."
             return null
         }
         val existingSensor = project.sensors.firstOrNull { it.id == id }
-        val target = existingSensor?.takeIf { markInstalled && (it.status == SensorStatus.Pending || it.origin == PlacementOrigin.Prepared) }
+        val target = existingSensor?.takeIf { markInstalled }
         val tagIdValue = sensorTagId.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
         if (sensorTagId.isNotBlank() && (tagIdValue == null || tagIdValue < sensorTagStartId)) {
             message = "Kies een sensor-tag-ID vanaf $sensorTagStartId of laat het veld leeg."
@@ -2362,12 +2381,9 @@ fun setDefaultTagSize(sizeMm: Int) {
                 ?: if (markInstalled) PlacementOrigin.OnTheFly else PlacementOrigin.Prepared
         )
         if (markInstalled) {
-            log = confirmSensorAtMeasuredPosition(
-                log = log, sensor = sensor, measuredPosition = boxPosition,
-                photo = null, confirmedAt = repository.nowIso()
-            )
-            sensor = sensor.copy(status = log.results.first { it.sensorId == sensor.id }.status)
-            repository.saveLog(log)
+            if (existingSensor == null) project = project.copy(sensors = project.sensors + sensor.copy(status = SensorStatus.Pending))
+            captureMeasurement(sensor, boxPosition, placement, tagMeasured)
+            return sensor
         }
         if (!markInstalled) {
             val change = updateSensorPlan(sensor, log)
@@ -2392,6 +2408,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun saveSensorAtCursor() {
+        if (!planSensorAtCursor && !canMeasure(sensorId)) return
         if (!sensorPlacementReady) {
             message = sensorPlacementBlockReason ?: "De AR-uitlijning is nog niet beschikbaar."
             return
@@ -2420,7 +2437,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         val tagRay = sensorTag?.let { tag ->
             imagePoseRayForPixel(aprilTagResult, tag.centerPx.xPx, tag.centerPx.yPx)
         }
-        val tagSurface = tagRay?.let { intersectTagPlaneExact(it, selectedTagPlane, project.dimensionsMm) }
+        val tagSurface = sensorTag?.let { com.example.arsens.ar.measureSensorTagCenter(aprilTagResult, it.id, sensorTagSizeMm) }
         if (sensorTag != null && tagSurface == null) {
             message = "Sensor-tag raakt het gekozen vlak niet. Kies het juiste trafovlak en scan opnieuw."
             return
@@ -2462,8 +2479,9 @@ fun setDefaultTagSize(sizeMm: Int) {
         val preservesTarget = project.sensors.any { it.id == sensorId &&
             (it.origin == PlacementOrigin.Prepared || it.status == SensorStatus.Pending) }
         val saved = saveSensorPointInternal(markInstalled = !planSensorAtCursor,
-            placement = audit.takeUnless { planSensorAtCursor }, plane = selectedTagPlane)
+            placement = audit.takeUnless { planSensorAtCursor }, plane = selectedTagPlane, tagMeasured = sensorTag != null)
         if (saved != null) {
+            if (!planSensorAtCursor) return
             if (!planSensorAtCursor) {
                 if (!preservesTarget) storePlacementRayFor(saved.id, saved.referenceTagId, placementRay, placementPlane)
                 selectNextUnplacedCameraSensor(saved.id)
@@ -2717,8 +2735,9 @@ fun setDefaultTagSize(sizeMm: Int) {
     val cameraSensorLabel: String get() = cameraSensor?.displayName() ?: "Nieuwe sensor $sensorId"
     val cameraSensorAction: String get() = when {
         planSensorAtCursor -> "Doelgebied voorbereiden"
-        cameraSensor?.status?.let { it != SensorStatus.Pending } == true -> "Opnieuw vastleggen"
-        else -> "Vastleggen"
+        project.activeSession?.status != SessionStatus.OPEN -> "Start eerst een sessie"
+        armedSensorId != sensorId -> if (resultFor(sensorId) != null) "Verplaatsen starten" else "Plaatsing starten"
+        else -> "Meting vastleggen"
     }
     val canSelectPreviousCameraSensor: Boolean get() = cameraSensors.let { sensors ->
         sensors.isNotEmpty() && sensors.indexOfFirst { it.id == sensorId } != 0
@@ -2726,6 +2745,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     val canSelectNextCameraSensor: Boolean get() = cameraSensor != null
 
     fun beginNewCameraSensor() {
+        armedSensorId = null
         beginNewSensor()
         planSensorAtCursor = false
         cameraPlacementTarget = CameraPlacementTarget.Sensor
@@ -2750,6 +2770,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun selectCameraSensor(sensor: Sensor) {
+        armedSensorId = null
         selectSensorForEdit(sensor)
         planSensorAtCursor = false
         scannedMeasuredPosition = null
@@ -2757,8 +2778,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (selectedTagPlane != plane) clearCursorForPlaneChange()
         selectedTagPlane = plane
         cameraPlacementTarget = CameraPlacementTarget.Sensor
-        message = if (sensor.status == SensorStatus.Pending) null else
-            "${sensor.displayName()} opnieuw vastleggen: richt op de nieuwe plek en druk op de opnameknop."
+        message = "${sensor.displayName()} geselecteerd. Kies Controleren of Verplaatsen om te meten."
     }
 
     private fun clearCursorForPlaneChange() {
@@ -2791,6 +2811,10 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun resetPlacement(id: String) {
+        if (project.sessions.isNotEmpty()) {
+            message = "Gebruik Verplaatsen voor een nieuwe meting of Undo voor de laatste actie in deze sessie."
+            return
+        }
         val sensor = project.sensors.firstOrNull { it.id == id } ?: return
         val change = resetSensorInstallation(sensor, log)
         project = project.copy(sensors = project.sensors.map { if (it.id == id) change.sensor else it })
@@ -2865,18 +2889,20 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     /** Zet de laatste bevestiging terug op te plaatsen; behoud de sensor en zijn doelgebied. */
     fun undoLastPlacedSensor() {
-        val last = log.results.maxByOrNull { it.confirmedAt }
-        if (last == null) { message = "Geen plaatsing om terug te zetten."; return }
-        resetPlacement(last.sensorId)
+        runCatching { project.undoSessionMeasurement(repository.nowIso()) }
+            .onSuccess { project = it; armedSensorId = null; refreshSessionResults(); saveProject(); message = "Laatste sessieactie teruggedraaid; historie behouden." }
+            .onFailure { message = it.message }
     }
 
     fun previousSensor() {
+        armedSensorId = null
         scannedMeasuredPosition = null
         currentSensorIndex = (currentSensorIndex - 1).coerceAtLeast(0)
         setCursorFromCurrentSensor()
     }
 
     fun nextSensor() {
+        armedSensorId = null
         scannedMeasuredPosition = null
         currentSensorIndex = (currentSensorIndex + 1).coerceAtMost((project.sensors.size - 1).coerceAtLeast(0))
         setCursorFromCurrentSensor()
@@ -2896,6 +2922,7 @@ fun setDefaultTagSize(sizeMm: Int) {
      *  sensor en zet diens werkelijke positie op het trafo-vlak klaar als gemeten waarde. Bevestigen
      *  blijft handmatig (de OK-knop → [confirmInstallation]). Gemodelleerd naar [saveMeasuredTag]. */
     fun confirmSensorByScannedTag() {
+        if (!canMeasure(currentSensor?.id.orEmpty())) return
         val result = aprilTagResult
         if (!sensorPlacementReady) {
             message = sensorPlacementBlockReason ?: "De AR-uitlijning is nog niet beschikbaar."
@@ -2919,10 +2946,8 @@ fun setDefaultTagSize(sizeMm: Int) {
             message = "Tag ${detection.id} hoort bij sensor ${sensor.id}. Selecteer eerst die sensor."
             return
         }
-        val measured = imagePoseRayForPixel(result, detection.centerPx.xPx, detection.centerPx.yPx)?.let {
-            intersectTagPlaneExact(it, selectedTagPlane, project.dimensionsMm)
-        }
-        if (measured == null || !measured.insideBox(project.dimensionsMm)) {
+        val measured = com.example.arsens.ar.measureSensorTagCenter(result, detection.id, sensorTagSizeMm)
+        if (measured == null || !measured.insideMeasurementEnvelope(project.dimensionsMm)) {
             message = "Kon de positie van tag ${detection.id} niet op de trafo bepalen. Houd een referentietag in beeld en kom dichter/rechter voor de sensor."
             return
         }
@@ -2937,6 +2962,8 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun confirmInstallation() {
         val sensor = currentSensor ?: return
+        if (armedSensorId != sensor.id) { armMeasurement(sensor.id, if (resultFor(sensor.id) == null) MeasurementAction.PLACE else MeasurementAction.MOVE); return }
+        if (!canMeasure(sensor.id)) return
         if (!sensorPlacementReady) { message = sensorPlacementBlockReason; return }
         val measuredPosition = scannedMeasuredPosition ?: arCursorPosition?.takeIf {
             arCursorInsideTransformer && (arCursorSource == "surface" || arCursorSource == "depth")
@@ -2946,27 +2973,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             return
         }
         setCursorFieldsFromBox(measuredPosition)
-        log = confirmSensorAtMeasuredPosition(
-            log = log,
-            sensor = sensor,
-            measuredPosition = measuredPosition,
-            photo = null,
-            confirmedAt = repository.nowIso()
-        )
-        project = project.copy(
-            sensors = project.sensors.map {
-                if (it.id == sensor.id) it.copy(status = log.results.first { r -> r.sensorId == sensor.id }.status, placement = buildPlacementAudit()) else it
-            }
-        )
-        repository.saveLog(log)
-        saveProject()
-        val viaScan = scannedMeasuredPosition != null
-        scannedMeasuredPosition = null
-        message = if (viaScan) {
-            "Sensor ${sensor.id} bevestigd via gescande tag op meet-XYZ ${operatorText(measuredPosition)}."
-        } else {
-            "Sensor ${sensor.id} gemeten met de cursor op meet-XYZ ${operatorText(measuredPosition)}."
-        }
+        captureMeasurement(sensor, measuredPosition, buildPlacementAudit(), scannedMeasuredPosition != null)
     }
 
     /** Verschuift de OPGESLAGEN positie van een tag (mm) — live AR-kalibratie: het hele model
@@ -3147,9 +3154,197 @@ fun setDefaultTagSize(sizeMm: Int) {
         position?.let { project.coordinateMapper().boxToOperator(it).toReadableMm() } ?: "-"
 
     private fun saveProject() {
+        project = project.copy(dimensionValues = project.dimensionValues.map { value ->
+            if (value.source != DimensionSource.STL) value else value.copy(confirmedByOperator = value.confirmedByOperator &&
+                project.stlModels.any { model -> model.role == StlPartRole.Tank && value.sourceReference == "${model.id}:${model.scalePercent}:${model.rotationDeg}" })
+        })
+        if (project.sessions.isNotEmpty()) refreshSessionResults()
         repository.saveProject(project)
         activeProjectUpdatedAtMillis = System.currentTimeMillis()
         refreshProjects()
+    }
+
+    fun startSession() {
+        if (project.dimensionValues.any { it.source != DimensionSource.SCANNED && !it.confirmedByOperator }) {
+            message = "Controleer de maatbron opnieuw: units, schaal of oriëntatie van het STL-deel is gewijzigd."; return
+        }
+        runCatching { project.startMeasurementSession(sessionName, sessionOperator, sessionPurpose, repository.nowIso()) }
+            .onSuccess {
+                project = it; sessionName = ""; sessionPurpose = ""; reportSessionId = null
+                resetArPoseState(); refreshSessionResults(); saveProject()
+                message = "${project.activeSession?.name} gestart. Scan een vaste referentietag om te lokaliseren."
+            }.onFailure { message = it.message }
+    }
+
+    fun previewProgram(uri: Uri, scope: CoroutineScope) {
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { repository.readProgram(uri) } }
+                .onSuccess { programPreview = it }.onFailure { message = "Programma niet geïmporteerd: ${it.message}" }
+        }
+    }
+
+    fun acceptProgram(policy: ProgramConflictPolicy) {
+        val program = programPreview ?: return
+        if (project.activeSession != null) { message = "Rond de actieve sessie af voordat je het sensorplan vervangt."; return }
+        runCatching {
+            require(program.sensors.all { it.positionMm.insideBox(project.dimensionsMm) }) { "Een doelpunt valt buiten de tank. Controleer maatvoering en projectframe." }
+            require(program.sensors.mapNotNull { it.sensorTagId }.all { id -> id >= sensorTagStartId && project.markers.none { it.id == id } }) { "Een sensor-tag conflicteert met het referentiebereik." }
+            ARSensProgramImport.merge(project.sensors, program, policy)
+        }.onSuccess { project = project.copy(sensors = it); programPreview = null; saveProject(); message = "Sensorplan geïmporteerd. Bestaande sessies blijven behouden." }
+            .onFailure { message = it.message }
+    }
+
+    fun tankDimensions(id: String): MmPosition? {
+        val model = project.stlModels.firstOrNull { it.id == id && it.role == StlPartRole.Tank } ?: return null
+        val mesh = stlMeshes[model.fileName]?.takeUnless { it.isEmpty } ?: return null
+        val ext = mesh.rotatedExtents(model.rotationDeg.x, model.rotationDeg.y, model.rotationDeg.z)
+        val scale = model.scalePercent / 100f
+        return MmPosition((ext[0] * scale).roundToInt(), (ext[1] * scale).roundToInt(), (ext[2] * scale).roundToInt())
+    }
+
+    fun applyDimensionSources(sources: List<DimensionSource>, tankId: String?, unitsConfirmed: Boolean) {
+        if (project.activeSession != null) { message = "Rond de sessie af voordat je de maatvoering wijzigt."; return }
+        val tank = tankId?.let(::tankDimensions)
+        if (DimensionSource.STL in sources && (!unitsConfirmed || tank == null)) { message = "Kies het tankdeel en bevestig units, schaal en oriëntatie."; return }
+        val fields = listOf(lengthMm, widthMm, heightMm)
+        val old = listOf(project.dimensionsMm.x, project.dimensionsMm.y, project.dimensionsMm.z)
+        val stl = tank?.let { listOf(it.x, it.y, it.z) }
+        val values = sources.mapIndexed { index, source -> when (source) {
+            DimensionSource.MANUAL -> fields[index].toIntOrNull() ?: -1
+            DimensionSource.STL -> stl!![index]
+            DimensionSource.SCANNED -> old[index].coerceAtLeast(0)
+        } }
+        if (values.withIndex().any { (i, value) -> sources[i] != DimensionSource.SCANNED && value !in 100..100000 }) {
+            message = "Gebruik maten tussen 100 en 100000 mm."; return
+        }
+        val model = project.stlModels.firstOrNull { it.id == tankId }
+        val revision = (project.dimensionValues.maxOfOrNull { it.revision } ?: 0) + 1
+        project = project.copy(dimensionsMm = MmPosition(values[0], values[1], values[2]), dimensionsLocked = true,
+            wallDimensionSource = if (sources.take(2).any { it == DimensionSource.SCANNED }) WallDimensionSource.Scanned else WallDimensionSource.Entered,
+            wallCalibration = null, dimensionValues = sources.mapIndexed { i, source -> DimensionValue(listOf("x", "y", "z")[i], values[i], source,
+                if (source == DimensionSource.STL) "${model!!.id}:${model.scalePercent}:${model.rotationDeg}" else null,
+                source != DimensionSource.SCANNED, revision) })
+        syncDimensionsFromProject(); saveProject()
+        message = "Maatvoering opgeslagen. Scan de referentietags om de fysieke ligging te bepalen."
+    }
+
+    fun closeSession() {
+        val session = project.activeSession ?: return
+        confirmRequest = WorkflowConfirmRequest("${session.name} afronden?",
+            "${session.acceptedMeasurements.size} opgeslagen metingen. Daarna blijft deze sessie alleen-lezen.", "Afronden") {
+            runCatching { project.closeMeasurementSession(repository.nowIso()) }.onSuccess {
+                project = it; armedSensorId = null; refreshSessionResults(); saveProject()
+                message = "${session.name} afgerond en bewaard."
+            }.onFailure { message = it.message }
+        }
+    }
+
+    fun viewSession(id: String?) {
+        reportSessionId = id
+        refreshSessionResults()
+        go(WorkflowScreen.Report)
+    }
+
+    val reportProject: Project get() {
+        val session = project.sessions.firstOrNull { it.id == reportSessionId } ?: return project
+        val revision = project.geometryRevisions.firstOrNull { it.id == session.geometryRevisionId } ?: return project
+        val results = session.currentResults().associateBy { it.sensorId }
+        return project.copy(dimensionsMm = revision.dimensionsMm, coordinateFrame = revision.coordinateFrame,
+            markers = revision.markers, stlModels = revision.stlModels, wallCalibration = revision.calibration,
+            sensors = session.sensorDefinitions.map { it.copy(status = results[it.id]?.status ?: SensorStatus.Pending) })
+    }
+
+    fun pauseRuntime() {
+        persistContourProgress()
+        val scanning = wallScanActive
+        resetArPoseState()
+        if (scanning) screen = WorkflowScreen.Start
+        message = "Richt opnieuw op een opgeslagen referentietag. Bevestigde data en conceptmetingen zijn bewaard."
+    }
+
+    private fun refreshSessionResults() {
+        val session = project.sessions.firstOrNull { it.id == reportSessionId }
+            ?: project.activeSession ?: project.sessions.lastOrNull() ?: return
+        log = log.copy(startedAt = session.startedAt, operator = session.operator, results = session.currentResults())
+        if (reportSessionId == null) project = project.copy(sensors = project.sensors.map { sensor ->
+            val result = log.results.firstOrNull { it.sensorId == sensor.id }
+            val actual = project.sessions.take(project.sessions.indexOf(session) + 1).flatMap { it.acceptedMeasurements }
+                .lastOrNull { it.sensorId == sensor.id && it.action != MeasurementAction.VERIFY }
+            sensor.copy(status = result?.status ?: SensorStatus.Pending,
+                placement = if (result == null) null else actual?.audit ?: sensor.placement)
+        })
+    }
+
+    fun cameraPrimaryAction() {
+        if (planSensorAtCursor) { saveSensorAtCursor(); return }
+        if (armedSensorId != sensorId) armMeasurement(sensorId,
+            if (resultFor(sensorId) == null) MeasurementAction.PLACE else MeasurementAction.MOVE)
+        else saveSensorAtCursor()
+    }
+
+    fun armMeasurement(id: String, action: MeasurementAction) {
+        if (project.activeSession?.status != SessionStatus.OPEN) {
+            message = "Start op het projectscherm eerst een nieuwe sessie."; return
+        }
+        if (project.measurementDraft != null) { message = "Sla de conceptmeting op of verwerp deze eerst."; return }
+        reportSessionId = null; refreshSessionResults()
+        armedSensorId = id; armedAction = action; scannedMeasuredPosition = null
+        message = if (action == MeasurementAction.VERIFY) "Controle actief. Richt op sensor $id en leg de meting vast."
+            else "Meting actief. De vorige positie blijft bewaard totdat je de nieuwe meting accepteert."
+    }
+
+    fun cancelMeasurement() {
+        project = project.copy(measurementDraft = null)
+        armedSensorId = null; scannedMeasuredPosition = null; saveProject()
+        message = "Meting geannuleerd. De vorige positie blijft behouden."
+    }
+
+    private fun canMeasure(id: String): Boolean {
+        val session = project.activeSession
+        if (session?.status != SessionStatus.OPEN) { message = "Start eerst een sessie op het projectscherm."; return false }
+        if (project.measurementDraft != null) { message = "Behandel eerst de openstaande conceptmeting."; return false }
+        if (armedSensorId != id) { message = "Selecteer de sensor en kies eerst Controleren of Verplaatsen."; return false }
+        val revision = project.geometryRevisions.firstOrNull { it.id == session.geometryRevisionId }
+        if (revision == null || revision.dimensionsMm != project.dimensionsMm || revision.markers != project.markers ||
+            revision.coordinateFrame != project.coordinateFrame || revision.calibration != project.wallCalibration) {
+            message = "De geometrie is gewijzigd. Rond deze sessie af en start een nieuwe sessie met de nieuwe geometrie."; return false
+        }
+        return true
+    }
+
+    private fun captureMeasurement(sensor: Sensor, position: MmPosition, audit: SensorPlacementAudit?, tagMeasured: Boolean = false) {
+        val session = project.activeSession ?: return
+        val definition = session.sensorDefinitions.firstOrNull { it.id == sensor.id } ?: sensor
+        if (session.sensorDefinitions.none { it.id == sensor.id }) project = project.copy(sessions = project.sessions.map {
+            if (it.id == session.id) it.copy(sensorDefinitions = it.sensorDefinitions + sensor) else it
+        })
+        val expected = if (definition.origin == PlacementOrigin.Prepared) definition.positionMm else position
+        val offset = position - expected
+        val error = distanceMm(offset)
+        val result = InstallationResult(sensor.id, expected, position, offset, error,
+            if (error <= definition.toleranceMm) SensorStatus.Ok else SensorStatus.Fail, null, repository.nowIso())
+        val refs = aprilTagResult.poseMarkerIds.count { id -> project.markers.any { it.id == id && it.isAprilTagCalibrationMarker() } }
+        val method = when {
+            !tagMeasured -> MeasurementMethod.MANUAL_CURSOR
+            refs >= 2 -> MeasurementMethod.DIRECT_MULTI_REF
+            refs == 1 -> MeasurementMethod.DIRECT_SINGLE_REF
+            aprilTagResult.calibrationAgeMillis < 3000 -> MeasurementMethod.ARCORE_WITH_RECENT_REF
+            else -> MeasurementMethod.ARCORE_ONLY
+        }
+        project = project.copy(measurementDraft = MeasurementDraft(session.id, sensor.id, armedAction, result,
+            method, sensor.sensorTagId, audit, repository.nowIso()))
+        saveProject()
+        message = "Conceptmeting van sensor ${sensor.id} klaar. Controleer en accepteer de positie."
+    }
+
+    fun acceptDraft() {
+        // A recovered draft remains only a draft until this explicit action after relocalization.
+        if (!sensorPlacementReady) { message = sensorPlacementBlockReason; return }
+        runCatching { project.acceptMeasurementDraft(repository.nowIso()) }.onSuccess {
+            project = it; armedSensorId = null; scannedMeasuredPosition = null; reportSessionId = null
+            refreshSessionResults(); saveProject()
+            message = "Meting opgeslagen in ${project.activeSession?.name}."
+        }.onFailure { message = it.message }
     }
 
     fun navigateBack() {
@@ -3414,16 +3609,17 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun beginWallScan() {
         resetArPoseState()
+        wallSession.restore(project.referenceGraph)
         wallScanId = System.nanoTime()
         wallRequestBaseRevision = arCalibrationRevision
         wallScanActive = true
         wallScanSource = project.wallDimensionSource
         wallScanSize = defaultTagSizeMm.toString()
         wallScanWall = CalibrationWall.Front
-        wallAssignments = emptyList()
+        wallAssignments = project.referenceGraph.assignments
         wallScanCounts = emptyMap()
         wallReadyTagIds = emptyList()
-        wallTopOffset = "0"; wallTopOverlapVerified = false
+        wallTopOffset = project.referenceGraph.topSurfaceOffsetMm.toString(); wallTopOverlapVerified = false
         wallSideHeight = project.dimensionsMm.z.takeIf { it > 0 }?.toString().orEmpty()
         wallSelectedTagId = null
         wallScanMessage = null
@@ -3432,15 +3628,21 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun cancelWallScan() {
+        persistContourProgress()
         resetArPoseState()
         screen = WorkflowScreen.Start
-        message = "Wandscan geannuleerd; opgeslagen projectgeometrie is behouden."
+        message = "Contour opgeslagen. Hervat later door een opgenomen referentietag te bekijken."
     }
 
     fun updateWallScanFrame(result: AprilTagFrameResult) {
         if (!wallScanActive || result.calibrationRevision != wallRequestBaseRevision) return
         val frame = result.wallScanFrame ?: wallScanFrame?.copy(tracking = false, observations = emptyList(), projectionFromReference = null) ?: return
         if (frame.sessionId != wallScanId) return
+        if (!frame.tracking || (wallScanFrame != null && wallScanFrame?.trackingFrameId != frame.trackingFrameId)) {
+            wallScanSolution = null; wallScanFootprint = null; wallLinkedPreview = null
+            wallFootprintSamples = emptyList(); wallSolvedFrameId = null
+            wallScanMessage = "Tracking opnieuw lokaliseren. Opgenomen referentietags zijn bewaard."
+        }
         wallScanFrame = frame
         wallLastFrameMillis = android.os.SystemClock.elapsedRealtime()
         wallSession.observe(if (wallScanSolution == null) frame else frame.copy(observations = emptyList()),
@@ -3455,7 +3657,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             wallTopOverlapVerified = false
             wallSeenTags = emptyList()
         } else {
-            if (frame.observations.isNotEmpty()) wallSeenTags = frame.observations
+            wallSeenTags = frame.observations
             if (!frame.tracking) wallSeenTags = emptyList()
             val sequence = frame.observations.firstOrNull()?.sequence
             if (sequence != null && sequence > wallEvidenceSequence) {
@@ -3463,6 +3665,15 @@ fun setDefaultTagSize(sizeMm: Int) {
                 wallScanCounts = wallAssignments.associate { it.tagId to wallSession.count(it.tagId) }
                 wallReadyTagIds = wallSession.estimates(wallAssignments).map { it.assignment.tagId }
                 wallTopOverlapVerified = wallSession.hasTopOverlap(wallReadyTagIds)
+                if (wallSelectedTagId == null) {
+                    val candidate = frame.observations.filter { it.tagId < sensorTagStartId && it.reprojectionErrorPx <= 1.5f }
+                        .sortedWith(compareBy<WallTagObservation> { o -> wallAssignments.any { it.tagId == o.tagId } }
+                            .thenBy { it.reprojectionErrorPx }.thenBy { it.distanceMm }).firstOrNull()?.tagId
+                    wallCandidateFrames = if (candidate == wallCandidateId) wallCandidateFrames + 1 else 1
+                    wallCandidateId = candidate
+                    if (candidate != null && wallCandidateFrames >= 3) wallSelectedTagId = candidate
+                }
+                persistContourProgress()
             }
         }
     }
@@ -3491,6 +3702,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         wallScanCounts = wallScanCounts - id
         wallAssignments = wallAssignments.filterNot { it.tagId == id } + WallTagAssignment(id, targetWall, size)
         wallSelectedTagId = id
+        persistContourProgress()
         wallScanMessage = null
     }
 
@@ -3500,6 +3712,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         wallAssignments = wallAssignments.filterNot { it.tagId == id }
         wallSession.removeTag(id)
         wallReadyTagIds = wallReadyTagIds.filterNot { it == id }
+        persistContourProgress()
     }
 
     private fun wallDatum(): WallVerticalDatum? {
@@ -3509,11 +3722,22 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     val wallCaptureTag: WallTagObservation? get() = wallSeenTags.firstOrNull { it.tagId == wallSelectedTagId }
-        ?: wallSeenTags.filter { o -> wallAssignments.none { it.tagId == o.tagId } }.minByOrNull { it.distanceMm }
-        ?: wallSeenTags.minByOrNull { it.distanceMm }
+
+    fun nextWallCandidate() { wallSelectedTagId = null; wallCandidateId = null; wallCandidateFrames = 0 }
+
+    private fun persistContourProgress() {
+        if (!wallScanActive) return
+        val graph = wallSession.graph.copy(assignments = wallAssignments,
+            topSurfaceOffsetMm = wallTopOffset.toIntOrNull() ?: 0, sideHeightMm = wallSideHeight.toIntOrNull())
+        if (graph != project.referenceGraph) {
+            project = project.copy(referenceGraph = graph)
+            repository.saveProject(project)
+        }
+    }
 
     val wallCaptureHint: String get() {
-        val tag = wallCaptureTag ?: return "Richt de camera op een tag. Kies daarna het vlak en leg de tag vast."
+        val tag = wallCaptureTag ?: return wallSelectedTagId?.let { "Tag $it blijft geselecteerd · tijdelijk niet in beeld. Richt opnieuw op deze tag of kies Volgende kandidaat." }
+            ?: "Richt de camera rustig op een tag. Kies daarna het vlak en leg de tag vast."
         val vertical = tag.normal.dot(tag.referenceUp)
         if (wallScanWall != CalibrationWall.Top && kotlin.math.abs(vertical) > 0.75)
             return "Deze tag lijkt horizontaal te liggen. Kies Boven, of zet hem vlak op de gekozen zijwand."
@@ -3533,7 +3757,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (wallSession.invalidated || wallScanFrame?.tracking != true) { wallScanMessage = wallSession.reason ?: "Herstel eerst tracking."; return }
         val datum = wallDatum() ?: run { wallScanMessage = "Vul een geldig hoogteverschil voor het bovenvlak in."; return }
         val samples = wallSession.estimates(wallAssignments).filter { it.assignment.wall != CalibrationWall.Top }
-        val result = WallCalibrationSolver.solveFootprint(project.dimensionsMm, wallScanSource, samples, datum)
+        val result = WallCalibrationSolver.solveFootprint(project.dimensionsMm, wallScanSource, samples, datum, project.dimensionValues)
         wallScanFootprint = result.solution
         if (result.solution != null) {
             wallFootprintSamples = samples.filter { it.assignment.tagId in result.solution.quality.usedTagIds }
@@ -3562,8 +3786,9 @@ fun setDefaultTagSize(sizeMm: Int) {
             ?: run { wallScanMessage = "Vul de verhoging van het bovenvlak in (0 op de tankbovenkant)."; return }
         val datum = wallFootprintDatum?.copy(topSurfaceOffsetMm = offset, sideHeightMm = wallSideHeight.toIntOrNull()?.takeIf { it > 0 }) ?: return
         // Keep the accepted side evidence fixed while learning arbitrary top tags in the same frame.
-        val tags = wallFootprintSamples + wallSession.estimates(wallAssignments).filter { it.assignment.wall == CalibrationWall.Top }
-        val result = WallCalibrationSolver.solve(project.dimensionsMm, wallScanSource, tags, datum)
+        val tags = wallSession.estimates(wallAssignments).filter { it.assignment.wall == CalibrationWall.Top ||
+            it.assignment.tagId in wallFootprintSamples.map { sample -> sample.assignment.tagId } }
+        val result = WallCalibrationSolver.solve(project.dimensionsMm, wallScanSource, tags, datum, project.dimensionValues)
         wallScanSolution = result.solution?.let { solved ->
             solved.copy(quality = solved.quality.copy(topOverlapVerified = wallSession.hasTopOverlap(solved.quality.usedTagIds), excludedTagIds =
                 wallAssignments.map { it.tagId }.filterNot { it in solved.quality.usedTagIds }.sorted()))
@@ -3572,6 +3797,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         wallSolvedDatum = datum
         wallSolvedAssignments = wallAssignments.toList()
         wallSolvedSource = wallScanSource
+        wallSolvedGraph = wallSession.graph.copy(assignments = wallSolvedAssignments, topSurfaceOffsetMm = datum.topSurfaceOffsetMm, sideHeightMm = datum.sideHeightMm)
         wallSolvedFrameId = wallScanFrame?.trackingFrameId
         wallScanMessage = result.reason
     }
@@ -3580,6 +3806,10 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun acceptWallScan() {
         val solved = wallScanSolution ?: return
+        if (!solved.quality.topOverlapVerified) {
+            wallScanMessage = "Bekijk een opgenomen zijtag en boventag tegelijk. De bovenkant is nog niet rechtstreeks geverifieerd."
+            return
+        }
         val datum = wallSolvedDatum ?: return
         if (wallSession.invalidated || wallScanFrame?.tracking != true || android.os.SystemClock.elapsedRealtime() - wallLastFrameMillis > 500L || wallSolvedFrameId != wallScanFrame?.trackingFrameId) {
             wallScanMessage = "De trackingreferentie veranderde; scan opnieuw."; return
@@ -3589,7 +3819,14 @@ fun setDefaultTagSize(sizeMm: Int) {
             geometrySignature = wallGeometrySignature(solved.markers, solved.quality.usedTagIds))
         project = project.copy(referenceGeometryMode = ReferenceGeometryMode.ScannedWalls,
             wallDimensionSource = wallSolvedSource, dimensionsMm = solved.dimensionsMm, dimensionsLocked = true,
-            markers = project.markers.filterNot { it.isAprilTagCalibrationMarker() } + solved.markers, wallCalibration = metadata)
+            markers = project.markers.filterNot { it.isAprilTagCalibrationMarker() } + solved.markers, wallCalibration = metadata,
+            referenceGraph = wallSolvedGraph)
+        val acceptedDimensions = listOf(solved.dimensionsMm.x, solved.dimensionsMm.y, solved.dimensionsMm.z)
+        project = project.copy(dimensionValues = listOf("x", "y", "z").mapIndexed { index, axis ->
+            project.dimensionValues.firstOrNull { it.axis == axis }?.let { it.copy(valueMm = acceptedDimensions[index], confirmedByOperator = true) }
+                ?: DimensionValue(axis, acceptedDimensions[index], if (index == 2 || wallSolvedSource == WallDimensionSource.Entered)
+                    DimensionSource.MANUAL else DimensionSource.SCANNED, confirmedByOperator = true)
+        })
         // Sensors, logs, coordinate convention and their recorded positions are untouched.
         saveProject()
         syncDimensionsFromProject()
@@ -3607,6 +3844,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     private fun resetArPoseState() {
+        armedSensorId = null
         wallScanActive = false
         wallScanFootprint = null
         wallLinkedPreview = null
@@ -3679,6 +3917,10 @@ internal data class WorkflowTagCenterPreview(
 
 internal fun MmPosition.insideBox(dimensions: MmPosition): Boolean =
     x in 0..dimensions.x && y in 0..dimensions.y && z in 0..dimensions.z
+
+/** Surface-mounted tags may protrude; preserve the measured coordinates instead of clamping. */
+internal fun MmPosition.insideMeasurementEnvelope(dimensions: MmPosition): Boolean =
+    x in -50..(dimensions.x + 50) && y in -50..(dimensions.y + 50) && z in -50..(dimensions.z + 50)
 
 internal fun MmPosition.snapToTransformerSurface(dimensions: MmPosition): PlaneHit? {
     val clampedX = x.coerceIn(0, dimensions.x)

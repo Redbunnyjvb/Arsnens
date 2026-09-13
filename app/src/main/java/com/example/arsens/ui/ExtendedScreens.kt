@@ -113,7 +113,8 @@ internal fun TransformerMapWorkspace(
     onDeleteTag: (Int) -> Unit,
     onResetPlacement: (String) -> Unit,
     onCamera: (String?) -> Unit,
-    overflowItems: List<ArSensMenuItem> = emptyList()
+    overflowItems: List<ArSensMenuItem> = emptyList(),
+    readOnly: Boolean = false
 ) {
     var selectedView by remember(initialView) { mutableStateOf(initialView) }
     var zoom by remember { mutableStateOf(1f) }
@@ -155,6 +156,7 @@ internal fun TransformerMapWorkspace(
         if (view != null && view != selectedView) changeView(view)
     }
     fun selectMode(value: MapEditMode) {
+        if (readOnly && value == MapEditMode.Sensor) return
         mode = value; select(null); menu = null
         if (value == MapEditMode.Sensor) onBeginPrepare()
     }
@@ -245,7 +247,7 @@ internal fun TransformerMapWorkspace(
                                 TextButton(enabled = index in 0 until sequence.lastIndex, onClick = { select(sequence[index + 1]) }) { Text("Volgende") }
                                 TextButton(onClick = { select(null) }) { Text("Sluit") }
                             }
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!readOnly) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(onClick = { moving = true }) { Text("Verplaatsen") }
                                 OutlinedButton(onClick = {
                                     if (selectedSensor != null) editing = selectedSensor

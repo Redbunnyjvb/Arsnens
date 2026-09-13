@@ -123,14 +123,25 @@ fun ArCoreCameraPanel(
         }
     }
 
-    DisposableEffect(hasPermission) {
-        if (hasPermission) {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(hasPermission, lifecycle) {
+        fun resume() { if (hasPermission) {
             surfaceView.onResume()
             renderer.onResume()
+        } }
+        fun pause() { renderer.onPause(); surfaceView.onPause() }
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> resume()
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> pause()
+                else -> Unit
+            }
         }
+        lifecycle.addObserver(observer)
+        if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) resume()
         onDispose {
-            renderer.onPause()
-            surfaceView.onPause()
+            lifecycle.removeObserver(observer)
+            pause()
         }
     }
     DisposableEffect(Unit) {

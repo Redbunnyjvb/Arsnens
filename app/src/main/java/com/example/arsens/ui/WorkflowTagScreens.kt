@@ -184,7 +184,7 @@ internal fun WorkflowTagsScreen(state: WorkflowAppState) {
         },
         message = state.message,
         primaryActionText = "${state.cameraSensorLabel}: ${state.cameraSensorAction}",
-        onPrimaryAction = state::saveSensorAtCursor,
+        onPrimaryAction = state::cameraPrimaryAction,
         onPreviousSensor = { state.stepCameraSensor(-1) },
         onNextSensor = { state.stepCameraSensor(1) },
         previousSensorEnabled = state.canSelectPreviousCameraSensor,
@@ -216,6 +216,7 @@ internal fun workflowTagCameraMenus(state: WorkflowAppState): List<WorkflowCamer
     }
     if (state.mode == WorkMode.OnTheFly) {
         menus += WorkflowCameraMenu("sensor", "Sensoren") {
+            WorkflowMeasurementActions(state, state.sensorId)
             WorkflowSensorSheet(state)
         }
     }

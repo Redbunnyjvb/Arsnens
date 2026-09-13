@@ -147,6 +147,14 @@ import kotlin.math.sin
 fun WorkflowApp() {
     val context = LocalContext.current
     val state = remember { WorkflowAppState(context) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) state.pauseRuntime()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
     BackHandler(enabled = state.screen != WorkflowScreen.ProjectPicker) {
         state.navigateBack()
     }
@@ -167,6 +175,7 @@ fun WorkflowApp() {
     }
     WorkflowConfirmDialog(state)
     WorkflowExportDialog(state)
+    WorkflowDraftDialog(state)
 }
 
 @Composable

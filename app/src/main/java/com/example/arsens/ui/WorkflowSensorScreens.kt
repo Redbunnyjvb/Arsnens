@@ -347,7 +347,7 @@ internal fun WorkflowInstallScreen(state: WorkflowAppState) {
             )
         },
         message = state.message,
-        primaryActionText = "Sensor zit hier",
+        primaryActionText = if (state.armedSensorId == sensor.id) "Meting vastleggen" else "Meting starten",
         onPrimaryAction = state::confirmInstallation,
         camera = {
             WorkflowCameraLayers(state, targetSensor = sensor)
@@ -365,6 +365,7 @@ internal fun WorkflowInstallScreen(state: WorkflowAppState) {
 internal fun workflowInstallCameraMenus(state: WorkflowAppState, sensor: Sensor): List<WorkflowCameraMenu> =
     listOf(
         WorkflowCameraMenu("sensor", "Sensor") {
+            WorkflowMeasurementActions(state, sensor.id)
             WorkflowInstallSensorPanel(state, sensor)
         },
         WorkflowCameraMenu("cursor", "Cursor") {

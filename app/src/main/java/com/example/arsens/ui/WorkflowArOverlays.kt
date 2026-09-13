@@ -210,14 +210,23 @@ internal fun WorkflowCameraLayers(state: WorkflowAppState, targetSensor: Sensor?
         })
         WorkflowSensorPointOverlay(displayedProject, state.overlayAprilTagResult)
     }
-    if (targetSensor != null) {
+    if (targetSensor != null && targetSensor.origin == com.example.arsens.data.PlacementOrigin.Prepared) {
         WorkflowCurrentSensorTargetOverlay(targetSensor, state.project, state.overlayAprilTagResult)
     }
+    state.armedSensorId?.let { id -> state.resultFor(id)?.measuredPositionMm?.let { old ->
+        Canvas(Modifier.fillMaxSize()) {
+            projectPositionToScreen(old, state.overlayAprilTagResult, preferImagePose = false)?.let { point ->
+                val center = Offset(point.xPx, point.yPx)
+                drawCircle(Color.White.copy(alpha = 0.65f), 18f, center,
+                    style = Stroke(width = 3f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6f, 6f))))
+            }
+        }
+    } }
     WorkflowCursorOverlay(
         cursor = state.arCursorPosition,
         insideTransformer = state.arCursorInsideTransformer,
         label = "${targetSensor?.displayName() ?: state.cameraSensorLabel} · " +
-            (if (targetSensor?.status?.let { it != SensorStatus.Pending } == true) "Opnieuw vastleggen" else state.cameraSensorAction),
+            state.cameraSensorAction,
         availabilityLabel = when {
             !state.sensorPlacementReady -> "AR-uitlijning nog niet gereed"
             state.arCursorPosition == null -> "Richt op ${state.selectedTagPlane.shortLabel}"

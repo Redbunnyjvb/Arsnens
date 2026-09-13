@@ -264,6 +264,14 @@ private class ArCoreCameraRenderer(
             }
             session = runCatching {
                 Session(context).also { arSession ->
+                    // CPU-image resolution, not screen resolution, determines distant-tag detail.
+                    // Keep the default if a device exposes no suitable higher-resolution stream.
+                    runCatching {
+                        arSession.getSupportedCameraConfigs(com.google.ar.core.CameraConfigFilter(arSession))
+                            .filter { it.imageSize.width <= 1920 && it.imageSize.height <= 1440 }
+                            .maxByOrNull { it.imageSize.width.toLong() * it.imageSize.height }
+                            ?.let { arSession.cameraConfig = it }
+                    }.onFailure { Log.w("ARSensCamera", "Using default CPU camera stream", it) }
                     val config = Config(arSession).apply {
                         updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                         focusMode = Config.FocusMode.AUTO
@@ -445,7 +453,7 @@ private class ArCoreCameraRenderer(
         }
         if (nativeAnchor == null && cameraTracking && packet != null) {
             val first = packet.result.standaloneWallPacket?.tags?.firstOrNull {
-                it.shortestEdgePx >= 40f && it.reprojectionErrorPx <= 1.5f
+                WallCaptureTuning.acceptsImage(it.shortestEdgePx, it.reprojectionErrorPx)
             }
             if (first != null) {
                 // Reuse native-anchor creation at the unknown tag's local origin. This is

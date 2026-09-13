@@ -19,7 +19,7 @@ internal object OverhaulJson {
     }
     fun graph(graph: ReferenceGraph): JSONObject = JSONObject().put("seed", graph.seedTagId)
         .put("top_offset_mm", graph.topSurfaceOffsetMm).put("height_mm", graph.sideHeightMm)
-        .put("assignments", JSONArray(graph.assignments.map { JSONObject().put("id", it.tagId).put("wall", it.wall.name).put("size", it.sizeMm) }))
+        .put("assignments", JSONArray(graph.assignments.map { JSONObject().put("id", it.tagId).put("wall", it.wall.name).put("size", it.sizeMm).put("label_source", it.labelSource) }))
         .put("nodes", JSONArray(graph.nodes.map { JSONObject().put("id", it.tagId).put("wall", it.wall.name).put("size", it.sizeMm)
             .put("pose", JSONArray(it.seedFromTag)).put("up", JSONArray(it.referenceUp)).put("samples", it.sampleCount)
             .put("scatter_mm", it.scatterMm).put("direct", it.directVerified) }))
@@ -30,7 +30,7 @@ internal object OverhaulJson {
     fun readGraph(json: JSONObject?): ReferenceGraph {
         if (json == null) return ReferenceGraph()
         return ReferenceGraph(json.text("seed")?.toInt(), json.optJSONArray("assignments").objects {
-            WallTagAssignment(it.getInt("id"), CalibrationWall.valueOf(it.getString("wall")), it.getInt("size"))
+            WallTagAssignment(it.getInt("id"), CalibrationWall.valueOf(it.getString("wall")), it.getInt("size"), it.optString("label_source", "OPERATOR"))
         }, json.optJSONArray("nodes").objects {
             ReferenceTagNode(it.getInt("id"), CalibrationWall.valueOf(it.getString("wall")), it.getInt("size"),
                 it.getJSONArray("pose").doubles(), it.getJSONArray("up").doubles(), it.getInt("samples"), it.getDouble("scatter_mm"), it.getBoolean("direct"))

@@ -190,7 +190,7 @@ class AprilTagDetector(
             // N frames op de achtergrond-executor, dus de extra rekentijd is acceptabel.
             set_aprilTagQuadDecimate(1.0f)
             set_aprilTagQuadSigma(0.0f)
-            set_minMarkerPerimeterRate(0.02)
+            set_minMarkerPerimeterRate(0.012)
             set_maxMarkerPerimeterRate(4.0)
         }
         ArucoDetector(Objdetect.getPredefinedDictionary(dictionaryId), parameters)

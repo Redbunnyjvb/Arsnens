@@ -13,7 +13,7 @@ import org.junit.Assert.*
 class WallWorkflowStateTest {
     private lateinit var store: WallTestStore
     private lateinit var state: WorkflowAppState
-    @Before fun setup() { store=WallTestStore();state=store.state() }
+    @Before fun setup() { store=WallTestStore();state=store.state();state.wallAutoCapture=false }
     @After fun cleanup() { store.close() }
     private fun create(source: WallDimensionSource = WallDimensionSource.Entered) {
         state.newProjectName="Walls"
@@ -52,22 +52,48 @@ class WallWorkflowStateTest {
         state.solveWallScan()
         assertNotNull(state.wallScanMessage,state.wallScanSolution)
     }
-    @Test fun measuredProjectStartsWithUnknownDimensionsAndCannotOpenPlacementOrModel() {
+    @Test fun measuredProjectAllowsStlImportBeforeDimensionsButBlocksPlacement() {
         create(WallDimensionSource.Scanned)
         assertEquals(MmPosition(0,0,0),state.project.dimensionsMm)
         assertEquals(state.project,store.state().project)
         assertFalse(state.sensorPlacementReady)
         state.go(WorkflowScreen.Stl)
-        assertEquals(WorkflowScreen.Tags,state.screen)
+        assertEquals(WorkflowScreen.Stl,state.screen)
         assertTrue(state.project.needsWallCalibration)
+    }
+    @Test fun oneConfirmedSideAutomaticallyLabelsOtherWallsAndKeepsOperatorOverride() {
+        create(WallDimensionSource.Scanned);state.beginWallScan();state.wallScanSize="100";state.wallAutoCapture=true
+        var sequence=0L
+        fun show(vararg ids: Int) {
+            SystemClock.sleep(100)
+            val result=packet(++sequence)
+            state.updateWallScanFrame(result.copy(wallScanFrame=result.wallScanFrame!!.let { it.copy(observations=it.observations.filter { o -> o.tagId in ids }) }))
+        }
+        repeat(4) { show(0) }
+        assertTrue(state.wallAssignments.isEmpty())
+        assertEquals(0,state.wallSelectedTagId)
+        state.selectWallScanFace(CalibrationWall.Front);state.assignWallTag(0)
+        repeat(9) { show(0) }
+        assertTrue(0 in state.wallReadyTagIds)
+        for (id in listOf(2,4,6,8)) {
+            repeat(24) { show(0,id) }
+            val assignment=state.wallAssignments.single { it.tagId==id }
+            assertEquals(WallTestGeometry.tags[id].assignment.wall,assignment.wall)
+            assertEquals("AUTOMATIC_NORMAL_GRAVITY",assignment.labelSource)
+            assertTrue(id in state.wallReadyTagIds)
+        }
+        state.wallSelectedTagId=2
+        state.selectWallScanFace(CalibrationWall.Front)
+        show(0,2)
+        assertEquals(CalibrationWall.Front,state.wallScanWall)
+        state.assignWallTag(2)
+        assertEquals("OPERATOR",state.wallAssignments.single { it.tagId==2 }.labelSource)
     }
     @Test fun acceptancePersistsBothSourcesAndKeepsSensorsAndLog() {
         for(source in WallDimensionSource.entries) {
             create(source)
             val target=MmPosition(350,0,450)
             state.project=state.project.copy(sensors=listOf(Sensor(1,"TEMP-A","Tank","Front",target,toleranceMm=50,instruction="Controleer tank")))
-            state.log=state.log.copy(results=listOf(InstallationResult("TEMP-A",target,MmPosition(355,0,450),
-                MmPosition(5,0,0),5,SensorStatus.Ok,null,"previous measurement")))
             val sensors=state.project.sensors;val log=state.log
             scan()
             assertFalse(state.sensorPlacementReady)
@@ -91,7 +117,7 @@ class WallWorkflowStateTest {
             assertEquals(reloaded.project,state.project)
         }
     }
-    @Test fun lostTrackingChangedFrameAndCameraErrorInvalidatePreviewWithoutSaving() {
+    @Test fun lostTrackingInvalidatesPreviewButKeepsPersistentContourEvidence() {
         for(kind in listOf("paused","frame","error")) {
             create();val before=state.project;scan()
             state.updateWallScanFrame(when(kind) {
@@ -100,7 +126,12 @@ class WallWorkflowStateTest {
                 else -> AprilTagFrameResult(calibrationRevision=state.arCalibrationRevision,errorMessage="camera unavailable")
             })
             assertNull(kind,state.wallScanSolution)
-            state.acceptWallScan();assertEquals(before,state.project)
+            state.acceptWallScan()
+            assertEquals(before.dimensionsMm,state.project.dimensionsMm)
+            assertEquals(before.markers,state.project.markers)
+            assertEquals(before.wallCalibration,state.project.wallCalibration)
+            assertTrue(state.project.referenceGraph.nodes.isNotEmpty())
+            assertEquals(state.project.referenceGraph,store.state().project.referenceGraph)
         }
     }
     @Test fun earlierScanPacketsCannotPopulateNewScanAndRepeatedImagesAreNotEvidence() {
@@ -111,6 +142,14 @@ class WallWorkflowStateTest {
         repeat(20) { state.updateWallScanFrame(first) }
         state.solveWallScan();assertNull(state.wallScanSolution)
         state.cancelWallScan();assertTrue(state.project.markers.isEmpty())
+    }
+    @Test fun partialContourRetainsManualHeightAcrossRestart() {
+        create(WallDimensionSource.Scanned);state.beginWallScan()
+        state.wallSideHeight="1250";state.wallTopOffset="15"
+        state.cancelWallScan()
+        val restored=store.state();restored.beginWallScan()
+        assertEquals("1250",restored.wallSideHeight)
+        assertEquals("15",restored.wallTopOffset)
     }
     @Test fun returningToKnownPositionsRetainsAcceptedGeometryAndDimensionsStayProtectedFromImport() {
         create();scan();state.acceptWallScan();val geometry=state.project.markers
@@ -127,13 +166,13 @@ class WallWorkflowStateTest {
         state.acceptWallScan();assertEquals(before,state.project)
         assertNotNull(state.wallScanMessage)
     }
-    @Test fun separateSideAndTopScansCanLinkThroughTheTrackedContourWithoutOverlap() {
+    @Test fun separateSideAndTopScansCannotBeAcceptedWithoutDirectOverlap() {
         create();scan(separateTop=true)
         assertFalse(state.wallTopOverlapVerified)
         assertNotNull(state.wallScanFootprint)
         assertNotNull(state.wallScanSolution)
-        state.acceptWallScan();assertTrue(state.project.hasWallCalibration)
-        assertFalse(state.project.wallCalibration!!.quality.topOverlapVerified)
+        state.acceptWallScan();assertFalse(state.project.hasWallCalibration)
+        assertNotNull(state.wallScanMessage)
     }
 
     @Test fun firstTopTagLinksTheContourAndFurtherTopTagsCanBeAddedFreely() {

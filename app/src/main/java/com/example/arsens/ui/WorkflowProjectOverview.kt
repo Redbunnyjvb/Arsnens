@@ -92,7 +92,7 @@ internal fun WorkflowSessionsCard(state: WorkflowAppState) {
 
 @Composable
 internal fun WorkflowDimensionsEditor(state: WorkflowAppState) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by state::dimensionEditorExpanded
     TextButton({ expanded = !expanded }) { Text(if (expanded) "Maten sluiten" else "Maatbron kiezen / maten instellen") }
     if (!expanded) return
     var sources by remember(state.project.dimensionValues) { mutableStateOf(List(3) { index ->
@@ -107,7 +107,7 @@ internal fun WorkflowDimensionsEditor(state: WorkflowAppState) {
             OutlinedButton({ menu = true }) { Text(when (sources[index]) { DimensionSource.MANUAL -> "Handmatig"; DimensionSource.STL -> "STL · tankdeel"; DimensionSource.SCANNED -> "Contour scannen" }) }
             DropdownMenu(menu, { menu = false }) {
                 DimensionSource.entries.filter { index != 2 || it != DimensionSource.SCANNED }.forEach { source ->
-                    DropdownMenuItem(text = { Text(source.name) }, onClick = { sources = sources.toMutableList().also { it[index] = source }; menu = false })
+                    DropdownMenuItem(text = { Text(when (source) { DimensionSource.MANUAL -> "Handmatig"; DimensionSource.STL -> "STL · tankdeel"; DimensionSource.SCANNED -> "Contour scannen" }) }, onClick = { sources = sources.toMutableList().also { it[index] = source }; menu = false })
                 }
             }
         }

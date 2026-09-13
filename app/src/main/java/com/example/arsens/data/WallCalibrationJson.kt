@@ -8,7 +8,7 @@ internal fun WallCalibrationData.toWallJson(): JSONObject = JSONObject()
     .put("dimensions_mm", JSONArray(listOf(dimensionsMm.x, dimensionsMm.y, dimensionsMm.z)))
     .put("dimension_source", dimensionSource.wireName).put("geometry_signature", geometrySignature)
     .put("wall_assignments", JSONArray(assignments.map { JSONObject().put("tag_id", it.tagId)
-        .put("wall", it.wall.name).put("size_mm", it.sizeMm) }))
+        .put("wall", it.wall.name).put("size_mm", it.sizeMm).put("label_source", it.labelSource) }))
     .put("datum", JSONObject().put("lower_tag_id", datum.lowerTagId).put("height_above_bottom_mm", datum.heightAboveBottomMm).put("top_surface_offset_mm", datum.topSurfaceOffsetMm)
         .apply { datum.sideHeightMm?.let { put("side_height_mm", it) }; datum.upperTagId?.let { put("upper_tag_id", it) }; datum.distanceBelowTopMm?.let { put("distance_below_top_mm", it) } })
     .put("quality", JSONObject().put("rms_mm", quality.rmsMm).put("max_residual_mm", quality.maxResidualMm)
@@ -25,7 +25,7 @@ internal fun JSONObject.readWallCalibration(): WallCalibrationData? = runCatchin
         MmPosition(d.getInt(0), d.getInt(1), d.getInt(2)),
         WallDimensionSource.entries.first { it.wireName == getString("dimension_source") },
         (0 until assignments.length()).map { index -> assignments.getJSONObject(index).let {
-            WallTagAssignment(it.getInt("tag_id"), CalibrationWall.valueOf(it.getString("wall")), it.getInt("size_mm"))
+            WallTagAssignment(it.getInt("tag_id"), CalibrationWall.valueOf(it.getString("wall")), it.getInt("size_mm"), it.optString("label_source", "OPERATOR"))
         } },
         WallVerticalDatum(datum.getInt("lower_tag_id"), datum.getInt("height_above_bottom_mm"),
             datum.optInt("upper_tag_id", -1).takeIf { it >= 0 }, datum.optInt("distance_below_top_mm", -1).takeIf { it >= 0 }, datum.optInt("top_surface_offset_mm", 0), datum.optInt("side_height_mm", 0).takeIf { it > 0 }),

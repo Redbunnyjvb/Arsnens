@@ -49,6 +49,22 @@ class PersistentReferenceScanTest {
         assertEquals(2, scan.graph.nodes.size)
         assertFalse(scan.hasTopOverlap(listOf(1, 2)))
     }
+    @Test fun conflictingVisibleReferencesBlockRuntimeAlignmentWithoutChangingSavedGeometry() {
+        val scan = PersistentReferenceScan()
+        repeat(12) { observe(scan, it) }
+        val saved = scan.graph
+        val time = 3000L
+        val observations = listOf(side, pose(120.0) * top).mapIndexed { i, tag ->
+            WallTagObservation(i+1,100,time,30,1,tag,Transform3D.identity(),WallVector(0.0,0.0,1.0),0.2f,100f)
+        }
+        scan.observe(WallScanFrame(1,1,true,observations,null),assignments,time)
+        assertNotNull(scan.reason)
+        assertTrue(scan.estimates(assignments).isEmpty())
+        assertEquals(saved,scan.graph)
+        observe(scan,31)
+        assertNull(scan.reason)
+        assertEquals(2,scan.estimates(assignments).size)
+    }
     @Test fun loopClosureReducesInconsistencyAndRejectsBadEdge() {
         val nodes = listOf(0.0, 1020.0, 2050.0).mapIndexed { i, x -> ReferenceTagNode(i + 1, CalibrationWall.Front, 100,
             pose(x).values.toList(), listOf(0.0, 0.0, 1.0), 12, 2.0, true) }

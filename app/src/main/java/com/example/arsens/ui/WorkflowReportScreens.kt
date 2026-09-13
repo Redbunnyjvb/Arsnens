@@ -150,7 +150,7 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
     val sensors = state.reportProject.sensors.sortedBy { it.order }
     val mapper = state.reportProject.coordinateMapper()
     // Voor de 3D-model-kaart: meshes lazy laden zodat de echte afmetingen (mm) getoond worden.
-    LaunchedEffect(state.project.stlModels) { state.ensureStlMeshesLoaded() }
+    LaunchedEffect(state.reportProject.stlModels) { state.ensureStlMeshesLoaded() }
     WorkflowShell(
         title = "Rapport",
         subtitle = "",
@@ -168,9 +168,9 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
                         WorkflowReportEntityRow(
                             name = "Tag ${tag.id.toString().padStart(3, '0')}",
                             coords = "${workflowReportCoords(mapper.boxToOperator(tag.positionMm))}  ·  ${tag.sizeMm} mm",
-                            plane = markerSurfaceLabel(tag, state.project.dimensionsMm),
+                            plane = markerSurfaceLabel(tag, state.reportProject.dimensionsMm),
                             dotColor = ArSensBlue,
-                            onClick = { state.selectTagForEdit(tag) }
+                            onClick = { if (state.reportSessionId == null) state.selectTagForEdit(tag) }
                         )
                         if (index < tags.lastIndex) WorkflowReportRowDivider()
                     }
@@ -188,7 +188,7 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
                             coords = workflowReportCoords(mapper.boxToOperator(sensor.positionMm)),
                             plane = sensor.side.ifBlank { "—" },
                             dotColor = ArSensTeal,
-                            onClick = { state.selectSensorForEdit(sensor) }
+                            onClick = { if (state.reportSessionId == null) state.selectSensorForEdit(sensor) }
                         )
                         if (index < sensors.lastIndex) WorkflowReportRowDivider()
                     }
@@ -198,11 +198,11 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
         item {
             // Assembly-overzicht: per STL-deel de werkelijke afmetingen in mm (geroteerde
             // bounding box × schaal). Tik op een deel om de transform-editor te openen.
-            WorkflowReportSectionCard(title = "3D-model", count = state.project.stlModels.size) {
-                if (state.project.stlModels.isEmpty()) {
+            WorkflowReportSectionCard(title = "3D-model", count = state.reportProject.stlModels.size) {
+                if (state.reportProject.stlModels.isEmpty()) {
                     WorkflowReportEmpty("Geen 3D-assembly — importeer delen via Open 3D.")
                 } else {
-                    state.project.stlModels.forEachIndexed { index, model ->
+                    state.reportProject.stlModels.forEachIndexed { index, model ->
                         val mesh = state.stlMeshes[model.fileName]
                         val dims = if (mesh != null && !mesh.isEmpty) {
                             val ext = mesh.rotatedExtents(model.rotationDeg.x, model.rotationDeg.y, model.rotationDeg.z)
@@ -220,7 +220,7 @@ internal fun WorkflowReportScreen(state: WorkflowAppState) {
                             dotColor = Color(stlPartColor(index)),
                             onClick = { state.navigateTo(WorkflowScreen.Stl) }
                         )
-                        if (index < state.project.stlModels.lastIndex) WorkflowReportRowDivider()
+                        if (index < state.reportProject.stlModels.lastIndex) WorkflowReportRowDivider()
                     }
                 }
             }

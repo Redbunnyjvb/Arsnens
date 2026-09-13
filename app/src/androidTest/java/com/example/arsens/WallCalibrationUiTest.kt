@@ -50,15 +50,17 @@ class WallCalibrationUiTest {
         state.updateWallScanFrame(AprilTagFrameResult(calibrationRevision=state.arCalibrationRevision,
             wallScanFrame=WallScanFrame(state.wallScanId,1,true,WallTestGeometry.observations(SystemClock.elapsedRealtime(),1),null)))
         compose.setContent { WorkflowWallCalibrationScreen(state) { Box(Modifier.fillMaxSize().background(Color(0xFF53626B))) } }
+        compose.onNodeWithText("Voor ▾").performClick()
         compose.onNodeWithText("Achter").performClick()
-        compose.onNodeWithText("Tag 0 op Achter vastleggen").assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick) { click ->
+        compose.onNodeWithText("Achter vastleggen").assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick) { click ->
             state.updateWallScanFrame(AprilTagFrameResult(calibrationRevision=state.arCalibrationRevision,
                 wallScanFrame=WallScanFrame(state.wallScanId,1,true,WallTestGeometry.observations(SystemClock.elapsedRealtime(),2),null)))
             assertTrue(click())
         }
         compose.runOnIdle { assertEquals(CalibrationWall.Back,state.wallAssignments.single().wall) }
         screenshot("wall-side-capture")
-        compose.onNodeWithText("Deksel / hoogte").performClick()
+        compose.onNodeWithText("Opties").performClick()
+        compose.onNodeWithText("Hoogte & dekseloffset").performClick()
         compose.onNodeWithText("Zijwandhoogte onder deksel (mm)").assertIsDisplayed()
         compose.onNodeWithText("Gereed").performClick()
         compose.onNodeWithText("Onderreferentie").assertDoesNotExist()
@@ -78,7 +80,7 @@ class WallCalibrationUiTest {
             ArDisplayProjection.fromOpenGlCamera(metrics.widthPixels,metrics.heightPixels,projection,view))
         compose.setContent { WorkflowWallCalibrationScreen(state) { Box(Modifier.fillMaxSize().background(Color(0xFF53626B))) } }
         compose.onNodeWithText("Controleer de tankcontour").assertIsDisplayed()
-        compose.onNodeWithTag("accept-wall-calibration").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithTag("accept-wall-calibration").assertIsDisplayed().assertIsNotEnabled()
         screenshot("wall-contour-preview")
         compose.onNodeWithText("Hele beeld").performClick()
         compose.onNodeWithTag("accept-wall-calibration").assertDoesNotExist()
@@ -88,29 +90,27 @@ class WallCalibrationUiTest {
         compose.onNodeWithText("Sluiten").performClick()
         compose.runOnIdle { assertFalse(state.wallScanActive) }
     }
-    @Test fun footprintPreviewLeadsToTopLinkingAndFreeExtraTagCollection() {
+    @Test fun automaticCaptureAndTechnicalDetailsLiveUnderOptions() {
         val state=store.state();state.beginWallScan()
-        state.wallScanFootprint=WallCalibrationSolver.solveFootprint(WallTestGeometry.dimensions,WallDimensionSource.Entered,
-            WallTestGeometry.tags,WallTestGeometry.datum).solution
         compose.setContent { WorkflowWallCalibrationScreen(state) { Box(Modifier.fillMaxSize().background(Color(0xFF53626B))) } }
-        compose.onNodeWithText("Contour 1000 × 800 mm").assertIsDisplayed()
-        compose.onNodeWithText("Verder: bovenkant koppelen").assertIsDisplayed().performClick()
-        compose.runOnIdle { assertTrue(state.wallTopStage);assertEquals(CalibrationWall.Top,state.wallScanWall) }
-        compose.onNodeWithText("Kies Boven en leg",substring=true).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Bovenkant koppelen").assertIsDisplayed()
-        screenshot("wall-top-linking")
+        compose.onNodeWithText("Automatisch opnemen").assertDoesNotExist()
+        compose.onNodeWithText("Contour bekijken").assertIsDisplayed()
+        compose.onNodeWithText("Opties").performClick()
+        compose.onNodeWithText("Automatisch opnemen").assertIsDisplayed()
+        compose.onNodeWithText("Contour tonen").assertIsDisplayed()
+        compose.onNodeWithText("Hoogte & dekseloffset").assertIsDisplayed()
+        screenshot("wall-scan-options")
     }
 
-    @Test fun horizontalTagStillHasAnExplicitCaptureActionForTheChosenFace() {
-        val state=store.state();state.beginWallScan();state.wallScanSize="100"
+    @Test fun horizontalTagIsSuggestedAsTopAndFirstCaptureRemainsExplicit() {
+        val state=store.state();state.beginWallScan();state.wallScanSize="100";state.wallSelectedTagId=8
         state.updateWallScanFrame(AprilTagFrameResult(calibrationRevision=state.arCalibrationRevision,
             wallScanFrame=WallScanFrame(state.wallScanId,1,true,
                 WallTestGeometry.observations(SystemClock.elapsedRealtime(),1).filter { it.tagId==8 },null)))
         compose.setContent { WorkflowWallCalibrationScreen(state) { Box(Modifier.fillMaxSize().background(Color(0xFF53626B))) } }
-        compose.onNodeWithText("Tag 8 op Voor vastleggen").assertIsDisplayed()
-        compose.onNodeWithText("Deze tag lijkt horizontaal",substring=true).assertIsDisplayed()
-        compose.onNodeWithText("Boven",useUnmergedTree=true).performClick()
-        compose.onNodeWithText("Tag 8 op Boven vastleggen").performSemanticsAction(SemanticsActions.OnClick) { click ->
+        compose.onNodeWithText("Boven vastleggen").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(state.wallAssignments.isEmpty()) }
+        compose.onNodeWithText("Boven vastleggen").performSemanticsAction(SemanticsActions.OnClick) { click ->
             state.updateWallScanFrame(AprilTagFrameResult(calibrationRevision=state.arCalibrationRevision,
                 wallScanFrame=WallScanFrame(state.wallScanId,1,true,
                     WallTestGeometry.observations(SystemClock.elapsedRealtime(),2).filter { it.tagId==8 },null)))

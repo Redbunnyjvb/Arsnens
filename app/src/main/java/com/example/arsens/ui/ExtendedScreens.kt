@@ -84,6 +84,7 @@ import com.example.arsens.data.MmPosition
 import com.example.arsens.data.Project
 import com.example.arsens.data.Sensor
 import com.example.arsens.data.SensorStatus
+import com.example.arsens.data.PlacementOrigin
 import com.example.arsens.data.asAprilTagCalibrationMarker
 import com.example.arsens.data.isAprilTagCalibrationMarker
 import java.util.Locale
@@ -219,10 +220,11 @@ internal fun TransformerMapWorkspace(
                     if (selectedSensor != null || selectedTag != null) {
                         Text(selectedSensor?.displayName() ?: "Tag ${selectedTag!!.id}", fontWeight = FontWeight.Bold)
                         selectedSensor?.let { sensor ->
-                            Text("${sensor.status.label} · radius ${sensor.toleranceMm} mm", fontSize = 13.sp)
-                            Text("Doel: ${sensor.positionMm.toReadableMm()}", fontSize = 12.sp)
+                            Text(sensor.status.label, fontSize = 13.sp)
+                            if (sensor.origin == PlacementOrigin.Prepared) Text("Doel: ${sensor.positionMm.toReadableMm()} · radius ${sensor.toleranceMm} mm", fontSize = 12.sp)
                             log.results.firstOrNull { it.sensorId == sensor.id }?.let { result ->
-                                Text("Gemeten: ${result.measuredPositionMm?.toReadableMm()} · afwijking ${result.distanceErrorMm} mm", fontSize = 12.sp)
+                                Text("Gemeten: ${result.measuredPositionMm?.toReadableMm()}" +
+                                    if (sensor.origin == PlacementOrigin.Prepared) " · afwijking ${result.distanceErrorMm} mm" else "", fontSize = 12.sp)
                             }
                         }
                         selectedTag?.let { Text("${it.sizeMm} × ${it.sizeMm} mm · ${it.positionMm.toReadableMm()}", fontSize = 12.sp) }
@@ -543,18 +545,22 @@ private fun DrawScope.drawTransformerMap(
         }
 
     project.sensors.forEach { sensor ->
+        val result = results[sensor.id]
+        val prepared = sensor.origin == PlacementOrigin.Prepared
+        val displayedPosition = if (prepared) sensor.positionMm else result?.measuredPositionMm ?: return@forEach
         val expected = dragPoint
             ?.takeIf { (dragTarget as? MapMoveTarget.Sensor)?.id == sensor.id }
             ?.toScreenPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
-            ?: sensor.positionMm.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
-        val result = results[sensor.id]
+            ?: displayedPosition.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
         val status = result?.status ?: sensor.status
         val color = mapStatusColor(status)
 
         val radius = sensor.toleranceMm.toFloat() / selectedView.horizontalMm(project.dimensionsMm) * mapWidth
-        drawCircle(color.copy(alpha = 0.14f), radius = radius, center = expected)
-        drawCircle(color.copy(alpha = 0.55f), radius = radius, center = expected, style = Stroke(2f))
-        result?.measuredPositionMm?.takeIf { sensor.status != SensorStatus.Pending }?.let { measured ->
+        if (prepared) {
+            drawCircle(color.copy(alpha = 0.14f), radius = radius, center = expected)
+            drawCircle(color.copy(alpha = 0.55f), radius = radius, center = expected, style = Stroke(2f))
+        }
+        result?.measuredPositionMm?.takeIf { prepared && sensor.status != SensorStatus.Pending }?.let { measured ->
             val actual = measured.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
             drawLine(color, expected, actual, strokeWidth = 2f)
             drawCircle(color, radius = 7f, center = actual)

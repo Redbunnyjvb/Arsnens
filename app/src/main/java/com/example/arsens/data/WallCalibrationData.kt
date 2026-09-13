@@ -13,7 +13,7 @@ enum class CalibrationWall(val label: String, val axis: Int, val positive: Boole
     Front("Voor", 1, false), Back("Achter", 1, true), Left("Links", 0, false), Right("Rechts", 0, true), Top("Boven", 2, true)
 }
 
-data class WallTagAssignment(val tagId: Int, val wall: CalibrationWall, val sizeMm: Int)
+data class WallTagAssignment(val tagId: Int, val wall: CalibrationWall, val sizeMm: Int, val labelSource: String = "OPERATOR")
 
 /** Offsets refer to tag CENTERS, never the printed paper edge. */
 data class WallVerticalDatum(

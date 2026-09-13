@@ -59,7 +59,21 @@ class SensorWorkflowStateTest {
         state.arCursorInsideTransformer = true
         assertTrue(state.sensorPlacementBlockReason, state.sensorPlacementReady)
     }
-    @Test fun planIn2DPlaceElsewhereThenResetAndReload() {
+    private fun startSession() {
+        state.project = state.project.copy(markers = listOf(Marker(0, "apriltag", 100, MmPosition(100, 0, 500), FloatVector(90f, 0f, 0f))))
+        state.sessionOperator = "test"
+        state.startSession()
+        assertNotNull(state.message, state.project.activeSession)
+    }
+    private fun capture(position: MmPosition, action: MeasurementAction = MeasurementAction.PLACE) {
+        state.armMeasurement(state.sensorId, action)
+        readyCursor(position)
+        state.saveSensorAtCursor()
+        assertNotNull(state.message, state.project.measurementDraft)
+        state.acceptDraft()
+        assertNull(state.message, state.project.measurementDraft)
+    }
+    @Test fun planIn2DPlaceElsewhereThenUndoAndReloadPreservesHistory() {
         val planned = MmPosition(300, 0, 400)
         val measured = MmPosition(600, 0, 400)
         state.saveSensorAtBoxPosition(planned)
@@ -67,9 +81,14 @@ class SensorWorkflowStateTest {
         assertEquals(SensorStatus.Pending, sensor.status)
         assertEquals(PlacementOrigin.Prepared, sensor.origin)
         assertNull(sensor.placement)
+        startSession()
         state.selectCameraSensor(sensor)
+        state.armMeasurement(sensor.id, MeasurementAction.PLACE)
         readyCursor(measured)
         state.saveSensorAtCursor()
+        assertTrue(state.log.results.isEmpty())
+        assertNotNull(state.project.measurementDraft)
+        state.acceptDraft()
         val installed = state.project.sensors.single()
         assertEquals("TEMP-A", installed.id)
         assertEquals("Temperatuur", installed.name)
@@ -77,14 +96,13 @@ class SensorWorkflowStateTest {
         assertEquals(SensorStatus.Fail, installed.status)
         assertNotNull(installed.placement)
         assertEquals(measured, state.log.results.single().measuredPositionMm)
-        assertNull(state.cameraSensor) // All planned sensors finished: visibly select a new ID.
-        state.stepCameraSensor(-1)
         assertEquals("TEMP-A", state.sensorId)
-        assertEquals("Opnieuw vastleggen", state.cameraSensorAction)
-        state.resetPlacement(installed.id)
+        state.undoLastPlacedSensor()
         val reloaded = WorkflowAppState(context)
         assertEquals(sensor, reloaded.project.sensors.single())
         assertTrue(reloaded.log.results.isEmpty())
+        assertEquals(1, reloaded.project.activeSession!!.measurements.size)
+        assertEquals("ACTION_REVERTED", reloaded.project.activeSession!!.actions.last().type)
     }
     @Test fun cameraPlanIsPendingWithRadiusAndWithoutPhysicalAudit() {
         state.planSensorAtCursor = true
@@ -98,45 +116,44 @@ class SensorWorkflowStateTest {
         assertTrue(state.log.results.isEmpty())
     }
     @Test fun freeCameraPlacementCreatesPhysicalMeasurement() {
-        readyCursor(MmPosition(300, 0, 400))
-        state.saveSensorAtCursor()
+        startSession()
+        capture(MmPosition(300, 0, 400))
         val sensor = state.project.sensors.single()
         assertEquals(PlacementOrigin.OnTheFly, sensor.origin)
         assertEquals(SensorStatus.Ok, sensor.status)
         assertNotNull(sensor.placement)
         assertEquals(sensor.positionMm, state.log.results.single().measuredPositionMm)
-        assertNotEquals(sensor.id, state.sensorId)
-        assertEquals("Nieuwe sensor ${state.sensorId}", state.cameraSensorLabel)
+        assertNull(sensor.plannedTarget)
+        assertEquals(sensor.id, state.sensorId)
     }
 
-    @Test fun autoAdvanceSkipsPlacedSensorsAndRevisitMovesOnlySelectedMeasurement() {
+    @Test fun selectionDoesNotMeasureAndMoveKeepsOtherSensorsAndEarlierMeasurement() {
         val target = MmPosition(300, 0, 400)
         val sensors = listOf("A-19", "B-2", "C-7").mapIndexed { index, id ->
             Sensor(index + 1, id, "Temperatuur $id", "Front", target, toleranceMm = 50, instruction = "")
         }
         state.project = state.project.copy(sensors = sensors)
+        startSession()
         state.selectCameraSensor(sensors[1])
-        readyCursor(target)
-        state.saveSensorAtCursor()
+        capture(target)
+        assertEquals("B-2", state.sensorId)
+        state.stepCameraSensor(1)
         assertEquals("C-7", state.sensorId)
-        readyCursor(target)
-        state.saveSensorAtCursor()
-        assertEquals("A-19", state.sensorId) // Wrap to remaining pending, not lexical ID order.
+        capture(target)
         val before = state.project.sensors
         val logBefore = state.log
-        state.stepCameraSensor(1)
+        state.selectCameraSensor(state.project.sensors.first { it.id == "B-2" })
         assertEquals("B-2", state.sensorId)
-        assertEquals("Opnieuw vastleggen", state.cameraSensorAction)
         assertEquals(before, state.project.sensors)
         assertEquals(logBefore, state.log)
-        readyCursor(MmPosition(600, 0, 400))
-        state.saveSensorAtCursor()
-        assertEquals("A-19", state.sensorId)
+        capture(MmPosition(600, 0, 400), MeasurementAction.MOVE)
+        assertEquals("B-2", state.sensorId)
         assertEquals(3, state.project.sensors.size)
         assertEquals(target, state.project.sensors.first { it.id == "B-2" }.positionMm)
         assertEquals(SensorStatus.Fail, state.project.sensors.first { it.id == "B-2" }.status)
         assertEquals(logBefore.results.first { it.sensorId == "C-7" }, state.log.results.first { it.sensorId == "C-7" })
         assertEquals("2 / 3 geplaatst", state.project.placementCountLabel)
+        assertEquals(3, state.project.activeSession!!.measurements.size)
     }
 
     @Test fun sensorNavigationHasBoundsAndNeverCarriesThePreviousTagOrPlanModeToANewSensor() {

@@ -46,15 +46,18 @@ class PersistentReferenceScan {
         frameId = frame.trackingFrameId
         if (!frame.tracking) return
         val valid = frame.observations.filter { o -> assignments.any { it.tagId == o.tagId && it.sizeMm == o.sizeMm } &&
-            nowMillis - o.timestampMillis in 0..250 && o.reprojectionErrorPx.isFinite() && o.reprojectionErrorPx <= 1.5f &&
-            o.shortestEdgePx >= 40 && o.distanceMm in 150.0..6000.0 }
+            nowMillis - o.timestampMillis in 0..250 && WallCaptureTuning.acceptsImage(o.shortestEdgePx, o.reprojectionErrorPx) &&
+            o.distanceMm in 150.0..6000.0 }
         if (valid.any { observation -> graph.nodes.any { it.tagId == observation.tagId } } || seedFromReference == null) {
             val known = valid.mapNotNull { observation -> graph.nodes.firstOrNull { it.tagId == observation.tagId }?.let { node ->
                 (solution().poses[node.tagId] ?: Transform3D(node.seedFromTag.toDoubleArray())) * observation.referenceFromTag.inverseRigid()
             } }
             if (known.isNotEmpty()) {
                 // Disagreeing fixed references require another view; do not silently drag the project.
-                if (known.any { distance(it, known.first()) > 25 || it.rotationAngleDegreesTo(known.first()) > 5 }) return
+                if (known.any { distance(it, known.first()) > 25 || it.rotationAngleDegreesTo(known.first()) > 5 }) {
+                    seedFromReference = null; live.clear(); pairs.clear(); reprojections.clear()
+                    return
+                }
                 seedFromReference = known.drop(1).foldIndexed(known.first()) { i, mean, pose ->
                     mean.blendRigidAtPoint(pose, 1.0 / (i + 2), doubleArrayOf(0.0, 0.0, 0.0)) }
             } else if (graph.nodes.isEmpty() && valid.isNotEmpty()) {

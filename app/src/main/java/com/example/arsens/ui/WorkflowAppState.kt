@@ -418,6 +418,12 @@ fun setDefaultTagSize(sizeMm: Int) {
     var wallScanSource by mutableStateOf(WallDimensionSource.Entered)
     var wallScanSize by mutableStateOf("100")
     var wallScanWall by mutableStateOf(CalibrationWall.Front)
+    var wallAutoCapture by mutableStateOf(true)
+    var wallSuggestedFace by mutableStateOf<CalibrationWall?>(null)
+    private var wallManualFaceTagId: Int? = null
+    private var wallSuggestionKey: Pair<Int, CalibrationWall>? = null
+    private var wallSuggestionFrames = 0
+    private var wallSuggestionSince = 0L
     var wallAssignments by mutableStateOf<List<WallTagAssignment>>(emptyList())
     var wallTopOffset by mutableStateOf("0")
     var wallSideHeight by mutableStateOf("")
@@ -1836,28 +1842,9 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
     }
 
-    /** Vraagt eerst bevestiging vóór [autoAlignAssembly]: "Lijn uit op tank" herberekent de
-     *  trafo-afmetingen (de box) uit de tankwanden — tenzij de maten vergrendeld zijn — en kan
-     *  punten op de verre vlakken verschuiven. Zonder tags/sensoren meteen uitvoeren. */
+    /** Explicit assembly placement; dimensional sources are chosen separately. */
     fun requestAutoAlignAssembly(scope: CoroutineScope) {
-        if (project.markers.isEmpty() && project.sensors.isEmpty()) {
-            scope.launch { autoAlignAssembly() }
-            return
-        }
-        val d = project.dimensionsMm
-        confirmRequest = WorkflowConfirmRequest(
-            title = "Lijn uit op tank?",
-            body = if (project.dimensionsLocked) {
-                "De 3D-delen worden op de tankwanden uitgelijnd. De trafo-afmetingen zijn vergrendeld " +
-                    "en blijven ${d.x}×${d.y}×${d.z} mm; tags en sensoren behouden hun mm-positie."
-            } else {
-                "Dit HERBEREKENT de trafo-afmetingen (de box) uit de tankwanden en lijnt de delen uit. " +
-                    "Huidige box: ${d.x}×${d.y}×${d.z} mm. Tags/sensoren houden hun mm-positie, maar punten " +
-                    "op de verre vlakken (achter/rechts/boven) verschuiven mee met het nieuwe kader. Wil je " +
-                    "de box behouden, vergrendel dan eerst de maten."
-            },
-            confirmText = "Lijn uit"
-        ) { scope.launch { autoAlignAssembly() } }
+        scope.launch { autoAlignAssembly() }
     }
 
     /**
@@ -1906,29 +1893,13 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
     }
 
-    /** Herberekent ALLEEN de box-maten uit het 3D-model (tank/deksel-wandbox); de delen blijven
-     *  staan. Respecteert vergrendelde maten — ontgrendel eerst om te overschrijven. */
+    var dimensionEditorExpanded by mutableStateOf(false)
+
+    /** All dimension changes go through the same explicit source and units confirmation. */
     fun recomputeBoxFromStl(scope: CoroutineScope) {
-        scope.launch {
-            if (project.dimensionsLocked) {
-                message = "Maten zijn vergrendeld — ontgrendel eerst om de box uit het model te halen."
-                return@launch
-            }
-            val built = buildTankFrame(adoptTankDimensions = true)
-            if (built == null) {
-                message = "Geen geldige 3D-meshes om de box te berekenen."
-                return@launch
-            }
-            val stl = built.first.dims
-            if (stl == project.dimensionsMm) {
-                message = "Box is al ${stl.x}×${stl.y}×${stl.z} mm."
-                return@launch
-            }
-            project = project.copy(dimensionsMm = stl)
-            syncDimensionsFromProject()
-            saveProject()
-            message = "Box uit 3D-model: ${stl.x}×${stl.y}×${stl.z} mm (delen ongewijzigd)."
-        }
+        dimensionEditorExpanded = true
+        go(WorkflowScreen.Start)
+        message = "Kies per as de maatbron en controleer de STL-schaal."
     }
 
     /** Importeert STL's en vraagt daarna of we ze automatisch op de tank plaatsen (i.p.v. stil
@@ -3620,8 +3591,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         wallScanCounts = emptyMap()
         wallReadyTagIds = emptyList()
         wallTopOffset = project.referenceGraph.topSurfaceOffsetMm.toString(); wallTopOverlapVerified = false
-        wallSideHeight = project.dimensionsMm.z.takeIf { it > 0 }?.toString().orEmpty()
-        wallSelectedTagId = null
+        wallSideHeight = (project.referenceGraph.sideHeightMm ?: project.dimensionsMm.z.takeIf { it > 0 })?.toString().orEmpty()
+        nextWallCandidate()
         wallScanMessage = null
         wallSolvedFrameId = null
         screen = WorkflowScreen.Tags
@@ -3645,8 +3616,14 @@ fun setDefaultTagSize(sizeMm: Int) {
         }
         wallScanFrame = frame
         wallLastFrameMillis = android.os.SystemClock.elapsedRealtime()
+        val neededRelocalization = wallSession.reason != null
         wallSession.observe(if (wallScanSolution == null) frame else frame.copy(observations = emptyList()),
             wallAssignments, android.os.SystemClock.elapsedRealtime())
+        if (neededRelocalization && wallSession.reason == null) wallScanMessage = null
+        if (wallSession.reason != null) {
+            wallScanSolution = null; wallScanFootprint = null; wallLinkedPreview = null
+            wallReadyTagIds = emptyList(); wallScanCounts = emptyMap()
+        }
         if (wallSession.invalidated) {
             wallScanSolution = null
             wallScanFootprint = null
@@ -3659,12 +3636,18 @@ fun setDefaultTagSize(sizeMm: Int) {
         } else {
             wallSeenTags = frame.observations
             if (!frame.tracking) wallSeenTags = emptyList()
+            if (wallSeenTags.isEmpty() || (wallSelectedTagId != null && wallCaptureTag == null)) {
+                wallSuggestionKey = null; wallSuggestionFrames = 0; wallSuggestedFace = null
+                wallCandidateFrames = 0; wallCandidateId = null
+            }
             val sequence = frame.observations.firstOrNull()?.sequence
             if (sequence != null && sequence > wallEvidenceSequence) {
                 wallEvidenceSequence = sequence
                 wallScanCounts = wallAssignments.associate { it.tagId to wallSession.count(it.tagId) }
                 wallReadyTagIds = wallSession.estimates(wallAssignments).map { it.assignment.tagId }
                 wallTopOverlapVerified = wallSession.hasTopOverlap(wallReadyTagIds)
+                if (wallAutoCapture && wallSelectedTagId in wallReadyTagIds && frame.observations.any { observation ->
+                        observation.tagId !in wallReadyTagIds && wallAssignments.none { it.tagId == observation.tagId } }) nextWallCandidate()
                 if (wallSelectedTagId == null) {
                     val candidate = frame.observations.filter { it.tagId < sensorTagStartId && it.reprojectionErrorPx <= 1.5f }
                         .sortedWith(compareBy<WallTagObservation> { o -> wallAssignments.any { it.tagId == o.tagId } }
@@ -3673,18 +3656,20 @@ fun setDefaultTagSize(sizeMm: Int) {
                     wallCandidateId = candidate
                     if (candidate != null && wallCandidateFrames >= 3) wallSelectedTagId = candidate
                 }
+                updateWallRecognition()
                 persistContourProgress()
             }
         }
     }
 
     fun selectWallScanFace(wall: CalibrationWall) {
+        wallManualFaceTagId = wallSelectedTagId
         wallScanWall = wall
         if (wall == CalibrationWall.Top && wallScanFootprint != null) wallTopStage = true
         wallScanMessage = null
     }
 
-    fun assignWallTag(id: Int) {
+    fun assignWallTag(id: Int, automatic: Boolean = false) {
         if (wallScanSolution != null) return
         val observed = wallSeenTags.firstOrNull { it.tagId == id } ?: return
         if (android.os.SystemClock.elapsedRealtime() - observed.timestampMillis > 300L || wallScanFrame?.tracking != true) {
@@ -3696,11 +3681,12 @@ fun setDefaultTagSize(sizeMm: Int) {
             ?: run { wallScanMessage = "Voer de zwarte tagmaat in (10–2000 mm)."; return }
         if (existing?.wall == targetWall && existing.sizeMm == size) return
         if (wallScanFootprint != null && (targetWall != CalibrationWall.Top || (existing != null && existing.wall != CalibrationWall.Top))) editWallFootprint()
-        selectWallScanFace(targetWall)
+        if (!automatic) { selectWallScanFace(targetWall); wallManualFaceTagId = id }
         wallSession.removeTag(id)
         wallReadyTagIds = wallReadyTagIds.filterNot { it == id }
         wallScanCounts = wallScanCounts - id
-        wallAssignments = wallAssignments.filterNot { it.tagId == id } + WallTagAssignment(id, targetWall, size)
+        wallAssignments = wallAssignments.filterNot { it.tagId == id } + WallTagAssignment(id, targetWall, size,
+            if (automatic) "AUTOMATIC_NORMAL_GRAVITY" else "OPERATOR")
         wallSelectedTagId = id
         persistContourProgress()
         wallScanMessage = null
@@ -3723,7 +3709,57 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     val wallCaptureTag: WallTagObservation? get() = wallSeenTags.firstOrNull { it.tagId == wallSelectedTagId }
 
-    fun nextWallCandidate() { wallSelectedTagId = null; wallCandidateId = null; wallCandidateFrames = 0 }
+    fun nextWallCandidate() {
+        wallSelectedTagId = null; wallCandidateId = null; wallCandidateFrames = 0
+        wallManualFaceTagId = null; wallSuggestedFace = null; wallSuggestionKey = null; wallSuggestionFrames = 0
+    }
+
+    private fun updateWallRecognition() {
+        val tag = wallCaptureTag ?: run { wallSuggestionKey = null; wallSuggestionFrames = 0; return }
+        val references = wallSession.estimates(wallAssignments)
+        val suggestion = recognizeWall(tag, references)
+        wallSuggestedFace = suggestion?.wall
+        val assigned = wallAssignments.firstOrNull { it.tagId == tag.tagId }
+        if (wallManualFaceTagId == tag.tagId) return
+        if (assigned != null) { wallScanWall = assigned.wall; return }
+        if (suggestion == null) {
+            wallSuggestionKey = null; wallSuggestionFrames = 0
+            if (references.none { it.assignment.wall != CalibrationWall.Top }) wallScanWall = CalibrationWall.Front
+            return
+        }
+        wallScanWall = suggestion.wall
+        if (suggestion.wall == CalibrationWall.Top && wallScanFootprint != null) wallTopStage = true
+        val key = tag.tagId to suggestion.wall
+        if (key != wallSuggestionKey) { wallSuggestionKey = key; wallSuggestionFrames = 0; wallSuggestionSince = tag.timestampMillis }
+        wallSuggestionFrames++
+        // First semantic side is always chosen by the operator. Subsequent stable normals can be captured automatically.
+        if (wallAutoCapture && references.any { it.assignment.wall != CalibrationWall.Top } &&
+            wallSuggestionFrames >= 5 && tag.timestampMillis - wallSuggestionSince >= 400 &&
+            WallCaptureTuning.acceptsImage(tag.shortestEdgePx, tag.reprojectionErrorPx)) {
+            assignWallTag(tag.tagId, automatic = true)
+        }
+    }
+
+    val wallShortStatus: String get() {
+        wallSession.reason?.let { return "Richt op een opgeslagen tag" }
+        if (wallScanFrame?.tracking != true) return "Tracking zoeken"
+        val tag = wallCaptureTag ?: return wallSelectedTagId?.let { "Tag $it · uit beeld" } ?: "Richt op een tag"
+        if (tag.shortestEdgePx < WallCaptureTuning.MIN_EDGE_PX) return "Tag te klein · grotere tag of dichterbij"
+        if (!WallCaptureTuning.acceptsImage(tag.shortestEdgePx, tag.reprojectionErrorPx)) return "Tag onscherp of te schuin"
+        if (tag.tagId in wallReadyTagIds) return "Tag ${tag.tagId} · opgenomen"
+        val count = wallScanCounts[tag.tagId] ?: 0
+        return if (count > 0) "Houd stil · $count/${WallCaptureTuning.minimumSamples(tag.shortestEdgePx)} metingen"
+            else if (wallSession.estimates(wallAssignments).none { it.assignment.wall != CalibrationWall.Top }) "Bevestig de eerste zijde"
+            else if (wallSuggestedFace == null) "Vlak onduidelijk · controleer de zijde"
+            else "${wallScanWall.label} herkend"
+    }
+
+    fun calculateContour() {
+        if (wallScanFootprint == null) solveWallFootprint()
+        if (wallScanFootprint != null && wallReadyTagIds.any { id -> wallAssignments.any { it.tagId == id && it.wall == CalibrationWall.Top } }) {
+            startWallTopStage(); solveWallScan()
+        }
+    }
 
     private fun persistContourProgress() {
         if (!wallScanActive) return

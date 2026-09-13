@@ -72,168 +72,7 @@ internal fun WorkflowReferenceMethodCard(state: WorkflowAppState) {
 }
 
 @Composable
-internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Composable () -> Unit = {
-    ArCoreCameraPanel(emptyList(), state::updateWallScanFrame, Modifier.fillMaxSize(),
-        tagDictionary = state.tagDictionary, calibrationRevision = state.arCalibrationRevision,
-        wallScanRequest = state.wallScanRequest)
-}) {
-    var detailsVisible by remember(state.wallScanId) { mutableStateOf(true) }
-    var contourVisible by remember(state.wallScanId) { mutableStateOf(true) }
-    var settings by remember { mutableStateOf<String?>(null) }
-    var overview by remember { mutableStateOf(false) }
-    val preview = state.wallScanSolution ?: state.wallLinkedPreview ?: state.wallScanFootprint
-    BackHandler { state.cancelWallScan() }
-    MaterialTheme(colorScheme = WorkflowCameraDarkScheme) {
-        Box(Modifier.fillMaxSize().background(WorkflowCameraDarkScheme.background)) {
-            if (state.wallScanActive) {
-                camera()
-                if (contourVisible) WorkflowWallPreview(state.wallScanFrame, preview,
-                    state.wallScanSolution == null && state.wallLinkedPreview == null)
-                WorkflowWallTagOverlay(state.wallScanFrame, state.wallAssignments, state.wallReadyTagIds, state.wallScanWall)
-            }
-            Surface(Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(12.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp), color = WorkflowCameraPanel, contentColor = Color.White) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Tankreferentie", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                        TextButton(onClick = state::cancelWallScan) { Text("Sluiten") }
-                    }
-                    if (state.wallScanActive) Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (state.wallScanFrame?.tracking == true) "● Tracking actief" else "Tracking zoeken…",
-                            Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        TextButton(onClick = { contourVisible = !contourVisible }, enabled = preview != null) {
-                            Text(if (contourVisible) "Contour aan" else "Contour uit")
-                        }
-                        TextButton(onClick = { detailsVisible = !detailsVisible }) {
-                            Text(if (detailsVisible) "Hele beeld" else "Details")
-                        }
-                    }
-                }
-            }
-            if (detailsVisible) Surface(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(12.dp).fillMaxWidth()
-                .fillMaxHeight(if (state.wallScanActive) 0.55f else 0.75f), shape = RoundedCornerShape(20.dp),
-                color = WorkflowCameraPanel, contentColor = Color.White) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (!state.wallScanActive) {
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Wanden scannen", style = MaterialTheme.typography.titleLarge)
-                            Text("Plak minstens één tag vlak op elke benodigde wand. Kies het vlak en de zwarte tagmaat; de camera meet de tagposities.")
-                            Text(if (state.project.wallDimensionSource == WallDimensionSource.Scanned)
-                                "Scan alle vier zijwanden, met minstens één tag per wand. Koppel daarna het deksel met één boventag. Geef de gewenste zijwandhoogte onder het deksel op."
-                                else "Je ingevoerde afmetingen blijven behouden. Scan twee aangrenzende zijwanden, met minstens één tag per wand. Koppel daarna het deksel met één boventag.")
-                        }
-                        Button(state::beginWallScan, Modifier.fillMaxWidth()) { Text("Scan beginnen") }
-                    } else if (state.wallScanSolution != null) {
-                        val solution = state.wallScanSolution!!
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Controleer de tankcontour", style = MaterialTheme.typography.titleLarge)
-                            Text("${solution.dimensionsMm.x} × ${solution.dimensionsMm.y} × ${solution.dimensionsMm.z} mm")
-                            Text("${if (solution.quality.topOverlapVerified) "Deksel rechtstreeks gekoppeld" else "Deksel nog niet geverifieerd"} · ${solution.quality.usedTagIds.size} tags gebruikt")
-                            if (state.wallAssignments.filter { it.wall != CalibrationWall.Top && it.tagId in solution.quality.usedTagIds }
-                                    .groupBy { it.wall }.values.any { it.size == 1 }) {
-                                Text("Eén tag op een zijwand: extra tags bieden meer onderlinge controle.", style = MaterialTheme.typography.bodySmall)
-                            }
-                            Text("Vergelijk de lijnen met de echte tankranden. De zijmetingen blijven vast terwijl je extra boventags opneemt.")
-                            solution.quality.let { q ->
-                                Text(String.format(Locale.getDefault(), "Wand RMS %.1f mm · max %.1f mm · normaal %.1f°",
-                                    q.rmsMm, q.maxResidualMm, q.normalResidualDeg), style = MaterialTheme.typography.bodySmall)
-                                if (q.excludedTagIds.isNotEmpty()) Text("Niet gebruikt: ${q.excludedTagIds.joinToString()}")
-                            }
-                            Text("Deze waarden tonen de onderlinge overeenkomst van de scan. Sensorcoördinaten blijven behouden.", style = MaterialTheme.typography.bodySmall)
-                            state.wallScanMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        }
-                        OutlinedButton(state::resumeWallScan, Modifier.fillMaxWidth()) { Text("Extra boventags opnemen") }
-                        Button(state::acceptWallScan, Modifier.fillMaxWidth().testTag("accept-wall-calibration"),
-                            enabled = state.wallScanFrame?.tracking == true && solution.quality.topOverlapVerified) { Text("Kalibratie gebruiken") }
-                    } else {
-                        Text(if (state.wallScanFootprint == null) "1 · Zijkanten scannen" else "2 · Deksel koppelen",
-                            style = MaterialTheme.typography.titleMedium)
-                        // Face choice is explicit, including Top from the very first image.
-                        Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            CalibrationWall.entries.forEach { wall ->
-                                val selected = state.wallScanWall == wall
-                                Surface(Modifier.weight(1f).height(44.dp).selectable(selected, role = Role.RadioButton,
-                                    onClick = { state.selectWallScanFace(wall) }), shape = RoundedCornerShape(10.dp),
-                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
-                                    border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(wall.label + if (state.wallAssignments.any { it.wall == wall && it.tagId in state.wallReadyTagIds }) " ✓" else "",
-                                            style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                                    }
-                                }
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            WallCaptureTagChoice(state, Modifier.weight(1f))
-                            TextButton({ overview = true }) { Text("Tags (${state.wallAssignments.size})") }
-                        }
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(state.wallCaptureHint, style = MaterialTheme.typography.bodyMedium)
-                            state.wallScanMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                            if (state.wallScanFootprint != null) {
-                                val footprint = state.wallScanFootprint!!
-                                Text("Contour ${footprint.dimensionsMm.x} × ${footprint.dimensionsMm.y} mm", style = MaterialTheme.typography.titleSmall)
-                                Text("Kies Boven en leg de dekseltag vast. Houd een opgenomen zijtag en de boventag tegelijk in beeld tot de directe koppeling bevestigd is.",
-                                    style = MaterialTheme.typography.bodySmall)
-                            } else Text(if (state.wallScanSource == WallDimensionSource.Scanned)
-                                "Eén tag per zijwand is voldoende. Vier zijwanden bepalen lengte en breedte."
-                                else "Eén tag per wand is voldoende. Scan twee aangrenzende zijwanden.", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            TextButton({ settings = "size" }) { Text("Tagmaat ${state.wallScanSize} mm") }
-                            TextButton({ settings = "height" }) { Text(if (state.wallScanSource == WallDimensionSource.Scanned && state.wallSideHeight.isBlank())
-                                "Hoogte instellen" else "Deksel / hoogte") }
-                        }
-                        val tag = state.wallCaptureTag
-                        val assignment = state.wallAssignments.firstOrNull { it.tagId == tag?.tagId }
-                        val assignedHere = assignment?.wall == state.wallScanWall && assignment.sizeMm == state.wallScanSize.toIntOrNull()
-                        Button({ tag?.let { state.assignWallTag(it.tagId) } }, Modifier.fillMaxWidth().testTag("capture-wall-tag"),
-                            enabled = tag != null && state.wallScanFrame?.tracking == true && !assignedHere) {
-                            Text(when {
-                                tag == null -> "Richt op een tag"
-                                !assignedHere -> "Tag ${tag.tagId} op ${state.wallScanWall.label} vastleggen"
-                                tag.tagId in state.wallReadyTagIds -> "✓ Tag ${tag.tagId} opgenomen op ${state.wallScanWall.label}"
-                                else -> "Tag ${tag.tagId} · metingen verzamelen…"
-                            })
-                        }
-                        if (state.wallScanFootprint == null) {
-                            OutlinedButton(state::solveWallFootprint, Modifier.fillMaxWidth()) { Text("Grondcontour berekenen") }
-                        } else if (!state.wallTopStage) {
-                            OutlinedButton(state::startWallTopStage, Modifier.fillMaxWidth()) { Text("Verder: bovenkant koppelen") }
-                        } else {
-                            OutlinedButton(state::solveWallScan, Modifier.fillMaxWidth()) {
-                                Text(if (state.wallLinkedPreview == null) "Bovenkant koppelen" else "Boventags bijwerken")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (settings != null) WallScanSettings(state, settings == "height") { settings = null }
-        if (overview) ModalBottomSheet(onDismissRequest = { overview = false }) {
-            Column(Modifier.fillMaxWidth().padding(20.dp).heightIn(max = 450.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Opgenomen tags", style = MaterialTheme.typography.titleLarge)
-                if (state.wallAssignments.isEmpty()) Text("Nog geen tags vastgelegd. Kies een vlak en leg de zichtbare tag vast.")
-                state.wallAssignments.forEach { assignment ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Tag ${assignment.tagId} · ${assignment.wall.label} · ${assignment.sizeMm} mm\n" +
-                            if (assignment.tagId in state.wallReadyTagIds) "✓ Opgenomen" else "${state.wallScanCounts[assignment.tagId] ?: 0} metingen · nog scannen",
-                            Modifier.weight(1f))
-                        TextButton({ state.removeWallTag(assignment.tagId) }) { Text("Wissen") }
-                    }
-                }
-                Text("Verkeerd vlak gekozen? Breng de tag in beeld, kies het juiste vlak en leg hem opnieuw vast.", style = MaterialTheme.typography.bodySmall)
-                TextButton({ state.beginWallScan(); overview = false }) { Text("Scan opnieuw beginnen") }
-                TextButton({ overview = false }) { Text("Terug naar scan") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WallCaptureTagChoice(state: WorkflowAppState, modifier: Modifier) {
+internal fun WallCaptureTagChoice(state: WorkflowAppState, modifier: Modifier) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         TextButton({ expanded = true }, enabled = state.wallSeenTags.isNotEmpty()) {
@@ -249,7 +88,7 @@ private fun WallCaptureTagChoice(state: WorkflowAppState, modifier: Modifier) {
 }
 
 @Composable
-private fun WallScanSettings(state: WorkflowAppState, height: Boolean, close: () -> Unit) {
+internal fun WallScanSettings(state: WorkflowAppState, height: Boolean, close: () -> Unit) {
     AlertDialog(onDismissRequest = close, title = { Text(if (height) "Deksel en zijwandhoogte" else "Zwarte tagmaat") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -273,7 +112,7 @@ private fun WallScanSettings(state: WorkflowAppState, height: Boolean, close: ()
 }
 
 @Composable
-private fun WorkflowWallPreview(frame: WallScanFrame?, solution: WallCalibrationSolution?, baseOnly: Boolean = false) {
+internal fun WorkflowWallPreview(frame: WallScanFrame?, solution: WallCalibrationSolution?, baseOnly: Boolean = false) {
     val projection = frame?.projectionFromReference ?: return
     if (solution == null) return
     Canvas(Modifier.fillMaxSize()) {
@@ -293,7 +132,7 @@ private fun WorkflowWallPreview(frame: WallScanFrame?, solution: WallCalibration
 
 /** Reproject observations with the CURRENT view in the SAME anchor frame. */
 @Composable
-private fun WorkflowWallTagOverlay(frame: WallScanFrame?, assignments: List<WallTagAssignment>, ready: List<Int>, selectedWall: CalibrationWall) {
+internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, assignments: List<WallTagAssignment>, ready: List<Int>, selectedWall: CalibrationWall) {
     val projection = frame?.projectionFromReference ?: return
     Canvas(Modifier.fillMaxSize()) {
         for (tag in frame.observations) {
@@ -308,7 +147,7 @@ private fun WorkflowWallTagOverlay(frame: WallScanFrame?, assignments: List<Wall
             for (i in 0..3) drawLine(color, corners[i]!!, corners[(i+1)%4]!!, 2.dp.toPx())
             val point = corners[0]!!
             val assignment = assignments.firstOrNull { it.tagId == tag.tagId }
-            val text = "Tag ${tag.tagId}" + (assignment?.let { " · ${it.wall.label}" } ?: " · ${selectedWall.label} vastleggen ↓")
+            val text = "Tag ${tag.tagId}" + (assignment?.let { " · ${it.wall.label}" } ?: "")
             val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 this.color = android.graphics.Color.WHITE; textSize = 14.dp.toPx()
                 setShadowLayer(3.dp.toPx(), 0f, 0f, android.graphics.Color.BLACK)

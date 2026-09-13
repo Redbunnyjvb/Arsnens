@@ -11,6 +11,25 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class WallWorkflowStateTest {
+    @Test fun contourFollowsRuntimeRelocalizationAndAcceptanceOpensSessionSetup() {
+        create(); scan(); state.solveWallFootprint()
+        val before = state.wallScanFootprint!!.referenceFromProject
+        val drift = Transform3D(Transform3D.identity().values.copyOf().apply { this[3] = 120.0 })
+        val next = packet(40)
+        val observations = next.wallScanFrame!!.observations.map { it.copy(referenceFromTag=drift*it.referenceFromTag,
+            referenceFromCameraCv=drift*it.referenceFromCameraCv) }
+        state.updateWallScanFrame(next.copy(wallScanFrame=next.wallScanFrame!!.copy(observations=observations,displayObservations=observations)))
+        assertTrue(state.wallScanFootprint!!.referenceFromProject.distanceTo(drift*before)<0.1)
+        state.startWallTopStage(); state.solveWallScan(); state.acceptWallScan()
+        assertTrue(state.project.hasWallCalibration)
+        assertEquals(WorkflowScreen.Start,state.screen)
+        assertTrue(state.sessionSetupRequested)
+        assertNull(state.project.activeSession) // Operator starts it explicitly on the next screen.
+        state.startSessionAndOpenCamera()
+        assertNotNull(state.project.activeSession)
+        assertFalse(state.sessionSetupRequested)
+        assertEquals(WorkflowScreen.Tags,state.screen)
+    }
     private lateinit var store: WallTestStore
     private lateinit var state: WorkflowAppState
     @Before fun setup() { store=WallTestStore();state=store.state();state.wallAutoCapture=false }
@@ -30,19 +49,24 @@ class WallWorkflowStateTest {
         state.beginWallScan()
         state.wallScanSize="100"
         state.updateWallScanFrame(packet(1))
-        WallTestGeometry.tags.filter { it.assignment.tagId < 8+topCount }.forEach { tag ->
+        WallTestGeometry.tags.filter { it.assignment.tagId < 8+topCount }.forEachIndexed { index, tag ->
+            // Assignment writes may exceed the display timeout on a busy emulator.
+            // Keep supplying real new frames, as the camera does during operator actions.
+            val fresh = packet(index + 2L)
+            val visible = fresh.wallScanFrame!!.observations.filter { it.tagId == tag.assignment.tagId }
+            state.updateWallScanFrame(fresh.copy(wallScanFrame=fresh.wallScanFrame!!.copy(observations=visible,displayObservations=visible)))
             state.wallScanWall=tag.assignment.wall;state.assignWallTag(tag.assignment.tagId)
         }
         repeat(9) { index ->
             if (separateTop) {
                 for (top in listOf(false,true)) {
                     SystemClock.sleep(100)
-                    val result=packet(2+index*2L+if(top) 1 else 0)
+                    val result=packet(20+index*2L+if(top) 1 else 0)
                     state.updateWallScanFrame(result.copy(wallScanFrame=result.wallScanFrame!!.let { frame ->
                         frame.copy(observations=frame.observations.filter { (it.tagId>=8)==top })
                     }))
                 }
-            } else { SystemClock.sleep(100);state.updateWallScanFrame(packet(index+2L)) }
+            } else { SystemClock.sleep(100);state.updateWallScanFrame(packet(index+20L)) }
         }
         state.wallSideHeight="1000";state.wallTopOffset="0"
         assertEquals(8+topCount,state.wallReadyTagIds.size)

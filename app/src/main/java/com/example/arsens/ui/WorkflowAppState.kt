@@ -407,6 +407,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     var newReferenceGeometryMode by mutableStateOf(ReferenceGeometryMode.ScannedWalls)
     var newWallDimensionSource by mutableStateOf(WallDimensionSource.Scanned)
     var sessionName by mutableStateOf("")
+    var sessionSetupRequested by mutableStateOf(false)
     var sessionOperator by mutableStateOf("")
     var sessionPurpose by mutableStateOf("")
     var programPreview by mutableStateOf<ARSensProgram?>(null)
@@ -3174,6 +3175,14 @@ fun setDefaultTagSize(sizeMm: Int) {
             }.onFailure { message = it.message }
     }
 
+    fun startSessionAndOpenCamera() {
+        startSession()
+        if (project.activeSession != null) {
+            sessionSetupRequested = false
+            chooseMode(WorkMode.OnTheFly)
+        }
+    }
+
     fun previewProgram(uri: Uri, scope: CoroutineScope) {
         scope.launch {
             runCatching { withContext(Dispatchers.IO) { repository.readProgram(uri) } }
@@ -3654,8 +3663,17 @@ fun setDefaultTagSize(sizeMm: Int) {
         wallScanFrame = frame
         wallLastFrameMillis = android.os.SystemClock.elapsedRealtime()
         val neededRelocalization = wallSession.reason != null
-        wallSession.observe(if (wallScanSolution == null) frame else frame.copy(observations = emptyList()),
-            wallAssignments, android.os.SystemClock.elapsedRealtime())
+        val previousReferenceFromSeed = wallSession.referenceFromSeed
+        wallSession.observe(frame, wallAssignments, android.os.SystemClock.elapsedRealtime(), record = wallScanSolution == null)
+        val currentReferenceFromSeed = wallSession.referenceFromSeed
+        if (previousReferenceFromSeed != null && currentReferenceFromSeed != null) {
+            // A seed-relative contour must follow the same runtime relocalization as saved tags.
+            val correction = currentReferenceFromSeed * previousReferenceFromSeed.inverseRigid()
+            fun rebase(value: WallCalibrationSolution?) = value?.copy(referenceFromProject = correction * value.referenceFromProject)
+            wallScanFootprint = rebase(wallScanFootprint)
+            wallLinkedPreview = rebase(wallLinkedPreview)
+            wallScanSolution = rebase(wallScanSolution)
+        }
         if (neededRelocalization && wallSession.reason == null) wallScanMessage = null
         if (wallSession.reason != null) {
             wallScanSolution = null; wallScanFootprint = null; wallLinkedPreview = null
@@ -3791,7 +3809,8 @@ fun setDefaultTagSize(sizeMm: Int) {
         val tag = wallCaptureTag ?: return wallSelectedTagId?.let { "Tag $it · uit beeld" } ?: "Richt op een tag"
         if (tag.shortestEdgePx < WallCaptureTuning.MIN_EDGE_PX) return "Tag te klein · grotere tag of dichterbij"
         if (!WallCaptureTuning.acceptsImage(tag.shortestEdgePx, tag.reprojectionErrorPx)) return "Tag onscherp of te schuin"
-        if (tag.tagId in wallReadyTagIds) return "Tag ${tag.tagId} · opgenomen"
+        if (tag.tagId in wallReadyTagIds) return if (tag.tagId in wallVerifiedTagIds) "Tag ${tag.tagId} · gekoppeld"
+            else "Nog koppelen · bekijk ook een groene tag"
         val count = wallScanCounts[tag.tagId] ?: 0
         return if (count > 0) "Houd stil · $count/${WallCaptureTuning.minimumSamples(tag.shortestEdgePx)} metingen"
             else if (wallAssignments.any { it.tagId==tag.tagId }) "Wacht op een scherp beeld"
@@ -3907,9 +3926,23 @@ fun setDefaultTagSize(sizeMm: Int) {
 
     fun resumeWallScan() { wallScanSolution = null; wallSolvedFrameId = null }
 
+    val wallGraphTags get() = wallSession.estimates(wallAssignments.filterNot { it.tagId in ignoredReferenceIds })
+    val wallVerifiedTagIds get() = wallSession.verifiedTagIds - ignoredReferenceIds
+    val wallRejectedEdges get() = wallSession.rejectedEdges
+    val wallConflictingTagIds get() = wallSession.conflictingTagIds
+    val wallScanCompletionIssue: String? get() {
+        if (wallConflictingTagIds.isNotEmpty()) return "Referenties spreken elkaar tegen. Controleer de rode tags."
+        val solution = wallScanSolution ?: return "Bereken eerst de contour."
+        val unlinked = solution.quality.usedTagIds.filterNot { it in wallVerifiedTagIds }
+        if (unlinked.isNotEmpty()) return "${unlinked.size} tags nog niet gekoppeld. Houd elke oranje tag samen met een groene tag in beeld."
+        if (!solution.quality.topOverlapVerified) return "Houd een zijtag en boventag samen in beeld."
+        return null
+    }
+
     fun acceptWallScan() {
         if (project.activeSession != null) { wallScanMessage="Rond de meetsessie af voordat je een nieuwe contour accepteert.";return }
         val solved = wallScanSolution ?: return
+        wallScanCompletionIssue?.let { wallScanMessage = it; return }
         if (!solved.quality.topOverlapVerified) {
             wallScanMessage = "Bekijk een opgenomen zijtag en boventag tegelijk. De bovenkant is nog niet rechtstreeks geverifieerd."
             return
@@ -3937,10 +3970,9 @@ fun setDefaultTagSize(sizeMm: Int) {
         syncDimensionsFromProject()
         resetArPoseState()
         showBoxEdgesOverlay = true
-        mode = WorkMode.OnTheFly
-        cameraSensors.firstOrNull { it.status == SensorStatus.Pending }?.let(::selectCameraSensor)
-        message = "Tankreferentie opgeslagen. Scan een gekalibreerde tag om uit te lijnen."
-        screen = WorkflowScreen.Tags
+        sessionSetupRequested = true
+        message = "Contour opgeslagen. Start je meetsessie."
+        screen = WorkflowScreen.Start
     }
 
     fun recalibrateAr() {

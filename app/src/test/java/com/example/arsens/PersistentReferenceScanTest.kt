@@ -7,6 +7,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PersistentReferenceScanTest {
+    @Test fun provisionalGroupLinksThroughAChainWithoutKeepingSeedVisible() {
+        val scan = PersistentReferenceScan()
+        val labels = listOf(CalibrationWall.Front, CalibrationWall.Top, CalibrationWall.Left, CalibrationWall.Back)
+            .mapIndexed { index, wall -> WallTagAssignment(index + 1, wall, 100) }
+        val poses = listOf(side, top, pose(1600.0, 0.0, 1000.0), pose(2400.0, 0.0, 1000.0))
+        var sequence = 0L
+        fun show(ids: List<Int>, drift: Double = 0.0) {
+            repeat(12) {
+                val time = 1000L + sequence++ * 100
+                val world = pose(drift)
+                val observations = ids.map { id -> WallTagObservation(id,100,time,sequence,1,
+                    world * poses[id-1], world, WallVector(0.0,0.0,1.0),0.2f,100f) }
+                scan.observe(WallScanFrame(1,1,true,observations,null),labels,time)
+            }
+        }
+        show(listOf(1))
+        show(listOf(2), 350.0) // Only an ARCore bridge: it must remain orange.
+        assertEquals(setOf(1), scan.verifiedTagIds)
+        show(listOf(1,2)) // A direct edge must repair a 350 mm provisional prior.
+        assertNull(scan.reason)
+        assertEquals(setOf(1,2), scan.verifiedTagIds)
+        show(listOf(2,3), 80.0)
+        show(listOf(3,4), 140.0)
+        show(listOf(4,1), 190.0)
+        assertEquals(setOf(1,2,3,4), scan.verifiedTagIds)
+        assertTrue(scan.rejectedEdges.isEmpty())
+        assertEquals(4, scan.graph.edges.size)
+        assertTrue(scan.hasTopOverlap(listOf(1,2,3,4)))
+        val solved = ReferenceGraphOptimizer.solve(scan.graph)
+        assertEquals(2400.0, solved.poses.getValue(4).translation()[0], 1.0)
+    }
     private val assignments = listOf(WallTagAssignment(1, CalibrationWall.Front, 100), WallTagAssignment(2, CalibrationWall.Top, 100))
     private fun pose(x: Double, y: Double = 0.0, z: Double = 0.0) = Transform3D.identity().let {
         Transform3D(it.values.copyOf().apply { this[3] = x; this[7] = y; this[11] = z }) }

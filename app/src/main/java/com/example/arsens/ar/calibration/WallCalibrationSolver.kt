@@ -145,15 +145,10 @@ object WallCalibrationSolver {
                 return fail("Tag ${tag.assignment.tagId} valt buiten de tankcontour. Controleer afmetingen en wandkeuze.")
             val wall = tag.assignment.wall
             val position = MmPosition(
-                if (wall.axis == 0) (if (wall.positive) solvedDimensions.x else 0) else p.x.roundToInt().coerceIn(0, solvedDimensions.x),
-                if (wall.axis == 1) (if (wall.positive) solvedDimensions.y else 0) else p.y.roundToInt().coerceIn(0, solvedDimensions.y),
-                if (wall.axis == 2) maxZ else if (!requireTop) p.z.roundToInt().coerceAtLeast(0) else p.z.roundToInt().coerceIn(0, solvedDimensions.z))
-            val normal = if (wall.axis == 2) WallVector(0.0,0.0,1.0) else if (wall.axis == 0) WallVector(if (wall.positive) 1.0 else -1.0, 0.0, 0.0)
-                else WallVector(0.0, if (wall.positive) 1.0 else -1.0, 0.0)
-            val measuredX = (projectFromReference * tag.referenceFromTag).wallDirection(WallVector(1.0,0.0,0.0))
-            val tagX = (measuredX - normal * measuredX.dot(normal)).unit() ?: return fail("Tagoriëntatie ongeldig.")
-            val tagZ = normal.cross(tagX)
-            val rotation = wallMarkerEuler(matrix(tagX, normal * -1.0, tagZ, WallVector(0.0,0.0,0.0)))
+                p.x.roundToInt(), p.y.roundToInt(), p.z.roundToInt())
+            // The rectangular contour is a fit, not a replacement for the measured tag pose.
+            // Preserve tilt and in-plane rotation for later PnP/relocalization; snapping creates bias.
+            val rotation = wallMarkerEuler(projectFromReference * tag.referenceFromTag)
             Marker(tag.assignment.tagId, "apriltag", tag.assignment.sizeMm, position, rotation, origin = PlacementOrigin.OnTheFly)
         }
         val residuals = tags.indices.associate { tags[it].assignment.tagId to abs(best.residuals[it]) }

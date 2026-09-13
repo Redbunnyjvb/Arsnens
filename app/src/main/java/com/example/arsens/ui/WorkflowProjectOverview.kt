@@ -18,6 +18,7 @@ import com.example.arsens.data.*
 @Composable
 internal fun WorkflowProjectOverview(state: WorkflowAppState) {
     var panel by remember(state.project.projectId) { mutableStateOf<String?>(if(state.dimensionEditorExpanded) "geometry" else null) }
+    LaunchedEffect(state.sessionSetupRequested) { if (state.sessionSetupRequested) panel = "sessions" }
     val scope=rememberCoroutineScope()
     val stlPicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { files ->
         if(files.isNotEmpty()) state.addStlModelsThenAskPlace(files,scope)
@@ -63,7 +64,7 @@ internal fun WorkflowProjectOverview(state: WorkflowAppState) {
         }
         item { state.message?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) } }
     }
-    if(panel!=null) ModalBottomSheet(onDismissRequest={ panel=null;state.dimensionEditorExpanded=false }) {
+    if(panel!=null) ModalBottomSheet(onDismissRequest={ panel=null;state.dimensionEditorExpanded=false;state.sessionSetupRequested=false }) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).verticalScroll(rememberScrollState()).padding(horizontal=20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             when(panel) {
                 "geometry" -> {
@@ -113,7 +114,7 @@ internal fun OverviewCard(title: String, content: @Composable ColumnScope.() -> 
 
 @Composable
 internal fun WorkflowSessionsCard(state: WorkflowAppState) {
-    OverviewCard("4 · Meetsessies") {
+    OverviewCard("Meetsessies") {
         if (state.project.sessions.isEmpty()) Text("Nog geen meetsessies. Je bepaalt zelf wanneer je begint.")
         state.project.sessions.forEach { session ->
             OutlinedButton({ state.viewSession(session.id) }, Modifier.fillMaxWidth()) {
@@ -129,7 +130,7 @@ internal fun WorkflowSessionsCard(state: WorkflowAppState) {
             OutlinedTextField(state.sessionName, { state.sessionName = it }, label = { Text("Sessienaam (optioneel)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(state.sessionOperator, { state.sessionOperator = it }, label = { Text("Operator") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(state.sessionPurpose, { state.sessionPurpose = it }, label = { Text("Doel / notities (optioneel)") }, modifier = Modifier.fillMaxWidth())
-            Button(state::startSession, Modifier.fillMaxWidth()) { Text("Nieuwe sessie starten") }
+            Button(state::startSessionAndOpenCamera, Modifier.fillMaxWidth()) { Text("Sessie starten · camera openen") }
         }
         state.project.measurementDraft?.let { Text("Conceptmeting van sensor ${it.sensorId} bewaard. Open de camera om opnieuw te lokaliseren en te controleren.") }
     }

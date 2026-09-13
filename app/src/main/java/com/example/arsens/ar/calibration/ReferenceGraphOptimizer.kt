@@ -11,21 +11,35 @@ object ReferenceGraphOptimizer {
     fun solve(graph: ReferenceGraph): ReferenceGraphSolution {
         val raw = graph.nodes.associate { it.tagId to Transform3D(it.seedFromTag.toDoubleArray()) }
         val seed = graph.seedTagId ?: return ReferenceGraphSolution(raw, emptySet())
+        // Build a direct-link spanning tree first. A drifting ARCore prior must not reject
+        // the very edge that can correct it. Only cycle edges can be checked against a path.
+        val initialized = mutableMapOf(seed to (raw[seed] ?: return ReferenceGraphSolution(raw, emptySet())))
+        val treeEdges = mutableSetOf<Int>()
+        repeat(raw.size) {
+            graph.edges.forEachIndexed { index, edge ->
+                if (!edge.directSameFrame || edge.translationScatterMm > 10 || edge.rotationScatterDeg > 5) return@forEachIndexed
+                val a = initialized[edge.fromTagId]; val b = initialized[edge.toTagId]
+                val relative = Transform3D(edge.relativeTransform.toDoubleArray())
+                if (a != null && b == null && edge.toTagId in raw) { initialized[edge.toTagId] = a * relative; treeEdges += index }
+                if (b != null && a == null && edge.fromTagId in raw) { initialized[edge.fromTagId] = b * relative.inverseRigid(); treeEdges += index }
+            }
+        }
+        val initial = raw + initialized
         val rejected = graph.edges.indices.filter { index ->
             val edge = graph.edges[index]
-            val a = raw[edge.fromTagId]; val b = raw[edge.toTagId]
+            val a = initial[edge.fromTagId]; val b = initial[edge.toTagId]
             if (a == null || b == null) true else {
                 val prediction = a * Transform3D(edge.relativeTransform.toDoubleArray())
-                prediction.distanceTo(b) > 150.0 || prediction.rotationAngleDegreesTo(b) > 12.0 ||
+                (index !in treeEdges && (prediction.distanceTo(b) > 150.0 || prediction.rotationAngleDegreesTo(b) > 12.0)) ||
                     edge.translationScatterMm > 10 || edge.rotationScatterDeg > 5
             }
         }.toSet()
-        var poses = raw
+        var poses = initial
         repeat(40) {
             poses = poses.mapValues { (id, previous) ->
                 if (id == seed) return@mapValues raw.getValue(seed)
-                var mean = raw.getValue(id)
-                var weight = 0.02 // ARCore bridge is only a weak prior.
+                var mean = initial.getValue(id)
+                var weight = if (id in initialized) 0.0 else 0.02 // A verified chain needs no drifting world prior.
                 graph.edges.forEachIndexed { index, edge ->
                     if (index in rejected || (edge.fromTagId != id && edge.toTagId != id)) return@forEachIndexed
                     val relative = Transform3D(edge.relativeTransform.toDoubleArray())

@@ -27,6 +27,8 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
     var modeMenu by remember { mutableStateOf(false) }
     var faceMenu by remember { mutableStateOf(false) }
     var contourVisible by remember { mutableStateOf(true) }
+    var savedTagsVisible by remember { mutableStateOf(true) }
+    var linksVisible by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     val preview = state.wallScanSolution ?: state.wallLinkedPreview ?: state.wallScanFootprint
     BackHandler { state.cancelWallScan() }
@@ -36,7 +38,8 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
             if (state.wallScanActive) {
                 camera()
                 if (contourVisible) WorkflowWallPreview(state.wallScanFrame, preview, state.wallScanSolution == null && state.wallLinkedPreview == null)
-                WorkflowWallTagOverlay(state.wallScanFrame, state.wallAssignments, state.wallReadyTagIds, state.wallScanWall)
+                WorkflowWallGraphOverlay(state, savedTagsVisible, linksVisible)
+                WorkflowWallTagOverlay(state.wallScanFrame, state.wallVerifiedTagIds.toList(), state.wallConflictingTagIds)
             }
             Surface(Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(8.dp).fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp), color = WorkflowCameraPanel, contentColor = Color.White) {
@@ -60,7 +63,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                     } else {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             listOf(CalibrationWall.Front, CalibrationWall.Right, CalibrationWall.Back, CalibrationWall.Left, CalibrationWall.Top).forEach { wall ->
-                                val ready = state.wallAssignments.any { it.wall == wall && it.tagId in state.wallReadyTagIds }
+                                val ready = state.wallAssignments.any { it.wall == wall && it.tagId in state.wallVerifiedTagIds }
                                 Text("${wall.label} ${if (ready) "✓" else "○"}", style = MaterialTheme.typography.labelSmall,
                                     color = if (ready) Color(0xFF70DDB4) else Color.LightGray)
                             }
@@ -69,14 +72,17 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                         if (solution != null) {
                             Text("Controleer de tankcontour", style = MaterialTheme.typography.titleMedium)
                             Text("${solution.dimensionsMm.x} × ${solution.dimensionsMm.y} × ${solution.dimensionsMm.z} mm")
-                            if (!solution.quality.topOverlapVerified) Text("Houd een zijtag en boventag samen in beeld.")
+                            state.wallScanCompletionIssue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                            if (state.wallScanCompletionIssue == null) Text("Tagnet gekoppeld · contour gereed", color = Color(0xFF70DDB4))
                             state.wallScanMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(state::resumeWallScan, Modifier.weight(1f)) { Text("Verder scannen") }
                                 Button(state::acceptWallScan, Modifier.weight(1f).testTag("accept-wall-calibration"),
-                                    enabled = state.wallScanFrame?.tracking == true && solution.quality.topOverlapVerified) { Text("Contour gebruiken") }
+                                    enabled = state.wallScanFrame?.tracking == true && state.wallScanCompletionIssue == null) { Text("Contour gebruiken") }
                             }
                         } else {
+                            if (state.wallScanFootprint != null && state.wallLinkedPreview == null)
+                                Text("Zijdoorsnede · deksel nog koppelen", style = MaterialTheme.typography.labelSmall)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box {
                                     TextButton({ modeMenu = true }, Modifier.testTag("wall-scan-mode")) { Text(if (state.wallAutoCapture) "Automatisch ▾" else "Handmatig ▾") }
@@ -130,13 +136,29 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Contour tonen", Modifier.weight(1f)); Switch(contourVisible, { contourVisible = it })
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Opgenomen tags tonen", Modifier.weight(1f)); Switch(savedTagsVisible, { savedTagsVisible = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tagverbindingen tonen", Modifier.weight(1f)); Switch(linksVisible, { linksVisible = it }, Modifier.testTag("wall-show-links"))
+                }
+                if (savedTagsVisible || linksVisible) Text("Groen: gekoppeld · oranje: nog koppelen · rood: conflict · dubbele ring: seed",
+                    style = MaterialTheme.typography.bodySmall)
                 TextButton({ settings = "size"; options = false }) { Text("Tagmaat · ${state.wallScanSize} mm") }
                 TextButton({ settings = "height"; options = false }) { Text("Hoogte & dekseloffset") }
                 WorkflowDimensionComparison(state.wallDimensionComparisons,state.project.dimensionWarningMm)
                 state.wallCaptureTag?.let { Text("Tag ${it.tagId}: ${it.shortestEdgePx.toInt()} px · pose-fit ${"%.2f".format(it.reprojectionErrorPx)} px", style = MaterialTheme.typography.bodySmall) }
                 state.wallAssignments.forEach { assignment -> Column {
                   Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Tag ${assignment.tagId} · ${assignment.wall.label}", Modifier.weight(1f))
+                    val graph = state.project.referenceGraph
+                    val status = when {
+                        assignment.tagId in state.wallConflictingTagIds -> "Conflict"
+                        assignment.tagId == graph.seedTagId -> "Seed"
+                        assignment.tagId in state.wallVerifiedTagIds -> "Gekoppeld"
+                        graph.nodes.any { it.tagId == assignment.tagId } -> "Nog koppelen"
+                        else -> "Opnemen"
+                    }
+                    Text("Tag ${assignment.tagId} · ${assignment.wall.label}\n$status", Modifier.weight(1f))
                     TextButton({ state.wallSelectedTagId = assignment.tagId; state.selectWallScanFace(assignment.wall); options = false }) { Text("Zijde") }
                     TextButton({ state.reobserveReferenceTag(assignment.tagId); options = false }) { Text("Opnieuw meten") }
                   }

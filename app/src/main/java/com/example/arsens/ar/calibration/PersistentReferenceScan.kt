@@ -15,6 +15,10 @@ class PersistentReferenceScan {
     private val reprojections = mutableMapOf<Pair<Int, Int>, MutableList<Double>>()
     private var optimizedGraph: ReferenceGraph? = null
     private var optimized = ReferenceGraphSolution(emptyMap(), emptySet())
+    var conflictingTagIds: Set<Int> = emptySet(); private set
+    val rejectedEdges get() = solution().rejectedEdges
+    val referenceFromSeed get() = seedFromReference?.inverseRigid()
+    val verifiedTagIds get() = graph.nodes.filter { it.directVerified }.map { it.tagId }.toSet()
     private fun solution(): ReferenceGraphSolution {
         if (optimizedGraph?.nodes != graph.nodes || optimizedGraph?.edges != graph.edges) {
             optimized = ReferenceGraphOptimizer.solve(graph); optimizedGraph = graph
@@ -22,8 +26,9 @@ class PersistentReferenceScan {
         return optimized
     }
     val invalidated get() = false
-    val reason get() = if (seedFromReference == null && graph.nodes.isNotEmpty()) "Richt op een opgeslagen referentietag om de contour te hervatten." else null
-    fun clear() { live.clear(); frameId = null; seedFromReference = null; sequence = -1; pairs.clear(); reprojections.clear(); graph = ReferenceGraph() }
+    val reason get() = if (conflictingTagIds.isNotEmpty()) "Referentietags spreken elkaar tegen. Controleer de rode tags in Opties."
+        else if (seedFromReference == null && graph.nodes.isNotEmpty()) "Richt op een gekoppelde referentietag om de contour te hervatten." else null
+    fun clear() { live.clear(); frameId = null; seedFromReference = null; sequence = -1; pairs.clear(); reprojections.clear(); graph = ReferenceGraph(); conflictingTagIds = emptySet() }
     fun restore(saved: ReferenceGraph) { clear(); graph = saved }
     fun removeTag(id: Int) {
         live.removeTag(id); pairs.keys.removeAll { it.first == id || it.second == id }
@@ -38,7 +43,7 @@ class PersistentReferenceScan {
             a.directVerified && b.directVerified && graph.edges.indexOf(edge) !in solution().rejectedEdges &&
             (a.wall == CalibrationWall.Top) != (b.wall == CalibrationWall.Top)
     }
-    fun observe(frame: WallScanFrame, assignments: List<WallTagAssignment>, nowMillis: Long) {
+    fun observe(frame: WallScanFrame, assignments: List<WallTagAssignment>, nowMillis: Long, record: Boolean = true) {
         graph = graph.copy(assignments = assignments)
         if (!frame.tracking || (frameId != null && frameId != frame.trackingFrameId)) {
             live.clear(); seedFromReference = null; sequence = -1; pairs.clear(); reprojections.clear()
@@ -48,16 +53,19 @@ class PersistentReferenceScan {
         val valid = frame.observations.filter { o -> assignments.any { it.tagId == o.tagId && it.sizeMm == o.sizeMm } &&
             nowMillis - o.timestampMillis in 0..250 && WallCaptureTuning.acceptsImage(o.shortestEdgePx, o.reprojectionErrorPx) &&
             o.distanceMm in 150.0..6000.0 }
-        if (valid.any { observation -> graph.nodes.any { it.tagId == observation.tagId } } || seedFromReference == null) {
-            val known = valid.mapNotNull { observation -> graph.nodes.firstOrNull { it.tagId == observation.tagId }?.let { node ->
+        if (valid.any { observation -> graph.nodes.any { it.tagId == observation.tagId && it.directVerified } } || seedFromReference == null) {
+            // ARCore-only nodes are provisional. They must not veto a direct link to the fixed network.
+            val known = valid.mapNotNull { observation -> graph.nodes.firstOrNull { it.tagId == observation.tagId && it.directVerified }?.let { node ->
                 (solution().poses[node.tagId] ?: Transform3D(node.seedFromTag.toDoubleArray())) * observation.referenceFromTag.inverseRigid()
             } }
             if (known.isNotEmpty()) {
                 // Disagreeing fixed references require another view; do not silently drag the project.
                 if (known.any { distance(it, known.first()) > 25 || it.rotationAngleDegreesTo(known.first()) > 5 }) {
+                    conflictingTagIds = valid.filter { it.tagId in verifiedTagIds }.map { it.tagId }.toSet()
                     seedFromReference = null; live.clear(); pairs.clear(); reprojections.clear()
                     return
                 }
+                conflictingTagIds = emptySet()
                 seedFromReference = known.drop(1).foldIndexed(known.first()) { i, mean, pose ->
                     mean.blendRigidAtPoint(pose, 1.0 / (i + 2), doubleArrayOf(0.0, 0.0, 0.0)) }
             } else if (graph.nodes.isEmpty() && valid.isNotEmpty()) {
@@ -69,6 +77,7 @@ class PersistentReferenceScan {
         // A visible seed cancels common ARCore drift even before the first stable node is reduced.
         if (graph.nodes.isEmpty()) valid.firstOrNull { it.tagId == graph.seedTagId }?.let { seedFromReference = it.referenceFromTag.inverseRigid() }
         val transform = seedFromReference ?: return
+        if (!record) return // Preview may relocalize, but cannot change its accepted evidence.
         live.observe(frame.copy(observations = valid.map { it.copy(
             referenceFromTag = transform * it.referenceFromTag,
             referenceFromCameraCv = transform * it.referenceFromCameraCv,

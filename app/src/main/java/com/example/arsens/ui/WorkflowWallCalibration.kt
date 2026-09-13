@@ -132,7 +132,7 @@ internal fun WorkflowWallPreview(frame: WallScanFrame?, solution: WallCalibratio
 
 /** Reproject observations with the CURRENT view in the SAME anchor frame. */
 @Composable
-internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, assignments: List<WallTagAssignment>, ready: List<Int>, selectedWall: CalibrationWall) {
+internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, ready: List<Int>, conflicts: Set<Int> = emptySet()) {
     val projection = frame?.projectionFromReference ?: return
     Canvas(Modifier.fillMaxSize()) {
         for (tag in frame.displayObservations) {
@@ -143,16 +143,8 @@ internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, assignments: List<Wal
                 projection.project(ProjectPointMm(reference.x,reference.y,reference.z))?.let { Offset(it.xPx,it.yPx) }
             }
             if (corners.any { it == null }) continue
-            val color = if (tag.tagId in ready) Color(0xFF52D39B) else Color(0xFFFFBD48)
+            val color = if (tag.tagId in conflicts) Color(0xFFFF667A) else if (tag.tagId in ready) Color(0xFF52D39B) else Color(0xFFFFBD48)
             for (i in 0..3) drawLine(color, corners[i]!!, corners[(i+1)%4]!!, 2.dp.toPx())
-            val point = corners[0]!!
-            val assignment = assignments.firstOrNull { it.tagId == tag.tagId }
-            val text = "Tag ${tag.tagId}" + (assignment?.let { " · ${it.wall.label}" } ?: "")
-            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                this.color = android.graphics.Color.WHITE; textSize = 14.dp.toPx()
-                setShadowLayer(3.dp.toPx(), 0f, 0f, android.graphics.Color.BLACK)
-            }
-            drawContext.canvas.nativeCanvas.drawText(text, point.x, point.y-8.dp.toPx(), paint)
         }
     }
 }

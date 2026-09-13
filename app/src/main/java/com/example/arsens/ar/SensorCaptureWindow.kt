@@ -29,7 +29,8 @@ class SensorCaptureWindow {
         fun squared(a: MmPosition,b: MmPosition): Double = (a.x-b.x).toDouble().let { it*it } +
             (a.y-b.y).toDouble().let { it*it } + (a.z-b.z).toDouble().let { it*it }
         val inliers = samples.filter { squared(it.position,center) <= 400 }
-        if (inliers.size < 8 || inliers.size < samples.size * 0.75 || inliers.last().time-inliers.first().time < 700) return null
+        if (inliers.size < 8 || inliers.size < samples.size * 0.75 || inliers.last().time-inliers.first().time < 700 ||
+            now - inliers.last().time !in 0..300 || samples.last() !in inliers) return null
         val mean=MmPosition(inliers.map { it.position.x }.average().roundToInt(),inliers.map { it.position.y }.average().roundToInt(),inliers.map { it.position.z }.average().roundToInt())
         val scatter=sqrt(inliers.map { squared(it.position,mean) }.average())
         if (scatter > 8) return null

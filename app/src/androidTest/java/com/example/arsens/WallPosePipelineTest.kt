@@ -7,6 +7,26 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class WallPosePipelineTest {
+    @Test fun tiltedAndRotatedTagsRetainTheirActualPoseThroughScanSaveReloadAndPnP() {
+        assertTrue(OpenCvRuntime.ensureLoaded())
+        val localMarker = Marker(0,"apriltag",100,MmPosition(0,0,0),FloatVector(0f,0f,0f))
+        val localDetection = detection(localMarker, localCamera)
+        val tilt = Transform3D.cameraCvFromTransformerPose(TransformerPose(floatArrayOf(0f,0f,0f),
+            floatArrayOf(0.055f,0.42f,0.02f),0f))
+        val tags = WallTestGeometry.tags.map { it.copy(referenceFromTag = it.referenceFromTag * tilt) }
+        val solved = WallCalibrationSolver.solve(WallTestGeometry.dimensions,WallDimensionSource.Entered,tags,WallTestGeometry.datum).solution!!
+        val project = Project("Tilt", "", emptyList(), solved.markers, dimensionsMm = solved.dimensionsMm)
+        val reloaded = JsonProjectStore.projectFromJson(JsonProjectStore.projectToJson(project))
+        for (tag in tags) {
+            val marker = reloaded.markers.first { it.id == tag.assignment.tagId }.asAprilTagCalibrationMarker(project.dimensionsMm)
+            val cameraFromReference = (tag.referenceFromTag * localCamera.inverseRigid()).inverseRigid()
+            val expectedCameraFromProject = cameraFromReference * solved.referenceFromProject
+            val estimate = estimateTransformerPoseFromAprilTags(listOf(localDetection.copy(id=marker.id)),listOf(marker),intrinsics)!!
+            val actual = Transform3D.cameraCvFromTransformerPose(estimate.pose)
+            assertTrue("Tag ${marker.id}: ${actual.distanceTo(expectedCameraFromProject)} mm", actual.distanceTo(expectedCameraFromProject) < 2)
+            assertTrue(actual.rotationAngleDegreesTo(expectedCameraFromProject) < 0.2)
+        }
+    }
     private val intrinsics=CameraIntrinsics(1000f,1000f,640f,480f)
     private val localCamera=Transform3D.cameraCvFromTransformerPose(TransformerPose(floatArrayOf(-30f,20f,800f),
         floatArrayOf((Math.PI/2+0.12).toFloat(),0.10f,0.05f),0f))

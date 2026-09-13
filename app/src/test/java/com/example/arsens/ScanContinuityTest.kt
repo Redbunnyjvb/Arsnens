@@ -34,4 +34,11 @@ class ScanContinuityTest {
         window.observe("S",200,2,10,1900,MmPosition(100,0,500))
         assertNull(window.estimate(1900))
     }
+    @Test fun movingSensorCannotReuseAnOlderStableCluster() {
+        val window = SensorCaptureWindow()
+        repeat(12) { window.observe("S",200,1,it.toLong(),1000+it*100L,MmPosition(100,0,500)) }
+        assertNotNull(window.estimate(2100))
+        window.observe("S",200,1,12,2200,MmPosition(300,0,500))
+        assertNull(window.estimate(2200))
+    }
 }

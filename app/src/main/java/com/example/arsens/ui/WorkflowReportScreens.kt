@@ -390,6 +390,8 @@ internal fun WorkflowReportMap2DScreen(state: WorkflowAppState) {
     TransformerMapWorkspace(
         project = state.reportProject, log = state.log, onBack = state::navigateBack,
         readOnly = state.reportSessionId != null,
+        sessionOptions=listOf(null to "Actueel")+state.project.sessions.map { it.id to it.name },
+        selectedSessionId=state.reportSessionId,onSessionSelected=state::selectMapSession,
         initialView = state.activeMapView, onViewChanged = { state.activeMapView = it }, message = state.message,
         onPlaceSensorPoint = state::saveSensorAtBoxPosition,
         onMoveSensorPoint = state::moveSensorToBoxPosition,

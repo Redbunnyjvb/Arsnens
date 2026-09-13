@@ -151,6 +151,20 @@ class WallWorkflowStateTest {
         assertEquals("1250",restored.wallSideHeight)
         assertEquals("15",restored.wallTopOffset)
     }
+    @Test fun candidateSelectionSurvivesDisplayOnlyFramesAndFirstWallCanBeAssigned() {
+        create();state.beginWallScan();state.wallScanSize="100"
+        repeat(3) { index ->
+            val result=packet(index+1L)
+            val fresh=result.wallScanFrame!!.copy(observations=result.wallScanFrame!!.observations.filter { it.tagId==0 })
+            state.updateWallScanFrame(result.copy(wallScanFrame=fresh.copy(displayObservations=fresh.observations)))
+            val visual=fresh.copy(observations=emptyList(),displayObservations=fresh.observations)
+            state.updateWallScanFrame(result.copy(wallScanFrame=visual))
+        }
+        assertEquals(0,state.wallSelectedTagId)
+        state.assignWallTag(0)
+        assertEquals(CalibrationWall.Front,state.wallAssignments.single().wall)
+        assertEquals(0,state.wallScanCounts[0] ?: 0)
+    }
     @Test fun returningToKnownPositionsRetainsAcceptedGeometryAndDimensionsStayProtectedFromImport() {
         create();scan();state.acceptWallScan();val geometry=state.project.markers
         state.setDimensionsLocked(false);assertTrue(state.project.dimensionsLocked)

@@ -135,7 +135,7 @@ internal fun WorkflowWallPreview(frame: WallScanFrame?, solution: WallCalibratio
 internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, assignments: List<WallTagAssignment>, ready: List<Int>, selectedWall: CalibrationWall) {
     val projection = frame?.projectionFromReference ?: return
     Canvas(Modifier.fillMaxSize()) {
-        for (tag in frame.observations) {
+        for (tag in frame.displayObservations) {
             val half = tag.sizeMm / 2.0
             val corners = listOf(WallVector(-half,0.0,half), WallVector(half,0.0,half),
                 WallVector(half,0.0,-half), WallVector(-half,0.0,-half)).map { p ->

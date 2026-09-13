@@ -24,6 +24,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
 }) {
     var options by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf<String?>(null) }
+    var modeMenu by remember { mutableStateOf(false) }
     var faceMenu by remember { mutableStateOf(false) }
     var contourVisible by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(true) }
@@ -38,11 +39,11 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                 WorkflowWallTagOverlay(state.wallScanFrame, state.wallAssignments, state.wallReadyTagIds, state.wallScanWall)
             }
             Surface(Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(8.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp), color = WorkflowCameraPanel) {
+                shape = RoundedCornerShape(14.dp), color = WorkflowCameraPanel, contentColor = Color.White) {
                 Row(Modifier.padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Contour", style = MaterialTheme.typography.titleMedium)
-                        if (!compact) Text("${state.wallReadyTagIds.size} tags opgenomen", style = MaterialTheme.typography.labelSmall)
+                        if (!compact) Text("${state.wallReadyTagIds.size} opgenomen · ${state.wallSeenTags.size} zichtbaar", style = MaterialTheme.typography.labelSmall)
                     }
                     TextButton({ controlsVisible = !controlsVisible }) { Text(if (controlsVisible) "Hele beeld" else "Details") }
                     TextButton({ options = true }) { Text("Opties") }
@@ -51,7 +52,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
             }
             if (controlsVisible) Surface(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(8.dp)
                 .widthIn(max = 620.dp).fillMaxWidth().heightIn(max = if (compact) maxHeight * 0.68f else maxHeight * 0.43f),
-                shape = RoundedCornerShape(16.dp), color = WorkflowCameraPanel) {
+                shape = RoundedCornerShape(16.dp), color = WorkflowCameraPanel, contentColor = Color.White) {
                 Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (!state.wallScanActive) {
                         Text("Kies de eerste zijde. Scan daarna rustig rondom de tank.")
@@ -76,6 +77,17 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                                     enabled = state.wallScanFrame?.tracking == true && solution.quality.topOverlapVerified) { Text("Contour gebruiken") }
                             }
                         } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box {
+                                    TextButton({ modeMenu = true }, Modifier.testTag("wall-scan-mode")) { Text(if (state.wallAutoCapture) "Automatisch ▾" else "Handmatig ▾") }
+                                    DropdownMenu(modeMenu, { modeMenu = false }) {
+                                        DropdownMenuItem(text = { Text("Automatisch") }, onClick = { state.setWallAutoMode(true); modeMenu = false })
+                                        DropdownMenuItem(text = { Text("Handmatig") }, onClick = { state.setWallAutoMode(false); modeMenu = false })
+                                    }
+                                }
+                                Spacer(Modifier.weight(1f))
+                                TextButton({ settings = "size" }) { Text("${state.wallScanSize} mm") }
+                            }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 WallCaptureTagChoice(state, Modifier.weight(1f))
                                 Box {
@@ -113,17 +125,22 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
             Column(Modifier.padding(horizontal = 20.dp).heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Scanopties", style = MaterialTheme.typography.titleMedium)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Automatisch opnemen", Modifier.weight(1f)); Switch(state.wallAutoCapture, { state.wallAutoCapture = it })
+                    Text("Automatisch opnemen", Modifier.weight(1f)); Switch(state.wallAutoCapture, state::setWallAutoMode)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Contour tonen", Modifier.weight(1f)); Switch(contourVisible, { contourVisible = it })
                 }
                 TextButton({ settings = "size"; options = false }) { Text("Tagmaat · ${state.wallScanSize} mm") }
                 TextButton({ settings = "height"; options = false }) { Text("Hoogte & dekseloffset") }
+                WorkflowDimensionComparison(state.wallDimensionComparisons,state.project.dimensionWarningMm)
                 state.wallCaptureTag?.let { Text("Tag ${it.tagId}: ${it.shortestEdgePx.toInt()} px · pose-fit ${"%.2f".format(it.reprojectionErrorPx)} px", style = MaterialTheme.typography.bodySmall) }
-                state.wallAssignments.forEach { assignment -> Row(verticalAlignment = Alignment.CenterVertically) {
+                state.wallAssignments.forEach { assignment -> Column {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Tag ${assignment.tagId} · ${assignment.wall.label}", Modifier.weight(1f))
-                    TextButton({ state.wallSelectedTagId = assignment.tagId; state.selectWallScanFace(assignment.wall); options = false }) { Text("Wijzigen") }
+                    TextButton({ state.wallSelectedTagId = assignment.tagId; state.selectWallScanFace(assignment.wall); options = false }) { Text("Zijde") }
+                    TextButton({ state.reobserveReferenceTag(assignment.tagId); options = false }) { Text("Opnieuw meten") }
+                  }
+                  TextButton({state.toggleReferenceIgnored(assignment.tagId)}) {Text(if(assignment.tagId in state.ignoredReferenceIds) "Tag weer gebruiken" else "Tijdelijk negeren")}
                 } }
                 state.wallScanSolution?.quality?.let { Text("Spreiding ${"%.1f".format(it.repeatabilityMm)} mm · vlakfit ${"%.1f".format(it.rmsMm)} mm", style = MaterialTheme.typography.bodySmall) }
                 Spacer(Modifier.height(16.dp))

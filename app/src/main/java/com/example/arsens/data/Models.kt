@@ -235,7 +235,9 @@ data class Project(
     val activeSessionId: String? = null,
     val measurementDraft: MeasurementDraft? = null,
     val referenceGraph: ReferenceGraph = ReferenceGraph(),
-    val migrationSource: String? = null
+    val migrationSource: String? = null,
+    val dimensionComparisons: List<DimensionComparison> = emptyList(),
+    val dimensionWarningMm: Int = 25
 )
 
 data class InstallationResult(

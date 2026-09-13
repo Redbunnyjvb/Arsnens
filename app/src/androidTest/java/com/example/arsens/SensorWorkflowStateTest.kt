@@ -111,7 +111,7 @@ class SensorWorkflowStateTest {
         val sensor = state.project.sensors.single()
         assertEquals(PlacementOrigin.Prepared, sensor.origin)
         assertEquals(SensorStatus.Pending, sensor.status)
-        assertEquals(50, sensor.toleranceMm)
+        assertEquals(25, sensor.toleranceMm)
         assertNull(sensor.placement)
         assertTrue(state.log.results.isEmpty())
     }

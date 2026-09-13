@@ -264,14 +264,8 @@ private class ArCoreCameraRenderer(
             }
             session = runCatching {
                 Session(context).also { arSession ->
-                    // CPU-image resolution, not screen resolution, determines distant-tag detail.
-                    // Keep the default if a device exposes no suitable higher-resolution stream.
-                    runCatching {
-                        arSession.getSupportedCameraConfigs(com.google.ar.core.CameraConfigFilter(arSession))
-                            .filter { it.imageSize.width <= 1920 && it.imageSize.height <= 1440 }
-                            .maxByOrNull { it.imageSize.width.toLong() * it.imageSize.height }
-                            ?.let { arSession.cameraConfig = it }
-                    }.onFailure { Log.w("ARSensCamera", "Using default CPU camera stream", it) }
+                    // ARCore's default CPU stream keeps detection latency within the metrology window.
+                    // A larger full-resolution stream can starve fresh evidence on real devices.
                     val config = Config(arSession).apply {
                         updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                         focusMode = Config.FocusMode.AUTO
@@ -444,6 +438,8 @@ private class ArCoreCameraRenderer(
     }
 
 
+    private val wallObservationHistory = WallObservationHistory()
+
     private fun postWallScanFrame(frame: Frame, request: WallScanRequest, arFromCameraGl: Transform3D,
         cameraGlFromAr: Transform3D, projection: FloatArray, cameraTracking: Boolean, revision: Int) {
         val now = SystemClock.elapsedRealtime()
@@ -476,16 +472,18 @@ private class ArCoreCameraRenderer(
         if (packet != null) heldWallPacket = packet
         val held = heldWallPacket?.takeIf { it.result.trackingFrameId == trackingFrameId }
         val raw = held?.result
-        val observations = if (tracking && raw?.capturedAtElapsedMillis != null &&
-            now - raw.capturedAtElapsedMillis in 0L..DETECTION_FRESH_MILLIS) {
+        val displayObservations = if (tracking && raw?.capturedAtElapsedMillis != null &&
+            now - raw.capturedAtElapsedMillis in 0L..WALL_OVERLAY_HOLD_MILLIS) {
             val capture = held!!.arFromCameraGlAtCapture * Transform3D.cameraGlFromCameraCv()
             raw.standaloneWallPacket!!.tags.map { tag -> WallTagObservation(tag.tagId, tag.sizeMm,
                 raw.capturedAtElapsedMillis, raw.detectionSequence, trackingFrameId,
                 capture * tag.cameraCvFromTag, capture, raw.standaloneWallPacket.referenceUp,
                 tag.reprojectionErrorPx, tag.shortestEdgePx) }
         } else emptyList()
+        val observations = displayObservations.filter { now - it.timestampMillis in 0L..DETECTION_FRESH_MILLIS }
         val scan = WallScanFrame(request.sessionId, trackingFrameId, tracking, observations,
-            if (tracking) ArDisplayProjection.fromOpenGlCamera(surfaceWidth, surfaceHeight, projection, toCamera) else null)
+            if (tracking) ArDisplayProjection.fromOpenGlCamera(surfaceWidth, surfaceHeight, projection, toCamera) else null,
+            wallObservationHistory.visible(now, trackingFrameId, tracking, displayObservations))
         publishResultToMain((raw ?: AprilTagFrameResult()).copy(
             calibrationRevision = revision, trackingFrameId = trackingFrameId,
             transformerPose = null, displayProjection = null, arTracking = tracking, nativeAnchorTracking = tracking,
@@ -494,6 +492,7 @@ private class ArCoreCameraRenderer(
     }
 
     private fun resetTrackingReference() {
+        wallObservationHistory.clear()
         heldWallPacket = null
         nativeAnchor?.detach()
         nativeAnchor = null
@@ -1436,6 +1435,7 @@ private const val DETECTION_INTERVAL_STABLE_MILLIS = 150L
 // Versheidsdrempel: boven deze leeftijd is de tag niet "vers in beeld" → terug naar FAST-cadans.
 // Ruim boven STABLE (150ms) zodat steady tracking niet wisselt; ≈ PER_TAG_POSE_FRESH_MILLIS (250ms).
 private const val DETECTION_FRESH_MILLIS = 250L
+private const val WALL_OVERLAY_HOLD_MILLIS = 700L
 private const val METERS_TO_MILLIMETERS = 1000.0
 private const val ENABLE_ARCORE_DEPTH_CURSOR = false
 private const val MAX_ARCORE_FRAME_JUMP_MM = 900.0

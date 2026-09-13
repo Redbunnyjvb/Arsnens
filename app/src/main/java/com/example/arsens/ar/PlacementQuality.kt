@@ -88,7 +88,8 @@ fun computePlacementQuality(
         status == ArTrackingStatus.TagCalibration && reprojGood && jitterGood && motionGood && isStableLock &&
             result.rejectedMarkerIds.isEmpty() ->
             QualityGrade.High
-        (status == ArTrackingStatus.TagCalibration || status == ArTrackingStatus.ArCoreTracking) &&
+        (status == ArTrackingStatus.TagCalibration || status == ArTrackingStatus.ArCoreTracking ||
+            (status == ArTrackingStatus.DriftPossible && result.arTracking && result.nativeAnchorTracking)) &&
             reprojOk ->
             QualityGrade.Medium
         else -> QualityGrade.Low
@@ -145,7 +146,8 @@ fun sensorPlacementBlockReason(result: AprilTagFrameResult, quality: PlacementQu
     result.trackingStatus == ArTrackingStatus.NeedsRecalibration -> result.poseDiagnostic
         ?: "De uitlijning blijft afwijken. Scan andere referenties of kies AR opnieuw ijken."
     !result.anchorSettled -> result.poseDiagnostic ?: "De eerste kalibratie of een ankercorrectie is nog bezig."
-    result.trackingStatus !in listOf(ArTrackingStatus.TagCalibration, ArTrackingStatus.ArCoreTracking) ->
+    result.trackingStatus !in listOf(ArTrackingStatus.TagCalibration, ArTrackingStatus.ArCoreTracking) &&
+        !(result.trackingStatus == ArTrackingStatus.DriftPossible && result.nativeAnchorTracking) ->
         "De laatste bevestigde kalibratie is te oud. Scan opnieuw een referentietag."
     quality?.grade !in listOf(QualityGrade.High, QualityGrade.Medium) ->
         quality?.reasons?.takeIf { it.isNotEmpty() }?.joinToString("; ") ?: "De plaatsingskwaliteit wordt nog bepaald."

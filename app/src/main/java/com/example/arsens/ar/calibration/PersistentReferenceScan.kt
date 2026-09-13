@@ -79,7 +79,7 @@ class PersistentReferenceScan {
         estimates.forEach { estimate ->
             if (estimate.assignment.tagId !in nodes) nodes[estimate.assignment.tagId] = ReferenceTagNode(
                 estimate.assignment.tagId, estimate.assignment.wall, estimate.assignment.sizeMm,
-                estimate.referenceFromTag.values.toList(), estimate.referenceUp.array().toList(),
+                estimate.referenceFromTag.values.canonicalValues(), estimate.referenceUp.array().canonicalValues(),
                 estimate.sampleCount, estimate.repeatabilityMm, estimate.assignment.tagId == graph.seedTagId)
         }
         graph = graph.copy(nodes = nodes.values.toList())
@@ -108,7 +108,7 @@ class PersistentReferenceScan {
             val scatter = sqrt(buffer.sumOf { distance(it.second, mean).let { d -> d * d } } / buffer.size)
             val rotation = buffer.maxOf { it.second.rotationAngleDegreesTo(mean) }
             if (scatter > 10 || rotation > 5) continue
-            graph = graph.copy(edges = graph.edges + ReferencePoseEdge(from.tagId, to.tagId, mean.values.toList(), buffer.size,
+            graph = graph.copy(edges = graph.edges + ReferencePoseEdge(from.tagId, to.tagId, mean.values.canonicalValues(), buffer.size,
                 buffer.last().first - buffer.first().first, wallMedian(errors), scatter, rotation, java.time.Instant.now().toString()))
         }
         val rejected = solution().rejectedEdges
@@ -127,4 +127,7 @@ class PersistentReferenceScan {
         }
     }
     private fun distance(a: Transform3D, b: Transform3D) = (WallVector.from(a.translation()) - WallVector.from(b.translation())).length()
+
+    // Android JSON serializes -0.0 as 0. Keep in-memory snapshots identical after a reload.
+    private fun DoubleArray.canonicalValues() = map { if (it == 0.0) 0.0 else it }
 }

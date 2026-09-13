@@ -34,12 +34,14 @@ internal fun WorkflowSessionHistory(state: WorkflowAppState) {
                 val previous = session.baseline.firstOrNull { it.sensorId == measurement.sensorId }?.measuredPositionMm
                 val actual = measurement.result.measuredPositionMm
                 val plan = session.sensorDefinitions.firstOrNull { it.id == measurement.sensorId }
-                Text("Sensor ${measurement.sensorId} · ${measurement.action.name}${if (reverted) " · teruggedraaid" else ""}")
-                Text("Gemeten: ${actual?.toReadableMm()} mm · ${measurement.method.name}", style = MaterialTheme.typography.bodySmall)
+                Text("Sensor ${measurement.sensorId} · ${measurement.action.label}${if (reverted) " · teruggedraaid" else ""}")
+                Text("Gemeten: ${actual?.toReadableMm()} · ${measurement.method.label}", style = MaterialTheme.typography.bodySmall)
+                measurement.captureEvidence?.let { evidence -> Text("${evidence.sampleCount} beelden · spreiding ${"%.1f".format(evidence.scatterMm)} mm",style=MaterialTheme.typography.bodySmall) }
                 if (plan?.origin == PlacementOrigin.Prepared) Text("Doel: ${measurement.result.expectedPositionMm.toReadableMm()} · afwijking ${measurement.result.distanceErrorMm} mm · radius ${plan.toleranceMm} mm", style = MaterialTheme.typography.bodySmall)
                 if (actual != null && previous != null) Text("Verplaatsing sinds vorige sessie: ${distanceMm(actual - previous)} mm", style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
             }
         }
+        WorkflowDimensionComparison(state.reportProject.dimensionComparisons,state.project.dimensionWarningMm)
     }
 }

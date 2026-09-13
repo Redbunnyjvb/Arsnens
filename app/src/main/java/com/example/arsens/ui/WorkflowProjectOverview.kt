@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.example.arsens.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -8,53 +9,95 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.arsens.data.*
 
 @Composable
 internal fun WorkflowProjectOverview(state: WorkflowAppState) {
-    WorkflowShell(title = state.project.projectName, subtitle = "Projectoverzicht", onBack = state::closeProject,
-        overflowItems = workflowTopBarMenuItems(state)) {
-        item { WorkflowMessage(state.message) }
+    var panel by remember(state.project.projectId) { mutableStateOf<String?>(if(state.dimensionEditorExpanded) "geometry" else null) }
+    val scope=rememberCoroutineScope()
+    val stlPicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { files ->
+        if(files.isNotEmpty()) state.addStlModelsThenAskPlace(files,scope)
+    }
+    val project=state.project
+    val ready=!project.needsWallCalibration && project.markers.any { it.active && it.isAprilTagCalibrationMarker() }
+    val session=project.activeSession
+    LaunchedEffect(project.stlModels) { state.ensureStlMeshesLoaded() }
+    WorkflowShell(title=project.projectName,subtitle="Project",onBack=state::closeProject,overflowItems=workflowTopBarMenuItems(state)) {
         item {
-            val hasGeometry = !state.project.needsWallCalibration && state.project.markers.isNotEmpty()
-            OverviewCard("Volgende stap") {
-                Text(when {
-                    !hasGeometry -> "Bepaal de maten en scan de vaste referentietags rondom de tank."
-                    state.project.activeSession == null -> "De referentie staat klaar. Bereid sensoren voor of start een meetsessie."
-                    else -> "${state.project.activeSession?.name} is actief. Open de camera en richt op een vaste referentietag."
-                })
-                Button(onClick = {
-                    if (!hasGeometry) state.beginWallScan()
-                    else if (state.project.activeSession != null) state.chooseMode(WorkMode.OnTheFly)
-                    else state.message = "Vul hieronder de sessiegegevens in en kies Nieuwe sessie starten."
-                }, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (!hasGeometry) "Contour scannen" else if (state.project.activeSession != null) "Camera openen" else "Nieuwe sessie voorbereiden")
+            Text(if(session!=null) "${session.name} · actief" else if(ready) "Klaar voor een meetsessie" else "Stel je transformator in",
+                style=MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(8.dp))
+            Text(if(session!=null) "${session.acceptedMeasurements.size} metingen opgeslagen" else if(ready) "Kies een sessie of bereid sensoren voor." else "Voeg eventueel STL toe. Bepaal daarna de contour.",
+                style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(16.dp))
+            Button(onClick={ if(!ready) state.beginWallScan() else if(session!=null) state.chooseMode(WorkMode.OnTheFly) else panel="sessions" },
+                modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)) { Text(if(!ready) "Contour scannen" else if(session!=null) "Camera hervatten" else "Nieuwe meetsessie") }
+        }
+        item {
+            OutlinedCard(Modifier.fillMaxWidth()) {
+                ProjectRow("Geometrie", project.dimensionsMm.let { d ->
+                    if(d.x>0 && d.y>0 && d.z>0) "${d.x} × ${d.y} × ${d.z} mm · ${project.markers.size} refs" else "Maten en referentietags" }) {
+                    state.dimensionEditorExpanded=true;panel="geometry"
                 }
+                HorizontalDivider()
+                ProjectRow("CAD / STL",if(project.stlModels.isEmpty()) "Optioneel · model toevoegen" else "${project.stlModels.size} onderdelen · 3D bekijken") {
+                    if(project.stlModels.isEmpty()) stlPicker.launch(arrayOf("*/*")) else state.go(WorkflowScreen.Stl)
+                }
+                HorizontalDivider()
+                ProjectRow("Sensorplan · 2D", "${project.sensors.size} sensoren · ${project.sensors.count { it.origin==PlacementOrigin.Prepared }} voorbereid") { panel="plan" }
+                HorizontalDivider()
+                ProjectRow("Meetsessies",if(session!=null) "${session.name} · actief" else "${project.sessions.size} afgerond") { panel="sessions" }
             }
         }
-        item { OverviewCard("1 · Maten & referentie") {
-            val d = state.project.dimensionsMm
-            Text("${d.x.takeIf { it > 0 } ?: "—"} × ${d.y.takeIf { it > 0 } ?: "—"} × ${d.z.takeIf { it > 0 } ?: "—"} mm")
-            Text("${state.project.markers.size} vaste tags · ${state.project.referenceGraph.nodes.size} tags in de contour")
-            Text(if (state.project.hasWallCalibration) "Contour geaccepteerd · bovenkant rechtstreeks gekoppeld"
-                else if (state.project.referenceGraph.nodes.isNotEmpty()) "Contour gedeeltelijk opgeslagen"
-                else "Contour nog instellen", style = MaterialTheme.typography.bodySmall)
-            WorkflowDimensionsEditor(state)
-            OutlinedButton(state::beginWallScan, Modifier.fillMaxWidth()) { Text("Contour scannen / hervatten") }
-            var advanced by remember { mutableStateOf(false) }
-            TextButton({ advanced = !advanced }) { Text(if (advanced) "Minder opties" else "Geavanceerd: bekende tagposities") }
-            if (advanced) WorkflowReferenceMethodCard(state)
-        } }
-        item { WorkflowAssemblyCard(state) }
-        item { OverviewCard("3 · Sensorplan") {
-            Text("${state.project.sensors.size} sensoren · ${state.project.sensors.count { it.origin == PlacementOrigin.Prepared }} voorbereid")
-            Text("Bereid doelpunten in 2D voor, importeer een meetprogramma of voeg sensoren toe tijdens een sessie.", style = MaterialTheme.typography.bodySmall)
-            OutlinedButton({ state.chooseMode(WorkMode.Prepared) }, Modifier.fillMaxWidth()) { Text("Sensoren voorbereiden in 2D") }
-            WorkflowProgramImport(state)
-        } }
-        item { WorkflowSessionsCard(state) }
-        item { OutlinedButton({ state.go(WorkflowScreen.Report) }, Modifier.fillMaxWidth()) { Text("Rapport & meethistorie") } }
+        item {
+            OutlinedButton({ state.go(WorkflowScreen.Report) },Modifier.fillMaxWidth()) { Text("Rapport & historie") }
+            state.project.measurementDraft?.let { draft ->
+                Text("Concept van ${draft.sensorId} bewaard",style=MaterialTheme.typography.bodySmall)
+                TextButton({ state.chooseMode(WorkMode.OnTheFly) }) { Text("Concept hervatten") }
+                TextButton(state::cancelMeasurement) { Text("Concept verwerpen") }
+            }
+        }
+        item { state.message?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) } }
+    }
+    if(panel!=null) ModalBottomSheet(onDismissRequest={ panel=null;state.dimensionEditorExpanded=false }) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).verticalScroll(rememberScrollState()).padding(horizontal=20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            when(panel) {
+                "geometry" -> {
+                    Text("Maten & referentie",style=MaterialTheme.typography.titleLarge)
+                    WorkflowDimensionsEditor(state,showToggle=false)
+                    WorkflowDimensionComparison(project.dimensionComparisons,project.dimensionWarningMm)
+                    OutlinedButton({ panel=null;state.beginWallScan() },Modifier.fillMaxWidth()) { Text("Contour scannen / hervatten") }
+                    var advanced by remember { mutableStateOf(false) }
+                    TextButton({advanced=!advanced}) {Text("Geavanceerd")}
+                    if(advanced) {
+                        WorkflowReferenceMethodCard(state)
+                        WorkflowNumberField("Waarschuwen bij verschil (mm)",project.dimensionWarningMm.toString(),state::setDimensionWarning,Modifier.fillMaxWidth())
+                    }
+                }
+                "plan" -> {
+                    Text("Sensorplan",style=MaterialTheme.typography.titleLarge)
+                    Button({panel=null;state.chooseMode(WorkMode.Prepared)},Modifier.fillMaxWidth()) {Text("2D openen")}
+                    WorkflowProgramImport(state)
+                }
+                else -> WorkflowSessionsCard(state)
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun ProjectRow(title: String, summary: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(18.dp),verticalAlignment=Alignment.CenterVertically) {
+        Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+            Text(title,style=MaterialTheme.typography.titleMedium)
+            Text(summary,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text("›",style=MaterialTheme.typography.headlineSmall,color=MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -78,6 +121,8 @@ internal fun WorkflowSessionsCard(state: WorkflowAppState) {
             }
         }
         if (state.project.activeSession?.status == SessionStatus.OPEN) {
+            state.project.activeSession?.summary()?.let { Text("${it.placed} geplaatst · ${it.moved} verplaatst · ${it.verified} gecontroleerd",style=MaterialTheme.typography.bodySmall) }
+            state.project.activeSession?.summary()?.let { Text("${it.unchanged} ongewijzigd · ${it.remaining} nog te plaatsen",style=MaterialTheme.typography.bodySmall) }
             Button({ state.chooseMode(WorkMode.OnTheFly) }, Modifier.fillMaxWidth()) { Text("Sessie hervatten in camera") }
             OutlinedButton(state::closeSession, Modifier.fillMaxWidth()) { Text("Sessie afronden") }
         } else {
@@ -91,10 +136,10 @@ internal fun WorkflowSessionsCard(state: WorkflowAppState) {
 }
 
 @Composable
-internal fun WorkflowDimensionsEditor(state: WorkflowAppState) {
+internal fun WorkflowDimensionsEditor(state: WorkflowAppState, showToggle: Boolean = true) {
     var expanded by state::dimensionEditorExpanded
-    TextButton({ expanded = !expanded }) { Text(if (expanded) "Maten sluiten" else "Maatbron kiezen / maten instellen") }
-    if (!expanded) return
+    if (showToggle) TextButton({ expanded = !expanded }) { Text(if (expanded) "Maten sluiten" else "Maatbron kiezen / maten instellen") }
+    if (showToggle && !expanded) return
     var sources by remember(state.project.dimensionValues) { mutableStateOf(List(3) { index ->
         state.project.dimensionValues.firstOrNull { it.axis == listOf("x", "y", "z")[index] }?.source
             ?: if (index == 2) DimensionSource.MANUAL else DimensionSource.SCANNED }) }
@@ -131,7 +176,7 @@ internal fun WorkflowDimensionsEditor(state: WorkflowAppState) {
 internal fun WorkflowMeasurementActions(state: WorkflowAppState, id: String) {
     Text(state.project.activeSession?.name ?: "Geen actieve sessie", style = MaterialTheme.typography.labelLarge)
     if (state.armedSensorId == id) {
-        Text("${state.armedAction.name} · meting actief")
+        Text("${state.armedAction.label} · meting actief")
         TextButton(state::cancelMeasurement) { Text("Annuleren") }
     } else {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -148,9 +193,12 @@ internal fun WorkflowDraftDialog(state: WorkflowAppState) {
     AlertDialog(onDismissRequest = {}, title = { Text("Meting controleren · sensor ${draft.sensorId}") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Positie: ${state.operatorText(draft.result.measuredPositionMm)} mm")
-            Text("Afwijking van doel: ${draft.result.distanceErrorMm} mm · ${draft.method.name}")
+            if(state.project.sensors.firstOrNull { it.id==draft.sensorId }?.origin==PlacementOrigin.Prepared)
+                Text("Afwijking van doel: ${draft.result.distanceErrorMm} mm")
+            Text(draft.method.label)
+            draft.captureEvidence?.let { Text("${it.sampleCount} beelden · spreiding ${"%.1f".format(it.scatterMm)} mm",style=MaterialTheme.typography.bodySmall) }
             state.resultFor(draft.sensorId)?.measuredPositionMm?.let { old -> Text("Vorige positie: ${state.operatorText(old)} mm") }
-            Text("${state.project.activeSession?.name} · ${draft.action.name}")
+            Text("${state.project.activeSession?.name} · ${draft.action.label}")
         } }, confirmButton = { TextButton(state::acceptDraft) { Text("Meting accepteren") } },
         dismissButton = { TextButton(state::cancelMeasurement) { Text("Verwerpen") } })
 }

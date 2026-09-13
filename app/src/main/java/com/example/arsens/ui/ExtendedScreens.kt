@@ -13,6 +13,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -115,7 +118,10 @@ internal fun TransformerMapWorkspace(
     onResetPlacement: (String) -> Unit,
     onCamera: (String?) -> Unit,
     overflowItems: List<ArSensMenuItem> = emptyList(),
-    readOnly: Boolean = false
+    readOnly: Boolean = false,
+    sessionOptions: List<Pair<String?,String>> = emptyList(),
+    selectedSessionId: String? = null,
+    onSessionSelected: (String?) -> Unit = {}
 ) {
     var selectedView by remember(initialView) { mutableStateOf(initialView) }
     var zoom by remember { mutableStateOf(1f) }
@@ -133,12 +139,16 @@ internal fun TransformerMapWorkspace(
     var search by remember { mutableStateOf("") }
     var showSensors by remember { mutableStateOf(true) }
     var showTags by remember { mutableStateOf(true) }
+    var showTargets by remember { mutableStateOf(true) }
+    var showMeasured by remember { mutableStateOf(true) }
     val sensors = project.sensors.sortedBy { it.order }
     val tags = project.markers.filter { it.isAprilTagCalibrationMarker() }.sortedBy { it.id }
     val selectedSensor = (selected as? MapMoveTarget.Sensor)?.let { t -> sensors.firstOrNull { it.id == t.id } }
     val selectedTag = (selected as? MapMoveTarget.Tag)?.let { t -> tags.firstOrNull { it.id == t.id } }
     val mapProject = project.copy(
-        sensors = if (showSensors) sensors.filter { mapViewForSensor(it, project.dimensionsMm) == selectedView } else emptyList(),
+        sensors = if (showSensors) sensors.map { sensor ->
+            if(sensor.origin==PlacementOrigin.OnTheFly) log.results.firstOrNull { it.sensorId==sensor.id }?.measuredPositionMm?.let { sensor.copy(positionMm=it) } ?: sensor else sensor
+        }.filter { mapViewForSensor(it, project.dimensionsMm) == selectedView } else emptyList(),
         markers = if (showTags) tags.filter { mapViewForMarker(it) == selectedView } else emptyList()
     )
     fun changeView(view: TransformerMapView) {
@@ -183,13 +193,46 @@ internal fun TransformerMapWorkspace(
     val sequence = if (selected is MapMoveTarget.Tag) tags.map { MapMoveTarget.Tag(it.id) }
         else sensors.map { MapMoveTarget.Sensor(it.id) }
     val index = sequence.indexOf(selected)
-    Column(Modifier.fillMaxSize().background(Color(0xFFEFF3F7)).safeDrawingPadding()) {
-        ArSensGlassTopBar(title = project.projectName, onBack = onBack,
-            modifier = Modifier.padding(8.dp).fillMaxWidth(), dark = false, overflowItems = overflowItems) {
-            ArSensCounterPill(project.placementCountLabel, dark = false)
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xFFF7F9FB)).safeDrawingPadding()) {
+    val compact=maxWidth>maxHeight
+    val detailHeight = maxHeight * if(compact) 0.36f else 0.30f
+    Column(Modifier.fillMaxSize()) {
+        Surface(color=Color.White) {
+            Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                TextButton(onBack) { Text("Terug") }
+                Column(Modifier.weight(1f)) {
+                    Text("2D · ${project.projectName}",fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Text(project.placementCountLabel,fontSize=11.sp,color=ArSensMuted)
+                }
+                Box {
+                    TextButton({menu="sessions"}) {Text("${sessionOptions.firstOrNull { it.first==selectedSessionId }?.second ?: "Actueel"} ▾")}
+                    DropdownMenu(menu=="sessions",{menu=null}) {
+                        (sessionOptions.ifEmpty {listOf(null to "Actueel")}).forEach { (id,label) ->
+                            DropdownMenuItem(text={Text(label)},onClick={ select(null);mode=MapEditMode.Select;onSessionSelected(id);menu=null })
+                        }
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal=12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            listOf("Selecteren" to MapEditMode.Select,"Voorbereiden" to MapEditMode.Sensor,"Meten" to MapEditMode.Measure).forEach { (label,value) ->
+                if(!readOnly || value!=MapEditMode.Sensor) FilterChip(selected=mode==value,onClick={selectMode(value)},label={Text(label)},modifier=Modifier.weight(1f),enabled=!moving)
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+            Box {
+                TextButton({menu="plane"},enabled=!moving) {Text("${selectedView.label} ▾")}
+                DropdownMenu(menu=="plane",{menu=null}) { TransformerMapView.entries.forEach { view ->
+                    DropdownMenuItem(text={Text(view.label)},onClick={changeView(view);selected=null;menu=null})
+                } }
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton({menu="layers"},enabled=!moving) {Text("Lagen")}
+            TextButton({sensorTab=selected !is MapMoveTarget.Tag;menu="list"},enabled=!moving) {Text("Lijst")}
+            TextButton({zoom=1f;pan=Offset.Zero}) {Text("Fit")}
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            TransformerMapCanvas(project = mapProject, log = log, selectedView = selectedView,
+            TransformerMapCanvas(project = mapProject, log = log, selectedView = selectedView, showTargets=showTargets,showMeasured=showMeasured,
                 mapZoom = zoom, mapPan = pan, measureStart = measureStart, measureEnd = measureEnd,
                 selectedTarget = selected, moveMode = moving,
                 dragTarget = selected.takeIf { moving }, dragPoint = draftPoint,
@@ -197,25 +240,11 @@ internal fun TransformerMapWorkspace(
                 onMoveCancel = { draftPoint = null }, onTapPoint = ::tap,
                 onTransform = { delta, factor -> zoom = (zoom * factor).coerceIn(0.35f, 6f); pan += delta },
                 modifier = Modifier.fillMaxSize().testTag("transformer-map"))
-            Box(Modifier.align(Alignment.TopStart).padding(8.dp)) {
-                OutlinedButton(onClick = { menu = "plane" }, enabled = !moving) { Text(selectedView.label) }
-                DropdownMenu(expanded = menu == "plane", onDismissRequest = { menu = null }) {
-                    TransformerMapView.entries.forEach { view ->
-                        DropdownMenuItem(text = { Text(view.label) }, onClick = { changeView(view); selected = null; menu = null })
-                    }
-                }
-            }
-            Column(Modifier.align(Alignment.CenterEnd).padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                MapRailButton("Lagen", menu == "layers", enabled = !moving) { menu = "layers" }
-                MapRailButton(modeLabel, true, enabled = !moving) { menu = "mode" }
-                MapRailButton("Lijst", menu == "list", enabled = !moving) { sensorTab = selected !is MapMoveTarget.Tag; menu = "list" }
-                MapRailButton("Fit", false) { zoom = 1f; pan = Offset.Zero }
-            }
         }
-        MaterialTheme(colorScheme = WorkflowCameraDarkScheme) {
-            Surface(color = WorkflowCameraPanel, contentColor = Color.White,
+        MaterialTheme {
+            Surface(color = Color.White, contentColor = ArSensInk,
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
-                Column(Modifier.fillMaxWidth().heightIn(max = 245.dp).verticalScroll(rememberScrollState()).padding(14.dp),
+                Column(Modifier.fillMaxWidth().heightIn(max = detailHeight).verticalScroll(rememberScrollState()).padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     if (selectedSensor != null || selectedTag != null) {
                         Text(selectedSensor?.displayName() ?: "Tag ${selectedTag!!.id}", fontWeight = FontWeight.Bold)
@@ -250,7 +279,7 @@ internal fun TransformerMapWorkspace(
                                 TextButton(onClick = { select(null) }) { Text("Sluit") }
                             }
                             if (!readOnly) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { moving = true }) { Text("Verplaatsen") }
+                                if(selectedSensor?.origin!=PlacementOrigin.OnTheFly) OutlinedButton(onClick = { moving = true }) { Text("Verplaatsen") }
                                 OutlinedButton(onClick = {
                                     if (selectedSensor != null) editing = selectedSensor
                                     else { onEditTag(selectedTag!!.id); menu = "tagEdit" }
@@ -277,14 +306,15 @@ internal fun TransformerMapWorkspace(
                     } else {
                         Text("Selecteren | ${selectedView.label}", fontWeight = FontWeight.Bold)
                         Text("Tik een sensor of tag. Sleep om de kaart te verschuiven.", fontSize = 13.sp)
-                        TextButton(onClick = { onCamera(null) }) { Text("Camera openen") }
+                        if(!readOnly) TextButton(onClick = { onCamera(null) }) { Text("Camera openen") }
                     }
                     message?.takeIf { it.isNotBlank() }?.let { Text(it, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis) }
                 }
             }
         }
     }
-    if (menu != null && menu != "plane") {
+    }
+    if (menu != null && menu !in listOf("plane","sessions")) {
         androidx.compose.ui.window.Dialog(onDismissRequest = { menu = null }) {
             WorkflowStlToolPanel(title = when (menu) {
                 "mode" -> "Werkwijze"; "list" -> "Sensoren en tags"; "layers" -> "Lagen"
@@ -296,7 +326,9 @@ internal fun TransformerMapWorkspace(
                         TextButton(onClick = { selectMode(value) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
                     }
                     "layers" -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) { Switch(showSensors, { showSensors = it }); Text("Sensoren en doelradius") }
+                        Row(verticalAlignment = Alignment.CenterVertically) { Switch(showSensors, { showSensors = it }); Text("Sensoren") }
+                        Row(verticalAlignment = Alignment.CenterVertically) { Switch(showTargets, { showTargets = it }); Text("Doelgebieden") }
+                        Row(verticalAlignment = Alignment.CenterVertically) { Switch(showMeasured, { showMeasured = it }); Text("Gemeten posities") }
                         Row(verticalAlignment = Alignment.CenterVertically) { Switch(showTags, { showTags = it }); Text("Referentietags") }
                     }
                     "list" -> {
@@ -378,7 +410,8 @@ private fun TransformerMapCanvas(
     onMoveCancel: () -> Unit = {},
     onTapPoint: (MapMeasurePoint) -> Unit,
     onTransform: (Offset, Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showTargets: Boolean = true, showMeasured: Boolean = true
 ) {
     val tapHandler by rememberUpdatedState(onTapPoint)
     val moveBegin by rememberUpdatedState(onMoveBegin)
@@ -395,12 +428,12 @@ private fun TransformerMapCanvas(
                 if (moveMode) {
                     // Verplaats-modus: sleep een sensor/tag rechtstreeks (geen pan/zoom). De sleep pakt
                     // het dichtstbijzijnde punt onder de vinger; zonder treffer gebeurt er niets.
-                    Modifier.pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers, selectedTarget) {
+                    Modifier.pointerInput(selectedView, mapZoom, mapPan, project, selectedTarget, results, showTargets, showMeasured) {
                         var grabbed = false
                         detectDragGestures(
                             onDragStart = { offset ->
                                 val layout = mapLayoutFor(Size(size.width.toFloat(), size.height.toFloat()), selectedView, project.dimensionsMm, mapZoom, mapPan)
-                                val target = measurePointFromTap(offset, layout, selectedView, project)?.toMoveTarget(project)
+                                val target = measurePointFromTap(offset, layout, selectedView, project, results, showTargets, showMeasured)?.toMoveTarget(project)
                                 val draftScreen = draft?.toScreenPoint(selectedView, layout.origin, layout.mapWidth, layout.mapHeight, project.dimensionsMm)
                                 val hitDraft = draftScreen != null && (draftScreen - offset).getDistance() <= 42f
                                 grabbed = selectedTarget != null && (target == selectedTarget || hitDraft)
@@ -422,7 +455,7 @@ private fun TransformerMapCanvas(
                     }
                 } else {
                     Modifier
-                        .pointerInput(selectedView, mapZoom, mapPan, project.sensors, project.markers) {
+                        .pointerInput(selectedView, mapZoom, mapPan, project, results, showTargets, showMeasured) {
                             detectTapGestures { tap ->
                                 val layout = mapLayoutFor(
                                     canvasSize = Size(size.width.toFloat(), size.height.toFloat()),
@@ -435,7 +468,8 @@ private fun TransformerMapCanvas(
                                     tap = tap,
                                     layout = layout,
                                     view = selectedView,
-                                    project = project
+                                    project = project,
+                                    results = results, showTargets = showTargets, showMeasured = showMeasured
                                 ) ?: return@detectTapGestures
                                 tapHandler(tappedPoint)
                             }
@@ -459,7 +493,7 @@ private fun TransformerMapCanvas(
             selectedTarget = selectedTarget,
             dragTarget = dragTarget,
             dragPoint = dragPoint,
-            results = results
+            results = results, showTargets=showTargets,showMeasured=showMeasured
         )
     }
 }
@@ -475,7 +509,8 @@ private fun DrawScope.drawTransformerMap(
     selectedTarget: MapMoveTarget? = null,
     dragTarget: MapMoveTarget? = null,
     dragPoint: MapMeasurePoint? = null,
-    results: Map<String, com.example.arsens.data.InstallationResult>
+    results: Map<String, com.example.arsens.data.InstallationResult>,
+    showTargets: Boolean = true, showMeasured: Boolean = true
 ) {
     val layout = mapLayoutFor(size, selectedView, project.dimensionsMm, mapZoom, mapPan)
     val mapWidth = layout.mapWidth
@@ -483,7 +518,7 @@ private fun DrawScope.drawTransformerMap(
     val origin = layout.origin
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = android.graphics.Color.rgb(31, 41, 51)
-        textSize = 24f
+        textSize = 11.sp.toPx()
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
 
@@ -519,8 +554,8 @@ private fun DrawScope.drawTransformerMap(
     )
     drawContext.canvas.nativeCanvas.drawText(
         verticalLabel,
-        origin.x - paint.measureText(verticalLabel) - 8f,
-        origin.y + 18f,
+        origin.x,
+        origin.y - 8.dp.toPx(),
         paint
     )
 
@@ -547,6 +582,8 @@ private fun DrawScope.drawTransformerMap(
     project.sensors.forEach { sensor ->
         val result = results[sensor.id]
         val prepared = sensor.origin == PlacementOrigin.Prepared
+        if (!showTargets && (!showMeasured || result?.measuredPositionMm == null)) return@forEach
+        if (!prepared && !showMeasured) return@forEach
         val displayedPosition = if (prepared) sensor.positionMm else result?.measuredPositionMm ?: return@forEach
         val expected = dragPoint
             ?.takeIf { (dragTarget as? MapMoveTarget.Sensor)?.id == sensor.id }
@@ -556,23 +593,26 @@ private fun DrawScope.drawTransformerMap(
         val color = mapStatusColor(status)
 
         val radius = sensor.toleranceMm.toFloat() / selectedView.horizontalMm(project.dimensionsMm) * mapWidth
-        if (prepared) {
+        if (prepared && showTargets) {
             drawCircle(color.copy(alpha = 0.14f), radius = radius, center = expected)
             drawCircle(color.copy(alpha = 0.55f), radius = radius, center = expected, style = Stroke(2f))
         }
-        result?.measuredPositionMm?.takeIf { prepared && sensor.status != SensorStatus.Pending }?.let { measured ->
+        result?.measuredPositionMm?.takeIf { showMeasured && prepared }?.let { measured ->
             val actual = measured.toMapPoint(selectedView, origin, mapWidth, mapHeight, project.dimensionsMm)
-            drawLine(color, expected, actual, strokeWidth = 2f)
-            drawCircle(color, radius = 7f, center = actual)
+            if(showTargets) drawLine(color, expected, actual, strokeWidth = 2f)
+            drawCircle(color, radius = 5.dp.toPx(), center = actual)
+            if (!showTargets) drawContext.canvas.nativeCanvas.drawText(sensor.id,
+                actual.x + 8.dp.toPx(), actual.y - 8.dp.toPx(), paint)
         }
-        drawCircle(color = color, radius = 11f, center = expected)
+        if(prepared && !showTargets) return@forEach
+        drawCircle(color = color, radius = 5.dp.toPx(), center = expected)
         drawCircle(
             color = Color.White,
-            radius = 11f,
+            radius = 5.dp.toPx(),
             center = expected,
             style = Stroke(width = 2f)
         )
-        drawContext.canvas.nativeCanvas.drawText(sensor.id, expected.x + 13f, expected.y + 8f, paint)
+        drawContext.canvas.nativeCanvas.drawText(sensor.id, expected.x + 8.dp.toPx(), expected.y - 8.dp.toPx(), paint)
     }
 
     if (measureStart != null) {
@@ -869,9 +909,12 @@ private fun measurePointFromTap(
     tap: Offset,
     layout: MapLayout,
     view: TransformerMapView,
-    project: Project
+    project: Project,
+    results: Map<String, com.example.arsens.data.InstallationResult> = emptyMap(),
+    showTargets: Boolean = true,
+    showMeasured: Boolean = true
 ): MapMeasurePoint? {
-    val nearest = selectableMapPoints(project, view)
+    val nearest = selectableMapPoints(project, view, results.mapValues { it.value.measuredPositionMm }, showTargets, showMeasured)
         .minByOrNull { point ->
             val screen = point.toScreenPoint(view, layout.origin, layout.mapWidth, layout.mapHeight, project.dimensionsMm)
             hypot((screen.x - tap.x).toDouble(), (screen.y - tap.y).toDouble())
@@ -897,7 +940,11 @@ private fun measurePointFromTap(
     )
 }
 
-internal fun selectableMapPoints(project: Project, view: TransformerMapView): List<MapMeasurePoint> {
+internal fun selectableMapPoints(
+    project: Project, view: TransformerMapView,
+    measuredPositions: Map<String, MmPosition?> = emptyMap(),
+    showTargets: Boolean = true, showMeasured: Boolean = true
+): List<MapMeasurePoint> {
     val dimensions = project.dimensionsMm
     val corners = listOf(
         MapMeasurePoint("hoek", 0.0, 0.0),
@@ -908,8 +955,13 @@ internal fun selectableMapPoints(project: Project, view: TransformerMapView): Li
     val tags = project.markers
         .filter { it.isAprilTagCalibrationMarker() }
         .map { marker -> marker.positionMm.toMapMeasurePoint(view, dimensions, "T${marker.id}").copy(target = MapMoveTarget.Tag(marker.id)) }
-    val sensors = project.sensors.map { sensor ->
-        sensor.positionMm.toMapMeasurePoint(view, dimensions, sensor.id).copy(target = MapMoveTarget.Sensor(sensor.id))
+    val sensors = project.sensors.flatMap { sensor ->
+        buildList {
+            if (showTargets && sensor.origin == PlacementOrigin.Prepared) add(sensor.positionMm)
+            if (showMeasured) measuredPositions[sensor.id]?.let { add(it) }
+        }.distinct().map { position ->
+            position.toMapMeasurePoint(view, dimensions, sensor.id).copy(target = MapMoveTarget.Sensor(sensor.id))
+        }
     }
     return corners + tags + sensors
 }

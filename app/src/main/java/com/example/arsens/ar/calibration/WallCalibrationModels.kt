@@ -20,7 +20,7 @@ data class WallVector(val x: Double, val y: Double, val z: Double) {
 fun Transform3D.wallPoint(point: WallVector) = WallVector.from(transformPoint(point.array()))
 fun Transform3D.wallDirection(v: WallVector) = wallPoint(v) - WallVector.from(translation())
 
-data class WallScanRequest(val sessionId: Long, val defaultSizeMm: Int, val tagSizes: Map<Int, Int>, val maxTagId: Int)
+data class WallScanRequest(val sessionId: Long, val defaultSizeMm: Int, val tagSizes: Map<Int, Int>, val maxTagId: Int, val excludedTagIds: Set<Int> = emptySet())
 data class StandaloneWallTag(val tagId: Int, val sizeMm: Int, val cameraCvFromTag: Transform3D,
     val reprojectionErrorPx: Float, val shortestEdgePx: Float)
 data class StandaloneWallPacket(val sessionId: Long, val tags: List<StandaloneWallTag>, val referenceUp: WallVector)
@@ -35,7 +35,9 @@ data class WallTagObservation(
 }
 
 data class WallScanFrame(val sessionId: Long, val trackingFrameId: Long, val tracking: Boolean,
-    val observations: List<WallTagObservation>, val projectionFromReference: ArDisplayProjection?)
+    val observations: List<WallTagObservation>, val projectionFromReference: ArDisplayProjection?,
+    /** Reprojected display history only; NEVER fed into sample reduction or pose fusion. */
+    val displayObservations: List<WallTagObservation> = observations)
 
 data class WallTagEstimate(val assignment: WallTagAssignment, val referenceFromTag: Transform3D,
     val repeatabilityMm: Double, val sampleCount: Int, val referenceUp: WallVector) {

@@ -17,6 +17,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlacementQualityTest {
+    @Test fun olderReferenceWithTrackingNativeAnchorRemainsMedium() {
+        val result = AprilTagFrameResult(anchorSettled = true, transformerPose = pose(2f),
+            arTracking = true, nativeAnchorTracking = true,
+            trackingStatus = ArTrackingStatus.DriftPossible, calibrationAgeMillis = 60_000L)
+        val quality = computePlacementQuality(result, 2f, false, 14)
+        assertEquals(QualityGrade.Medium, quality.grade)
+        assertTrue(quality.reasons.any { it.contains("ARCore volgt verder") })
+        assertEquals(QualityGrade.Low, computePlacementQuality(result.copy(nativeAnchorTracking = false), 2f, false, 14).grade)
+    }
 
     @Test
     fun conflictingReferencesNeverShowGreenEvenWithPerfectReprojection() {

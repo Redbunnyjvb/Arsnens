@@ -123,7 +123,7 @@ class WallCalibrationUiTest {
     private fun screenshot(name: String) {
         val i=InstrumentationRegistry.getInstrumentation()
         // Capture this app's rendered Compose view; emulator System UI is outside this test.
-        val bitmap=compose.onRoot().captureToImage().asAndroidBitmap()
+        val bitmap=InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         File(i.targetContext.cacheDir,"$name.png").outputStream().use {
             bitmap.compress(Bitmap.CompressFormat.PNG,100,it)
         }

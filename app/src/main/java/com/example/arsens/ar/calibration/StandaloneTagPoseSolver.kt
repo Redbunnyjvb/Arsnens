@@ -7,7 +7,7 @@ import kotlin.math.hypot
 /** Existing IPPE/pose-selection code, expressed in a local front-tag frame at its center. */
 fun solveStandaloneWallTags(detections: List<AprilTagDetection>, intrinsics: CameraIntrinsics,
     request: WallScanRequest): List<StandaloneWallTag> = detections
-    .filter { detection -> detection.id in 0 until request.maxTagId && detections.count { it.id == detection.id } == 1 }
+    .filter { detection -> detection.id in 0 until request.maxTagId && detection.id !in request.excludedTagIds && detections.count { it.id == detection.id } == 1 }
     .mapNotNull { detection ->
         val size = request.tagSizes[detection.id] ?: request.defaultSizeMm
         if (size !in 10..2000 || detection.cornersPx.size != 4) return@mapNotNull null

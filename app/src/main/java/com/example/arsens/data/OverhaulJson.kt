@@ -17,6 +17,12 @@ internal object OverhaulJson {
         DimensionValue(it.getString("axis"), it.getInt("value_mm"), DimensionSource.valueOf(it.getString("source")),
             it.text("source_reference"), it.optBoolean("confirmed"), it.optInt("revision", 1))
     }
+    private fun comparisons(values: List<DimensionComparison>) = JSONArray(values.map { JSONObject().put("axis",it.axis)
+        .put("stl_mm",it.stlMm).put("scan_mm",it.scanMm).put("tank_id",it.tankModelId).put("captured_at",it.capturedAt) })
+    private fun readComparisons(j: JSONArray?) = j.objects { DimensionComparison(it.getString("axis"),it.getInt("stl_mm"),it.getInt("scan_mm"),it.getString("tank_id"),it.getString("captured_at")) }
+    private fun evidence(e: SensorCaptureEvidence) = JSONObject().put("samples",e.sampleCount).put("span_ms",e.spanMs)
+        .put("scatter_mm",e.scatterMm).put("reference_age_ms",e.lastReferenceAgeMs)
+    private fun readEvidence(j: JSONObject?) = j?.let { SensorCaptureEvidence(it.getInt("samples"),it.getLong("span_ms"),it.getDouble("scatter_mm"),it.text("reference_age_ms")?.toLong()) }
     fun graph(graph: ReferenceGraph): JSONObject = JSONObject().put("seed", graph.seedTagId)
         .put("top_offset_mm", graph.topSurfaceOffsetMm).put("height_mm", graph.sideHeightMm)
         .put("assignments", JSONArray(graph.assignments.map { JSONObject().put("id", it.tagId).put("wall", it.wall.name).put("size", it.sizeMm).put("label_source", it.labelSource) }))
@@ -41,6 +47,7 @@ internal object OverhaulJson {
         }, json.optInt("top_offset_mm"), json.text("height_mm")?.toInt())
     }
     fun write(project: Project): JSONObject = JSONObject()
+        .put("comparisons",comparisons(project.dimensionComparisons)).put("dimension_warning_mm",project.dimensionWarningMm)
         .put("dimensions", dimensions(project.dimensionValues)).put("migration_source", project.migrationSource)
         .put("reference_graph", graph(project.referenceGraph)).put("active_session_id", project.activeSessionId)
         .put("geometry_revisions", JSONArray(project.geometryRevisions.map { revision ->
@@ -50,11 +57,12 @@ internal object OverhaulJson {
             JSONObject().put("id", revision.id).put("number", revision.number).put("created_at", revision.createdAt)
                 .put("snapshot", JSONObject(JsonProjectStore.projectToJson(snapshot)))
                 .put("dimensions", dimensions(revision.dimensions)).put("graph", graph(revision.referenceGraph))
+                .put("comparisons",comparisons(revision.comparisons)).put("solver_version",revision.solverVersion)
         })).put("sessions", JSONArray(project.sessions.map(::session)))
         .apply { project.measurementDraft?.let { d -> put("draft", JSONObject().put("session_id", d.sessionId)
             .put("sensor_id", d.sensorId).put("action", d.action.name).put("result", JsonProjectStore.resultToJson(d.result))
             .put("method", d.method.name).put("sensor_tag_id", d.sensorTagId).put("created_at", d.createdAt)
-            .apply { d.audit?.let { put("audit", JsonProjectStore.placementToJson(it)) } }) } }
+            .apply { d.audit?.let { put("audit", JsonProjectStore.placementToJson(it)) }; d.captureEvidence?.let { put("capture",evidence(it)) } }) } }
 
     private fun session(s: MeasurementSession) = JSONObject().put("id", s.id).put("name", s.name).put("operator", s.operator)
         .put("purpose", s.purpose).put("started_at", s.startedAt).put("closed_at", s.closedAt).put("status", s.status.name)
@@ -64,19 +72,20 @@ internal object OverhaulJson {
         .put("measurements", JSONArray(s.measurements.map { m -> JSONObject().put("id", m.id).put("sensor_id", m.sensorId)
             .put("action", m.action.name).put("result", JsonProjectStore.resultToJson(m.result)).put("method", m.method.name)
             .put("sensor_tag_id", m.sensorTagId).apply { m.audit?.let { put("audit", JsonProjectStore.placementToJson(it)) }
-                m.orientation?.let { put("orientation", JSONArray(listOf(it.x, it.y, it.z))) } } }))
+                m.captureEvidence?.let { put("capture",evidence(it)) }; m.orientation?.let { put("orientation", JSONArray(listOf(it.x, it.y, it.z))) } } }))
         .put("actions", JSONArray(s.actions.map { JSONObject().put("id", it.id).put("type", it.type).put("timestamp", it.timestamp)
             .put("measurement_id", it.measurementId).put("target_action_id", it.targetActionId) }))
 
     fun read(project: Project, json: JSONObject?): Project {
         if (json == null) return project
-        return project.copy(dimensionValues = readDimensions(json.optJSONArray("dimensions")),
+        return project.copy(dimensionComparisons=readComparisons(json.optJSONArray("comparisons")), dimensionWarningMm=json.optInt("dimension_warning_mm",25),
+            dimensionValues = readDimensions(json.optJSONArray("dimensions")),
             migrationSource = json.text("migration_source") ?: project.migrationSource,
             referenceGraph = readGraph(json.optJSONObject("reference_graph")), activeSessionId = json.text("active_session_id"),
             geometryRevisions = json.optJSONArray("geometry_revisions").objects { r ->
                 val p = JsonProjectStore.projectFromJson(r.getJSONObject("snapshot").toString())
                 GeometryRevision(r.getString("id"), r.getInt("number"), r.getString("created_at"), p.dimensionsMm,
-                    readDimensions(r.optJSONArray("dimensions")), p.markers, p.coordinateFrame, p.wallCalibration, p.stlModels, readGraph(r.optJSONObject("graph")))
+                    readDimensions(r.optJSONArray("dimensions")), p.markers, p.coordinateFrame, p.wallCalibration, p.stlModels, readGraph(r.optJSONObject("graph")), readComparisons(r.optJSONArray("comparisons")), r.optString("solver_version","rectangular-graph-2"))
             }, sessions = json.optJSONArray("sessions").objects { s -> MeasurementSession(
                 id = s.getString("id"), name = s.getString("name"), operator = s.getString("operator"), purpose = s.optString("purpose"),
                 startedAt = s.getString("started_at"), closedAt = s.text("closed_at"), status = SessionStatus.valueOf(s.getString("status")),
@@ -87,12 +96,13 @@ internal object OverhaulJson {
                     action = MeasurementAction.valueOf(m.getString("action")), result = JsonProjectStore.resultFromJson(m.getJSONObject("result")),
                     method = MeasurementMethod.valueOf(m.getString("method")), sensorTagId = m.text("sensor_tag_id")?.toInt(),
                     audit = m.optJSONObject("audit")?.let(JsonProjectStore::placementFromJson),
+                    captureEvidence = readEvidence(m.optJSONObject("capture")),
                     orientation = m.optJSONArray("orientation")?.let { FloatVector(it.getDouble(0).toFloat(), it.getDouble(1).toFloat(), it.getDouble(2).toFloat()) }) },
                 actions = s.optJSONArray("actions").objects { ActionEvent(it.getString("id"), it.getString("type"), it.getString("timestamp"),
                     it.getString("measurement_id"), it.text("target_action_id")) })
             }, measurementDraft = json.optJSONObject("draft")?.let { d -> MeasurementDraft(d.getString("session_id"), d.getString("sensor_id"),
                 MeasurementAction.valueOf(d.getString("action")), JsonProjectStore.resultFromJson(d.getJSONObject("result")),
                 MeasurementMethod.valueOf(d.getString("method")), d.text("sensor_tag_id")?.toInt(),
-                d.optJSONObject("audit")?.let(JsonProjectStore::placementFromJson), d.getString("created_at")) })
+                d.optJSONObject("audit")?.let(JsonProjectStore::placementFromJson), d.getString("created_at"), readEvidence(d.optJSONObject("capture"))) })
     }
 }

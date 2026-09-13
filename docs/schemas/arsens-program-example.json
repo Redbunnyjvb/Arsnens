@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "units": "mm",
+  "coordinateFrame": "ARSENS_BOX_XYZ",
+  "sensors": [
+    {
+      "id": "T01",
+      "name": "Tanktemperatuur",
+      "side": "Front",
+      "sensorTagId": 200,
+      "target": { "x": 300, "y": 0, "z": 500 },
+      "toleranceMm": 25,
+      "instruction": "Plaats binnen het doelgebied."
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ARSensProgram v1",
+  "description": "Voorbereid sensorplan. ID's en niet-lege sensorTagId's moeten daarnaast uniek zijn; de app controleert deze projectregels bij import.",
+  "type": "object",
+  "required": ["schemaVersion", "units", "coordinateFrame", "sensors"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "units": { "const": "mm" },
+    "coordinateFrame": { "const": "ARSENS_BOX_XYZ" },
+    "sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "target"],
+        "properties": {
+          "id": { "type": "string", "pattern": "\\S" },
+          "name": { "type": "string" },
+          "order": { "type": "integer" },
+          "side": { "enum": ["Front", "Back", "Left", "Right", "Top"], "default": "Front" },
+          "sensorTagId": { "type": ["integer", "null"], "minimum": 0 },
+          "instruction": { "type": "string" },
+          "toleranceMm": { "type": "integer", "minimum": 1, "default": 25 },
+          "target": {
+            "type": "object",
+            "required": ["x", "y", "z"],
+            "properties": {
+              "x": { "$ref": "#/$defs/coordinate" },
+              "y": { "$ref": "#/$defs/coordinate" },
+              "z": { "$ref": "#/$defs/coordinate" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": { "coordinate": { "type": "integer", "minimum": 0, "maximum": 100000 } }
+}

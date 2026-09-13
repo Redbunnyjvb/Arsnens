@@ -77,4 +77,22 @@ class MeasurementSessionsTest {
     @Test fun unsupportedSchemaFailsWithoutDowngrading() {
         assertTrue(runCatching { JsonProjectStore.projectFromJson("""{"schema_version":99,"sensors":[],"markers":[]}""") }.isFailure)
     }
+    @Test fun acceptedGeometryIsReusedAndDimensionComparisonSurvivesNewRevisionAndJson() {
+        val comparison=DimensionComparison("x",10000,10014,"tank","t0")
+        val accepted=project.copy(dimensionComparisons=listOf(comparison)).ensureGeometryRevision("t0")
+        val session=accepted.startMeasurementSession("1","A","","t1")
+        assertEquals(1,session.geometryRevisions.size)
+        assertEquals(accepted.geometryRevisions.single().id,session.activeSession!!.geometryRevisionId)
+        val revised=session.closeMeasurementSession("t2").copy(dimensionsMm=MmPosition(11000,5000,3200)).ensureGeometryRevision("t3")
+        assertEquals(2,revised.geometryRevisions.size)
+        assertEquals(listOf(comparison),revised.geometryRevisions.first().comparisons)
+        assertEquals(revised,JsonProjectStore.projectFromJson(JsonProjectStore.projectToJson(revised)))
+    }
+    @Test fun sensorFrameEvidenceSurvivesDraftAcceptanceAndReload() {
+        val draft=project.startMeasurementSession("1","A","","t0").capture(110)
+        val evidence=SensorCaptureEvidence(12,1400,2.4,150)
+        val accepted=draft.copy(measurementDraft=draft.measurementDraft!!.copy(captureEvidence=evidence)).acceptMeasurementDraft("t1")
+        val restored=JsonProjectStore.projectFromJson(JsonProjectStore.projectToJson(accepted))
+        assertEquals(evidence,restored.activeSession!!.measurements.single().captureEvidence)
+    }
 }

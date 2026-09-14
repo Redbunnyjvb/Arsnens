@@ -120,6 +120,23 @@ class WallCalibrationTest {
         assertNull(solve(datum=WallVerticalDatum(0,-1)).solution)
         assertNull(solve(datum=WallVerticalDatum(0,2001)).solution)
     }
+    @Test fun excludedWallExplainsWhichTagsAndWhetherTheirNormalsDisagree() {
+        val tilt=Transform3D.cameraCvFromTransformerPose(TransformerPose(floatArrayOf(0f,0f,0f),floatArrayOf(0.4f,0f,0f),0f))
+        val tilted=tags().map { if(it.assignment.wall==CalibrationWall.Top) it.copy(referenceFromTag=it.referenceFromTag*tilt) else it }
+        val result=solve(tilted)
+        assertNull(result.solution)
+        assertTrue(result.reason!!,result.reason!!.contains("Boven"))
+        assertEquals(setOf(8,9),result.fitIssues.map { it.tagId }.toSet())
+        assertTrue(result.fitIssues.all { it.normalErrorDegrees>12 && it.planeErrorMm<1 })
+    }
+    @Test fun excludedTopPositionIsReportedSeparatelyFromItsOrientation() {
+        val raised=tags().map { t -> if(t.assignment.wall==CalibrationWall.Top)
+            t.copy(referenceFromTag=Transform3D(t.referenceFromTag.values.copyOf().apply { this[7]+=100.0 })) else t }
+        val result=solve(raised)
+        assertNull(result.solution)
+        assertEquals(setOf(8,9),result.fitIssues.map { it.tagId }.toSet())
+        assertTrue(result.fitIssues.all { it.planeErrorMm>90 && it.normalErrorDegrees<1 })
+    }
     @Test fun legacyJsonDefaultsToKnownPositionsAndAcceptedScanRoundTripsWithoutWorldPose() {
         val old = JsonProjectStore.projectFromJson("""{"project_name":"Old","sensors":[],"markers":[]}""")
         assertEquals(ReferenceGeometryMode.KnownTagPositions,old.referenceGeometryMode)

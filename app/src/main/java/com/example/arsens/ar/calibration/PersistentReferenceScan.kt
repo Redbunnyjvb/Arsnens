@@ -16,6 +16,7 @@ class PersistentReferenceScan {
     private var optimizedGraph: ReferenceGraph? = null
     private var optimized = ReferenceGraphSolution(emptyMap(), emptySet())
     var conflictingTagIds: Set<Int> = emptySet(); private set
+    private var leadingTagId: Int? = null
     val rejectedEdges get() = solution().rejectedEdges
     val referenceFromSeed get() = seedFromReference?.inverseRigid()
     val verifiedTagIds get() = graph.nodes.filter { it.directVerified }.map { it.tagId }.toSet()
@@ -55,19 +56,30 @@ class PersistentReferenceScan {
             o.distanceMm in 150.0..6000.0 }
         if (valid.any { observation -> graph.nodes.any { it.tagId == observation.tagId && it.directVerified } } || seedFromReference == null) {
             // ARCore-only nodes are provisional. They must not veto a direct link to the fixed network.
-            val known = valid.mapNotNull { observation -> graph.nodes.firstOrNull { it.tagId == observation.tagId && it.directVerified }?.let { node ->
-                (solution().poses[node.tagId] ?: Transform3D(node.seedFromTag.toDoubleArray())) * observation.referenceFromTag.inverseRigid()
-            } }
+            val visibleNodes = valid.filter { observation -> graph.nodes.any { it.tagId == observation.tagId } }
+            val direct = visibleNodes.filter { it.tagId in verifiedTagIds }
+            val candidates = direct.ifEmpty { visibleNodes }.sortedByDescending { it.selectionScore }
+            val best = candidates.firstOrNull()
+            val leader = candidates.firstOrNull { it.tagId == leadingTagId && best != null && it.selectionScore >= best.selectionScore * 0.7f } ?: best
+            leadingTagId = leader?.tagId
+            val reliable = candidates.filter { leader != null && it.selectionScore >= leader.selectionScore * 0.4f }
+            val seedUp = graph.nodes.firstOrNull { it.tagId == graph.seedTagId }?.referenceUp?.let { WallVector.from(it.toDoubleArray()) }
+            val known = reliable.map { observation ->
+                val node = graph.nodes.first { it.tagId == observation.tagId }
+                val candidate = (solution().poses[node.tagId] ?: Transform3D(node.seedFromTag.toDoubleArray())) * observation.referenceFromTag.inverseRigid()
+                if (seedUp == null) candidate else gravityAlignedReference(candidate, observation.referenceUp, seedUp, observation.center)
+            }
             if (known.isNotEmpty()) {
                 // Disagreeing fixed references require another view; do not silently drag the project.
-                if (known.any { distance(it, known.first()) > 25 || it.rotationAngleDegreesTo(known.first()) > 5 }) {
-                    conflictingTagIds = valid.filter { it.tagId in verifiedTagIds }.map { it.tagId }.toSet()
+                val pivot = reliable.first().referenceFromCameraCv.translation()
+                if (known.any { (WallVector.from(it.transformPoint(pivot)) - WallVector.from(known.first().transformPoint(pivot))).length() > 25 || it.rotationAngleDegreesTo(known.first()) > 5 }) {
+                    conflictingTagIds = reliable.map { it.tagId }.toSet()
                     seedFromReference = null; live.clear(); pairs.clear(); reprojections.clear()
                     return
                 }
                 conflictingTagIds = emptySet()
                 seedFromReference = known.drop(1).foldIndexed(known.first()) { i, mean, pose ->
-                    mean.blendRigidAtPoint(pose, 1.0 / (i + 2), doubleArrayOf(0.0, 0.0, 0.0)) }
+                    mean.blendRigidAtPoint(pose, 1.0 / (i + 2), pivot) }
             } else if (graph.nodes.isEmpty() && valid.isNotEmpty()) {
                 val first = valid.first()
                 graph = graph.copy(seedTagId = first.tagId)
@@ -91,6 +103,17 @@ class PersistentReferenceScan {
                 estimate.referenceFromTag.values.canonicalValues(), estimate.referenceUp.array().canonicalValues(),
                 estimate.sampleCount, estimate.repeatabilityMm, estimate.assignment.tagId == graph.seedTagId)
         }
+        // Durable weak links describe the ARCore bridge explicitly. Later direct edges coexist
+        // as stronger evidence; the original bridge is kept for provenance.
+        val seed = graph.seedTagId
+        val bridges = nodes.values.filter { it.tagId != seed && graph.nodes.none { old -> old.tagId == it.tagId } }.mapNotNull { node ->
+            val root = nodes[seed] ?: return@mapNotNull null
+            val evidence = estimates.first { it.assignment.tagId == node.tagId }
+            val relative = Transform3D(root.seedFromTag.toDoubleArray()).inverseRigid() * Transform3D(node.seedFromTag.toDoubleArray())
+            ReferencePoseEdge(root.tagId,node.tagId,relative.values.canonicalValues(),node.sampleCount,evidence.captureSpanMillis,evidence.medianReprojectionErrorPx,node.scatterMm,evidence.rotationScatterDegrees,
+                java.time.Instant.now().toString(),directSameFrame=false)
+        }
+        graph = graph.copy(edges = graph.edges + bridges)
         graph = graph.copy(nodes = nodes.values.toList())
         val seq = valid.firstOrNull()?.sequence ?: return
         if (seq <= sequence) return
@@ -102,7 +125,7 @@ class PersistentReferenceScan {
             val from = if (a.tagId < b.tagId) a else b
             val to = if (a.tagId < b.tagId) b else a
             val key = from.tagId to to.tagId
-            if (graph.edges.any { it.fromTagId == key.first && it.toTagId == key.second }) continue
+            if (graph.edges.any { it.fromTagId == key.first && it.toTagId == key.second && it.directSameFrame }) continue
             val cameraFromRef = from.referenceFromCameraCv.inverseRigid()
             val relative = (cameraFromRef * from.referenceFromTag).inverseRigid() * (cameraFromRef * to.referenceFromTag)
             val buffer = pairs.getOrPut(key) { mutableListOf() }
@@ -122,7 +145,7 @@ class PersistentReferenceScan {
         }
         val rejected = solution().rejectedEdges
         val reachable = mutableSetOf<Int>().apply { graph.seedTagId?.let(::add) }
-        repeat(graph.nodes.size) { graph.edges.forEachIndexed { index, edge -> if (index !in rejected) {
+        repeat(graph.nodes.size) { graph.edges.forEachIndexed { index, edge -> if (index !in rejected && edge.directSameFrame) {
             if (edge.fromTagId in reachable) reachable += edge.toTagId; if (edge.toTagId in reachable) reachable += edge.fromTagId
         } } }
         graph = graph.copy(nodes = graph.nodes.map { it.copy(directVerified = it.tagId in reachable) })
@@ -132,7 +155,8 @@ class PersistentReferenceScan {
         return graph.nodes.mapNotNull { node ->
             val assignment = assignments.firstOrNull { it.tagId == node.tagId && it.sizeMm == node.sizeMm && it.wall == node.wall } ?: return@mapNotNull null
             WallTagEstimate(assignment, referenceFromSeed * (solution().poses[node.tagId] ?: Transform3D(node.seedFromTag.toDoubleArray())), node.scatterMm,
-                node.sampleCount, referenceFromSeed.wallDirection(WallVector.from(node.referenceUp.toDoubleArray())))
+                node.sampleCount, referenceFromSeed.wallDirection(WallVector.from(
+                    (graph.nodes.firstOrNull { it.tagId == graph.seedTagId }?.referenceUp ?: node.referenceUp).toDoubleArray())))
         }
     }
     private fun distance(a: Transform3D, b: Transform3D) = (WallVector.from(a.translation()) - WallVector.from(b.translation())).length()

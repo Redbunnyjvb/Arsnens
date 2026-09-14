@@ -76,7 +76,7 @@ internal fun WallCaptureTagChoice(state: WorkflowAppState, modifier: Modifier) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         TextButton({ expanded = true }, enabled = state.wallSeenTags.isNotEmpty()) {
-            Text(state.wallSelectedTagId?.let { "Tag $it${if (state.wallCaptureTag == null) " · uit beeld" else ""} ▾" } ?: "Geen tag geselecteerd")
+            Text(state.wallSelectedTagId?.let { "Tag $it ▾" } ?: "Geen tag geselecteerd")
         }
         DropdownMenu(expanded, { expanded = false }) {
             DropdownMenuItem(text = { Text("Volgende kandidaat") }, onClick = { state.nextWallCandidate(); expanded = false })
@@ -132,7 +132,7 @@ internal fun WorkflowWallPreview(frame: WallScanFrame?, solution: WallCalibratio
 
 /** Reproject observations with the CURRENT view in the SAME anchor frame. */
 @Composable
-internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, ready: List<Int>, conflicts: Set<Int> = emptySet()) {
+internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, ready: List<Int>, conflicts: Set<Int> = emptySet(), selectedId: Int? = null) {
     val projection = frame?.projectionFromReference ?: return
     Canvas(Modifier.fillMaxSize()) {
         for (tag in frame.displayObservations) {
@@ -145,6 +145,14 @@ internal fun WorkflowWallTagOverlay(frame: WallScanFrame?, ready: List<Int>, con
             if (corners.any { it == null }) continue
             val color = if (tag.tagId in conflicts) Color(0xFFFF667A) else if (tag.tagId in ready) Color(0xFF52D39B) else Color(0xFFFFBD48)
             for (i in 0..3) drawLine(color, corners[i]!!, corners[(i+1)%4]!!, 2.dp.toPx())
+            if (tag.tagId == selectedId) {
+                val center = corners.filterNotNull().reduce { a,b -> a+b } / 4f
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    this.color=android.graphics.Color.WHITE; textSize=14.dp.toPx(); textAlign=android.graphics.Paint.Align.CENTER
+                    setShadowLayer(2.dp.toPx(),0f,0f,android.graphics.Color.BLACK)
+                }
+                drawContext.canvas.nativeCanvas.drawText(tag.tagId.toString(),center.x,center.y-8.dp.toPx(),paint)
+            }
         }
     }
 }

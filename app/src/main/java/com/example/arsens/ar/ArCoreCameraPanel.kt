@@ -439,6 +439,7 @@ private class ArCoreCameraRenderer(
 
 
     private val wallObservationHistory = WallObservationHistory()
+    private val wallPoseHistory = com.example.arsens.ar.calibration.WallPoseHistory()
 
     private fun postWallScanFrame(frame: Frame, request: WallScanRequest, arFromCameraGl: Transform3D,
         cameraGlFromAr: Transform3D, projection: FloatArray, cameraTracking: Boolean, revision: Int) {
@@ -478,7 +479,11 @@ private class ArCoreCameraRenderer(
             raw.standaloneWallPacket!!.tags.map { tag -> WallTagObservation(tag.tagId, tag.sizeMm,
                 raw.capturedAtElapsedMillis, raw.detectionSequence, trackingFrameId,
                 capture * tag.cameraCvFromTag, capture, raw.standaloneWallPacket.referenceUp,
-                tag.reprojectionErrorPx, tag.shortestEdgePx) }
+                tag.reprojectionErrorPx, tag.shortestEdgePx,
+                raw.screenDetections.firstOrNull { it.id == tag.tagId }?.centerPx?.let {
+                    kotlin.math.hypot((it.xPx / surfaceWidth.coerceAtLeast(1) - 0.5f)*2f,
+                        (it.yPx / surfaceHeight.coerceAtLeast(1) - 0.5f)*2f)
+                } ?: 0.5f) }
         } else emptyList()
         val observations = displayObservations.filter { now - it.timestampMillis in 0L..DETECTION_FRESH_MILLIS }
         val scan = WallScanFrame(request.sessionId, trackingFrameId, tracking, observations,
@@ -739,7 +744,11 @@ private class ArCoreCameraRenderer(
                 predictedCameraPose = frame.predictedCameraPose
             ).let { result ->
                 result.copy(standaloneWallPacket = frame.wallRequest?.let { request ->
-                    StandaloneWallPacket(request.sessionId, solveStandaloneWallTags(result.detections, frame.intrinsics, request), frame.referenceUp)
+                    val referenceFromCamera = frame.arFromCameraGlAtCapture * Transform3D.cameraGlFromCameraCv()
+                    val prior = wallPoseHistory.predictions(request,frame.trackingFrameId,frame.capturedAtElapsedMillis,referenceFromCamera)
+                    val tags = solveStandaloneWallTags(result.detections, frame.intrinsics, request, prior)
+                    wallPoseHistory.remember(tags,frame.capturedAtElapsedMillis,referenceFromCamera)
+                    StandaloneWallPacket(request.sessionId, tags, frame.referenceUp)
                 })
             }.withScreenDetections(frame.imageToViewMapper).copy(
                 capturedAtElapsedMillis = frame.capturedAtElapsedMillis,

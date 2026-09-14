@@ -32,8 +32,9 @@ class PersistentReferenceScanTest {
         show(listOf(3,4), 140.0)
         show(listOf(4,1), 190.0)
         assertEquals(setOf(1,2,3,4), scan.verifiedTagIds)
-        assertTrue(scan.rejectedEdges.isEmpty())
-        assertEquals(4, scan.graph.edges.size)
+        assertTrue(scan.rejectedEdges.none { scan.graph.edges[it].directSameFrame })
+        assertEquals(4, scan.graph.edges.count { it.directSameFrame })
+        assertTrue(scan.graph.edges.any { !it.directSameFrame })
         assertTrue(scan.hasTopOverlap(listOf(1,2,3,4)))
         val solved = ReferenceGraphOptimizer.solve(scan.graph)
         assertEquals(2400.0, solved.poses.getValue(4).translation()[0], 1.0)
@@ -53,8 +54,8 @@ class PersistentReferenceScanTest {
         val scan = PersistentReferenceScan()
         repeat(14) { observe(scan, it, pose(it * 35.0, it * -15.0, 0.0)) }
         assertEquals(2, scan.graph.nodes.size)
-        assertEquals(1, scan.graph.edges.size)
-        assertArrayEquals((side.inverseRigid() * top).values, scan.graph.edges.single().relativeTransform.toDoubleArray(), 1e-4)
+        assertEquals(1, scan.graph.edges.count { it.directSameFrame })
+        assertArrayEquals((side.inverseRigid() * top).values, scan.graph.edges.single { it.directSameFrame }.relativeTransform.toDoubleArray(), 1e-4)
         assertTrue(scan.hasTopOverlap(listOf(1, 2)))
     }
     @Test fun partialGraphSurvivesJsonAndRequiresRelocalizationInNewWorld() {

@@ -42,6 +42,7 @@ object ReferenceGraphOptimizer {
                 var weight = if (id in initialized) 0.0 else 0.02 // A verified chain needs no drifting world prior.
                 graph.edges.forEachIndexed { index, edge ->
                     if (index in rejected || (edge.fromTagId != id && edge.toTagId != id)) return@forEachIndexed
+                    if (!edge.directSameFrame && edge.fromTagId in initialized && edge.toTagId in initialized) return@forEachIndexed
                     val relative = Transform3D(edge.relativeTransform.toDoubleArray())
                     val candidate = if (edge.toTagId == id) poses[edge.fromTagId]?.times(relative)
                         else poses[edge.toTagId]?.times(relative.inverseRigid())

@@ -79,6 +79,8 @@ class WallCalibrationSession {
             }
             val scatter = sqrt(inliers.sumOf { (it.center - com.example.arsens.ar.calibration.WallVector.from(mean.translation())).length().pow(2) } / inliers.size)
             if (scatter > 10.0 || inliers.any { it.referenceFromTag.rotationAngleDegreesTo(mean) > 12.0 }) return@mapNotNull null
-            WallTagEstimate(assignment, mean, scatter, inliers.size, first.referenceUp)
+            WallTagEstimate(assignment, mean, scatter, inliers.size, first.referenceUp,
+                inliers.last().timestampMillis-inliers.first().timestampMillis, wallMedian(inliers.map { it.reprojectionErrorPx.toDouble() }),
+                inliers.maxOf { it.referenceFromTag.rotationAngleDegreesTo(mean) })
         }
 }

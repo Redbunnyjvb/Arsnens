@@ -126,9 +126,16 @@ object WallCalibrationSolver {
             val refined = fit(best.theta, used)
             if (refined != null) { best = refined; used = inliers(best) }
         }
-        if (lower != null && lower !in used) return fail("Een hoogtereferentie wijkt af. Controleer de tag of kies een andere datumtag.")
+        val issues = tags.mapIndexedNotNull { i, tag -> if (tag in used) null else
+            WallFitIssue(tag.assignment.tagId, tag.assignment.wall, abs(best.residuals[i]), best.angles[i]) }
+        if (lower != null && lower !in used) return WallSolveResult(reason = "Hoogtereferentie: tag ${lower.assignment.tagId} wijkt af. Controleer deze tag via Opties.", fitIssues = issues)
         val usedGroups = used.groupBy { it.assignment.wall }
-        if (requiredWalls.any { usedGroups[it].isNullOrEmpty() }) return fail("Na uitsluiten blijven te weinig tags over. Scan een extra tag op de betreffende wand.")
+        val missing = requiredWalls.filter { usedGroups[it].isNullOrEmpty() }
+        if (missing.isNotEmpty()) {
+            val wall = missing.first()
+            val ids = issues.filter { it.wall == wall }.joinToString(", ") { it.tagId.toString() }
+            return WallSolveResult(reason = "${wall.label}: tag $ids wijkt af. Controleer via Opties.", fitIssues = issues)
+        }
         // One stable tag supplies a plane normal and offset. Adjacent/opposite wall
         // requirements above still make the contour observable; spacing is not an acceptance gate.
         val origin = best.x * best.ox + best.y * best.oy + up * zOrigin
@@ -157,6 +164,6 @@ object WallCalibrationSolver {
         val quality = WallCalibrationQuality(sqrt(errors.sumOf { it * it } / errors.size), errors.max(),
             tags.indices.filter { tags[it] in used }.maxOf { best.angles[it] }, used.maxOf { it.repeatabilityMm },
             usedIds, tags.map { it.assignment.tagId }.filterNot { it in usedIds }.sorted())
-        return WallSolveResult(WallCalibrationSolution(referenceFromProject, solvedDimensions, markers, quality, residuals))
+        return WallSolveResult(WallCalibrationSolution(referenceFromProject, solvedDimensions, markers, quality, residuals), fitIssues = issues)
     }
 }

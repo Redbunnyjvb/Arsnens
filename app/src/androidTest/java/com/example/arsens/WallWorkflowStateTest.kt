@@ -204,13 +204,15 @@ class WallWorkflowStateTest {
         state.acceptWallScan();assertEquals(before,state.project)
         assertNotNull(state.wallScanMessage)
     }
-    @Test fun separateSideAndTopScansCannotBeAcceptedWithoutDirectOverlap() {
+    @Test fun separateSideAndTopScansCanUseExplicitArCoreBridges() {
         create();scan(separateTop=true)
         assertFalse(state.wallTopOverlapVerified)
         assertNotNull(state.wallScanFootprint)
         assertNotNull(state.wallScanSolution)
-        state.acceptWallScan();assertFalse(state.project.hasWallCalibration)
-        assertNotNull(state.wallScanMessage)
+        assertTrue(state.wallScanLinkSummary.contains("via ARCore"))
+        state.acceptWallScan();assertTrue(state.project.hasWallCalibration)
+        assertFalse(state.project.wallCalibration!!.quality.topOverlapVerified)
+        assertTrue(state.project.referenceGraph.edges.any { !it.directSameFrame })
     }
 
     @Test fun firstTopTagLinksTheContourAndFurtherTopTagsCanBeAddedFreely() {

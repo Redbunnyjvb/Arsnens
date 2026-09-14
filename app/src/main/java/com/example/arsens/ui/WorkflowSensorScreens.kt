@@ -163,11 +163,6 @@ internal fun WorkflowSensorSheet(state: WorkflowAppState) {
         if (selected == null) {
             OutlinedTextField(state.sensorId, { state.sensorId = it }, label = { Text("Sensor-ID") }, singleLine = true)
             OutlinedTextField(state.sensorName, { state.sensorName = it }, label = { Text("Naam") }, singleLine = true)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Hier komt een sensor", modifier = Modifier.weight(1f), color = Color.White)
-                Switch(checked = state.planSensorAtCursor, onCheckedChange = { state.planSensorAtCursor = it })
-            }
-            if (state.planSensorAtCursor) WorkflowNumberField("Doelradius (mm)", state.sensorTolerance, { state.sensorTolerance = it })
         } else {
             Text("${selected.status.label} · doelradius ${selected.toleranceMm} mm", color = Color.White)
             if (selected.instruction.isNotBlank()) Text(selected.instruction, color = Color.White)
@@ -175,13 +170,12 @@ internal fun WorkflowSensorSheet(state: WorkflowAppState) {
             TextButton(onClick = { editing = selected }) { Text("Bewerken") }
             if (selected.status != SensorStatus.Pending) TextButton(onClick = { state.resetPlacement(selected.id) }) { Text("Opnieuw te plaatsen") }
         }
-        Text(if (state.planSensorAtCursor) "Bereid een doelgebied voor; deze sensor is nog niet geplaatst."
-            else "Richt op de werkelijke plek. Buiten de doelradius plaatsen mag; de afwijking wordt bewaard.",
+        Text("Richt op de werkelijke plek. Na plaatsen volgt de volgende sensor.",
             color = Color.White.copy(alpha = 0.72f), fontSize = 13.sp)
-        WorkflowSheetPlaceButton(label = if (state.planSensorAtCursor) "Hier komt de sensor" else "Sensor zit hier",
+        WorkflowSheetPlaceButton(label = state.cameraSensorAction,
             color = ArSensTeal, enabled = cursorReady, onClick = {
                 state.selectCameraPlacementTarget(CameraPlacementTarget.Sensor)
-                state.saveSensorAtCursor()
+                state.cameraPrimaryAction()
             })
         if (!cursorReady) Text(state.sensorPlacementBlockReason ?: "Richt de cursor op het gekozen trafovlak.",
             color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)

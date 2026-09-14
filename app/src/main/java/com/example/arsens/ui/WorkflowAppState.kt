@@ -441,6 +441,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     private var wallFootprintSamples: List<WallTagEstimate> = emptyList()
     private var wallFootprintDatum: WallVerticalDatum? = null
     var wallScanMessage by mutableStateOf<String?>(null)
+    var wallFitIssues by mutableStateOf<List<WallFitIssue>>(emptyList())
     private val wallSession = PersistentReferenceScan()
     private var wallCandidateId: Int? = null
     private var wallCandidateFrames = 0
@@ -823,6 +824,7 @@ fun setDefaultTagSize(sizeMm: Int) {
             planSensorAtCursor = false
             resetSensorFormForNext()
             cameraSensors.firstOrNull { it.status == SensorStatus.Pending }?.let(::selectCameraSensor)
+                ?: run { if (project.activeSession != null) armMeasurement(sensorId, MeasurementAction.PLACE) }
             reseedTagPlacement()
             showTagOverlay = true
             showSensorOverlay = true
@@ -2733,10 +2735,9 @@ fun setDefaultTagSize(sizeMm: Int) {
     val cameraSensor: Sensor? get() = project.sensors.firstOrNull { it.id == sensorId }
     val cameraSensorLabel: String get() = cameraSensor?.displayName() ?: "Nieuwe sensor $sensorId"
     val cameraSensorAction: String get() = when {
-        planSensorAtCursor -> "Doelgebied voorbereiden"
         project.activeSession?.status != SessionStatus.OPEN -> "Start eerst een sessie"
-        armedSensorId != sensorId -> if (resultFor(sensorId) != null) "Verplaatsen starten" else "Plaatsing starten"
-        else -> "Meting vastleggen"
+        resultFor(sensorId) != null -> "Sensor verplaatsen"
+        else -> "Sensor plaatsen"
     }
     val canSelectPreviousCameraSensor: Boolean get() = cameraSensors.let { sensors ->
         sensors.isNotEmpty() && sensors.indexOfFirst { it.id == sensorId } != 0
@@ -2749,6 +2750,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         planSensorAtCursor = false
         cameraPlacementTarget = CameraPlacementTarget.Sensor
         message = null
+        if (project.activeSession != null) armMeasurement(sensorId, MeasurementAction.PLACE)
     }
 
     fun stepCameraSensor(direction: Int) {
@@ -2777,7 +2779,9 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (selectedTagPlane != plane) clearCursorForPlaneChange()
         selectedTagPlane = plane
         cameraPlacementTarget = CameraPlacementTarget.Sensor
-        message = "${sensor.displayName()} geselecteerd. Kies Controleren of Verplaatsen om te meten."
+        if (project.activeSession != null) armMeasurement(sensor.id,
+            if (resultFor(sensor.id) == null) MeasurementAction.PLACE else MeasurementAction.MOVE)
+        message = null
     }
 
     private fun clearCursorForPlaneChange() {
@@ -3288,10 +3292,18 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun cameraPrimaryAction() {
-        if (planSensorAtCursor) { saveSensorAtCursor(); return }
+        planSensorAtCursor = false
         if (armedSensorId != sensorId) armMeasurement(sensorId,
             if (resultFor(sensorId) == null) MeasurementAction.PLACE else MeasurementAction.MOVE)
-        else saveSensorAtCursor()
+        val id = sensorId
+        saveSensorAtCursor()
+        if (project.measurementDraft?.sensorId == id) {
+            acceptDraft()
+            if (project.measurementDraft == null && resultFor(id) != null) {
+                selectNextUnplacedCameraSensor(id)
+                message = "Sensor $id geplaatst"
+            }
+        }
     }
 
     fun armMeasurement(id: String, action: MeasurementAction) {
@@ -3623,6 +3635,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun beginWallScan() {
+        wallFitIssues = emptyList()
         resetArPoseState()
         wallSession.restore(project.referenceGraph)
         wallScanId = System.nanoTime()
@@ -3702,11 +3715,12 @@ fun setDefaultTagSize(sizeMm: Int) {
                 wallReadyTagIds = wallSession.estimates(wallAssignments.filterNot { it.tagId in ignoredReferenceIds }).map { it.assignment.tagId }
                 wallTopOverlapVerified = wallSession.hasTopOverlap(wallReadyTagIds)
                 if (wallAutoCapture && wallSelectedTagId in wallReadyTagIds && frame.observations.any { observation ->
-                        observation.tagId !in wallReadyTagIds && wallAssignments.none { it.tagId == observation.tagId } }) nextWallCandidate()
+                        observation.tagId !in wallReadyTagIds && wallAssignments.none { it.tagId == observation.tagId } &&
+                            observation.selectionScore >= (frame.observations.firstOrNull { it.tagId == wallSelectedTagId }?.selectionScore ?: 0f)*0.85f }) nextWallCandidate()
                 if (wallSelectedTagId == null) {
                     val candidate = frame.observations.filter { it.tagId < sensorTagStartId && it.reprojectionErrorPx <= 1.5f }
                         .sortedWith(compareBy<WallTagObservation> { o -> wallAssignments.any { it.tagId == o.tagId } }
-                            .thenBy { it.reprojectionErrorPx }.thenBy { it.distanceMm }).firstOrNull()?.tagId
+                            .thenByDescending { it.selectionScore }).firstOrNull()?.tagId
                     wallCandidateFrames = if (candidate == wallCandidateId) wallCandidateFrames + 1 else 1
                     wallCandidateId = candidate
                     if (candidate != null && wallCandidateFrames >= 3) wallSelectedTagId = candidate
@@ -3755,6 +3769,7 @@ fun setDefaultTagSize(sizeMm: Int) {
     }
 
     fun removeWallTag(id: Int) {
+        wallFitIssues = wallFitIssues.filterNot { it.tagId == id }
         if(project.referenceGraph.nodes.any { it.tagId==id }) project=project.ensureGeometryRevision(repository.nowIso())
         if (wallAssignments.any { it.tagId == id && it.wall != CalibrationWall.Top }) editWallFootprint()
         wallScanSolution = null
@@ -3810,7 +3825,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         if (tag.shortestEdgePx < WallCaptureTuning.MIN_EDGE_PX) return "Tag te klein · grotere tag of dichterbij"
         if (!WallCaptureTuning.acceptsImage(tag.shortestEdgePx, tag.reprojectionErrorPx)) return "Tag onscherp of te schuin"
         if (tag.tagId in wallReadyTagIds) return if (tag.tagId in wallVerifiedTagIds) "Tag ${tag.tagId} · gekoppeld"
-            else "Nog koppelen · bekijk ook een groene tag"
+            else "Tag ${tag.tagId} · opgenomen via ARCore"
         val count = wallScanCounts[tag.tagId] ?: 0
         return if (count > 0) "Houd stil · $count/${WallCaptureTuning.minimumSamples(tag.shortestEdgePx)} metingen"
             else if (wallAssignments.any { it.tagId==tag.tagId }) "Wacht op een scherp beeld"
@@ -3859,6 +3874,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         val datum = wallDatum() ?: run { wallScanMessage = "Vul een geldig hoogteverschil voor het bovenvlak in."; return }
         val samples = wallSession.estimates(wallAssignments.filterNot { it.tagId in ignoredReferenceIds }).filter { it.assignment.wall != CalibrationWall.Top }
         val result = WallCalibrationSolver.solveFootprint(project.dimensionsMm, wallScanSource, samples, datum, project.dimensionValues)
+        wallFitIssues = result.fitIssues
         wallScanFootprint = result.solution
         if (result.solution != null) {
             wallFootprintSamples = samples.filter { it.assignment.tagId in result.solution.quality.usedTagIds }
@@ -3904,6 +3920,7 @@ fun setDefaultTagSize(sizeMm: Int) {
         val tags = wallSession.estimates(wallAssignments.filterNot { it.tagId in ignoredReferenceIds }).filter { it.assignment.wall == CalibrationWall.Top ||
             it.assignment.tagId in wallFootprintSamples.map { sample -> sample.assignment.tagId } }
         val result = WallCalibrationSolver.solve(project.dimensionsMm, wallScanSource, tags, datum, project.dimensionValues)
+        wallFitIssues = result.fitIssues
         wallScanSolution = result.solution?.let { solved ->
             solved.copy(quality = solved.quality.copy(topOverlapVerified = wallSession.hasTopOverlap(solved.quality.usedTagIds), excludedTagIds =
                 wallAssignments.map { it.tagId }.filterNot { it in solved.quality.usedTagIds }.sorted()))
@@ -3933,20 +3950,20 @@ fun setDefaultTagSize(sizeMm: Int) {
     val wallScanCompletionIssue: String? get() {
         if (wallConflictingTagIds.isNotEmpty()) return "Referenties spreken elkaar tegen. Controleer de rode tags."
         val solution = wallScanSolution ?: return "Bereken eerst de contour."
-        val unlinked = solution.quality.usedTagIds.filterNot { it in wallVerifiedTagIds }
-        if (unlinked.isNotEmpty()) return "${unlinked.size} tags nog niet gekoppeld. Houd elke oranje tag samen met een groene tag in beeld."
-        if (!solution.quality.topOverlapVerified) return "Houd een zijtag en boventag samen in beeld."
         return null
+    }
+    val wallScanAcceptanceReady get() = wallScanCompletionIssue == null && wallSolvedFrameId != null &&
+        wallSolvedFrameId == wallScanFrame?.trackingFrameId && wallScanFrame?.tracking == true
+    val wallScanLinkSummary: String get() {
+        val used = wallScanSolution?.quality?.usedTagIds ?: wallReadyTagIds
+        val direct = used.count { it in wallVerifiedTagIds }
+        return "$direct direct · ${used.size-direct} via ARCore"
     }
 
     fun acceptWallScan() {
         if (project.activeSession != null) { wallScanMessage="Rond de meetsessie af voordat je een nieuwe contour accepteert.";return }
         val solved = wallScanSolution ?: return
         wallScanCompletionIssue?.let { wallScanMessage = it; return }
-        if (!solved.quality.topOverlapVerified) {
-            wallScanMessage = "Bekijk een opgenomen zijtag en boventag tegelijk. De bovenkant is nog niet rechtstreeks geverifieerd."
-            return
-        }
         val datum = wallSolvedDatum ?: return
         if (wallSession.invalidated || wallScanFrame?.tracking != true || android.os.SystemClock.elapsedRealtime() - wallLastFrameMillis > 500L || wallSolvedFrameId != wallScanFrame?.trackingFrameId) {
             wallScanMessage = "De trackingreferentie veranderde; scan opnieuw."; return

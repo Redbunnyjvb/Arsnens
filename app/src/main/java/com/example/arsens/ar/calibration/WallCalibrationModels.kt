@@ -27,11 +27,14 @@ data class StandaloneWallPacket(val sessionId: Long, val tags: List<StandaloneWa
 data class WallTagObservation(
     val tagId: Int, val sizeMm: Int, val timestampMillis: Long, val sequence: Long, val trackingFrameId: Long,
     val referenceFromTag: Transform3D, val referenceFromCameraCv: Transform3D, val referenceUp: WallVector,
-    val reprojectionErrorPx: Float, val shortestEdgePx: Float
+    val reprojectionErrorPx: Float, val shortestEdgePx: Float,
+    val screenCenterDistance: Float = 0.5f
 ) {
     val center get() = WallVector.from(referenceFromTag.translation())
     val normal get() = referenceFromTag.wallDirection(WallVector(0.0, -1.0, 0.0))
     val distanceMm get() = (center - WallVector.from(referenceFromCameraCv.translation())).length()
+    val selectionScore get() = shortestEdgePx.coerceAtMost(160f) /
+        ((1f + reprojectionErrorPx * reprojectionErrorPx) * (1f + screenCenterDistance.coerceIn(0f,2f)))
 }
 
 data class WallScanFrame(val sessionId: Long, val trackingFrameId: Long, val tracking: Boolean,
@@ -40,14 +43,18 @@ data class WallScanFrame(val sessionId: Long, val trackingFrameId: Long, val tra
     val displayObservations: List<WallTagObservation> = observations)
 
 data class WallTagEstimate(val assignment: WallTagAssignment, val referenceFromTag: Transform3D,
-    val repeatabilityMm: Double, val sampleCount: Int, val referenceUp: WallVector) {
+    val repeatabilityMm: Double, val sampleCount: Int, val referenceUp: WallVector,
+    val captureSpanMillis: Long = 0, val medianReprojectionErrorPx: Double = 0.0,
+    val rotationScatterDegrees: Double = 0.0) {
     val center get() = WallVector.from(referenceFromTag.translation())
     val normal get() = referenceFromTag.wallDirection(WallVector(0.0, -1.0, 0.0)).unit()!!
 }
 
 data class WallCalibrationSolution(val referenceFromProject: Transform3D, val dimensionsMm: MmPosition,
     val markers: List<Marker>, val quality: WallCalibrationQuality, val residualsMm: Map<Int, Double>)
-data class WallSolveResult(val solution: WallCalibrationSolution? = null, val reason: String? = null)
+data class WallFitIssue(val tagId: Int, val wall: CalibrationWall, val planeErrorMm: Double, val normalErrorDegrees: Double)
+data class WallSolveResult(val solution: WallCalibrationSolution? = null, val reason: String? = null,
+    val fitIssues: List<WallFitIssue> = emptyList())
 
 internal fun wallMedian(values: List<Double>): Double = values.sorted().let {
     if (it.size % 2 == 1) it[it.size/2] else (it[it.size/2-1] + it[it.size/2]) / 2

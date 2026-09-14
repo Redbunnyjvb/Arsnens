@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import com.example.arsens.ar.ProjectPointMm
 import com.example.arsens.ar.calibration.WallVector
@@ -39,6 +40,7 @@ internal fun WorkflowWallGraphOverlay(state: WorkflowAppState, showTags: Boolean
             drawLine(color, end, base - wing, 2.dp.toPx())
         }
         if (showLinks) graph.edges.forEachIndexed { index, edge ->
+            if (!edge.directSameFrame && edge.fromTagId in verified && edge.toTagId in verified) return@forEachIndexed
             val from = centers[edge.fromTagId] ?: return@forEachIndexed
             val to = centers[edge.toTagId] ?: return@forEachIndexed
             val color = when {
@@ -46,7 +48,8 @@ internal fun WorkflowWallGraphOverlay(state: WorkflowAppState, showTags: Boolean
                 edge.directSameFrame && edge.fromTagId in verified && edge.toTagId in verified -> green
                 else -> amber
             }
-            drawLine(color.copy(alpha = 0.75f), from, to, 1.5.dp.toPx())
+            drawLine(color.copy(alpha = 0.75f), from, to, 1.5.dp.toPx(), pathEffect =
+                if (edge.directSameFrame) null else androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(),5.dp.toPx())))
             arrow(to, from, color); arrow(from, to, color)
         }
         tags.forEach { tag ->
@@ -61,6 +64,13 @@ internal fun WorkflowWallGraphOverlay(state: WorkflowAppState, showTags: Boolean
                 if (corners.all { it != null }) for (i in 0..3)
                     drawLine(color.copy(alpha = 0.7f), corners[i]!!, corners[(i+1)%4]!!, 1.dp.toPx())
                 drawCircle(color, 3.dp.toPx(), center)
+                if (id == state.wallSelectedTagId) {
+                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        this.color = android.graphics.Color.WHITE; textSize = 14.dp.toPx(); textAlign = android.graphics.Paint.Align.CENTER
+                        setShadowLayer(2.dp.toPx(),0f,0f,android.graphics.Color.BLACK)
+                    }
+                    drawContext.canvas.nativeCanvas.drawText(id.toString(),center.x,center.y-14.dp.toPx(),paint)
+                }
             }
             if (id == graph.seedTagId) {
                 drawCircle(color, 8.dp.toPx(), center, style = Stroke(2.dp.toPx()))

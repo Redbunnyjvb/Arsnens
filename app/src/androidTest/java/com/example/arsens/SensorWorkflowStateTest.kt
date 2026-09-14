@@ -16,6 +16,21 @@ import java.util.UUID
 /** Real workflow + JSON store in an isolated cache directory, with controlled AR packets.
  * Does not open a camera, use a user's project, or establish real-world AR accuracy. */
 class SensorWorkflowStateTest {
+    @Test fun cameraPressPlacesImmediatelyAdvancesAndNeverChangesPreparedTarget() {
+        state.sensorId="S1"; state.saveSensorAtBoxPosition(MmPosition(300,0,400))
+        state.sensorId="S2"; state.saveSensorAtBoxPosition(MmPosition(600,0,400))
+        startSession(); state.chooseMode(WorkMode.OnTheFly)
+        assertEquals("S1",state.sensorId)
+        readyCursor(MmPosition(350,0,400))
+        state.cameraPrimaryAction()
+        assertNull(state.project.measurementDraft)
+        assertEquals(MmPosition(350,0,400),state.log.results.single().measuredPositionMm)
+        assertEquals(MmPosition(300,0,400),state.project.sensors.first { it.id=="S1" }.positionMm)
+        assertEquals("S2",state.sensorId)
+        state.stepCameraSensor(-1)
+        assertEquals("S1",state.sensorId)
+        assertEquals(1,state.project.activeSession!!.measurements.size)
+    }
     private lateinit var context: Context
     private lateinit var folder: File
     private lateinit var state: WorkflowAppState

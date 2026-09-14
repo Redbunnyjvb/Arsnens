@@ -39,7 +39,8 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                 camera()
                 if (contourVisible) WorkflowWallPreview(state.wallScanFrame, preview, state.wallScanSolution == null && state.wallLinkedPreview == null)
                 WorkflowWallGraphOverlay(state, savedTagsVisible, linksVisible)
-                WorkflowWallTagOverlay(state.wallScanFrame, state.wallVerifiedTagIds.toList(), state.wallConflictingTagIds)
+                WorkflowWallTagOverlay(state.wallScanFrame, state.wallVerifiedTagIds.toList(), state.wallConflictingTagIds,
+                    state.wallSelectedTagId?.takeUnless { id -> savedTagsVisible && state.wallGraphTags.any { it.assignment.tagId == id } })
             }
             Surface(Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(8.dp).fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp), color = WorkflowCameraPanel, contentColor = Color.White) {
@@ -63,7 +64,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                     } else {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             listOf(CalibrationWall.Front, CalibrationWall.Right, CalibrationWall.Back, CalibrationWall.Left, CalibrationWall.Top).forEach { wall ->
-                                val ready = state.wallAssignments.any { it.wall == wall && it.tagId in state.wallVerifiedTagIds }
+                                val ready = state.wallAssignments.any { it.wall == wall && it.tagId in state.wallReadyTagIds }
                                 Text("${wall.label} ${if (ready) "✓" else "○"}", style = MaterialTheme.typography.labelSmall,
                                     color = if (ready) Color(0xFF70DDB4) else Color.LightGray)
                             }
@@ -73,12 +74,12 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                             Text("Controleer de tankcontour", style = MaterialTheme.typography.titleMedium)
                             Text("${solution.dimensionsMm.x} × ${solution.dimensionsMm.y} × ${solution.dimensionsMm.z} mm")
                             state.wallScanCompletionIssue?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                            if (state.wallScanCompletionIssue == null) Text("Tagnet gekoppeld · contour gereed", color = Color(0xFF70DDB4))
+                            if (state.wallScanCompletionIssue == null) Text(state.wallScanLinkSummary, style = MaterialTheme.typography.bodySmall)
                             state.wallScanMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(state::resumeWallScan, Modifier.weight(1f)) { Text("Verder scannen") }
                                 Button(state::acceptWallScan, Modifier.weight(1f).testTag("accept-wall-calibration"),
-                                    enabled = state.wallScanFrame?.tracking == true && state.wallScanCompletionIssue == null) { Text("Contour gebruiken") }
+                                    enabled = state.wallScanAcceptanceReady) { Text("Contour gebruiken") }
                             }
                         } else {
                             if (state.wallScanFootprint != null && state.wallLinkedPreview == null)
@@ -104,7 +105,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                                     }
                                 }
                             }
-                            Text(state.wallScanMessage ?: state.wallShortStatus, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                            Text(state.wallScanMessage ?: state.wallShortStatus, style = MaterialTheme.typography.bodyMedium, minLines = 2, maxLines = 2)
                             if (state.wallScanFootprint != null && state.wallScanSource == WallDimensionSource.Scanned &&
                                 state.wallSideHeight.toIntOrNull()?.takeIf { it > 0 } == null) {
                                 TextButton({ settings = "height" }) { Text("Hoogte instellen") }
@@ -142,7 +143,7 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Tagverbindingen tonen", Modifier.weight(1f)); Switch(linksVisible, { linksVisible = it }, Modifier.testTag("wall-show-links"))
                 }
-                if (savedTagsVisible || linksVisible) Text("Groen: gekoppeld · oranje: nog koppelen · rood: conflict · dubbele ring: seed",
+                if (savedTagsVisible || linksVisible) Text("Groen: direct · oranje: ARCore · rood: conflict · dubbele ring: seed",
                     style = MaterialTheme.typography.bodySmall)
                 TextButton({ settings = "size"; options = false }) { Text("Tagmaat · ${state.wallScanSize} mm") }
                 TextButton({ settings = "height"; options = false }) { Text("Hoogte & dekseloffset") }
@@ -155,12 +156,17 @@ internal fun WorkflowWallCalibrationScreen(state: WorkflowAppState, camera: @Com
                         assignment.tagId in state.wallConflictingTagIds -> "Conflict"
                         assignment.tagId == graph.seedTagId -> "Seed"
                         assignment.tagId in state.wallVerifiedTagIds -> "Gekoppeld"
-                        graph.nodes.any { it.tagId == assignment.tagId } -> "Nog koppelen"
+                        graph.nodes.any { it.tagId == assignment.tagId } -> "Via ARCore"
                         else -> "Opnemen"
                     }
                     Text("Tag ${assignment.tagId} · ${assignment.wall.label}\n$status", Modifier.weight(1f))
                     TextButton({ state.wallSelectedTagId = assignment.tagId; state.selectWallScanFace(assignment.wall); options = false }) { Text("Zijde") }
                     TextButton({ state.reobserveReferenceTag(assignment.tagId); options = false }) { Text("Opnieuw meten") }
+                  }
+                  state.wallFitIssues.firstOrNull { it.tagId == assignment.tagId }?.let { issue ->
+                    Text("Vlakafwijking ${"%.1f".format(issue.planeErrorMm)} mm · wandhoek ${"%.1f".format(issue.normalErrorDegrees)}°",
+                        style = MaterialTheme.typography.bodySmall, color = Color(0xFFFFBD48))
+                    Text("Controleer zijde, vlak papier en tagmaat. Meet daarna opnieuw.", style = MaterialTheme.typography.bodySmall)
                   }
                   TextButton({state.toggleReferenceIgnored(assignment.tagId)}) {Text(if(assignment.tagId in state.ignoredReferenceIds) "Tag weer gebruiken" else "Tijdelijk negeren")}
                 } }
